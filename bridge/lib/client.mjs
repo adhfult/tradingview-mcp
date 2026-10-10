@@ -74,6 +74,20 @@ export function createClientManager({
     || (err?.code === 'TIMEOUT' && used.isAuthenticated === false);
 
   /**
+   * Records a failure seen on `used` (a call's error, or a stream's error): starts
+   * the auth cool-down after an AUTH_ERROR with credentials, and drops the client
+   * when it is unusable. Call it for failures that do not go through `call`, such
+   * as a long-lived watcher.
+   */
+  const reportFailure = (err, used) => {
+    if (err?.code === 'AUTH_ERROR' && credentials !== null) {
+      authBlockedUntil = now() + authCooldownMs;
+      lastAuthError = { message: errorMessage(err), details: err.details };
+    }
+    if (mustDrop(err, used)) void drop(used);
+  };
+
+  /**
    * Runs `fn(client)` on the shared client, bounded by a hard deadline of
    * `timeoutMs + graceMs`. Failures drop the client as described above.
    */
@@ -84,11 +98,7 @@ export function createClientManager({
       lastAuthError = null;
       return result;
     } catch (err) {
-      if (err?.code === 'AUTH_ERROR' && credentials !== null) {
-        authBlockedUntil = now() + authCooldownMs;
-        lastAuthError = { message: errorMessage(err), details: err.details };
-      }
-      if (mustDrop(err, used)) void drop(used);
+      reportFailure(err, used);
       throw err;
     }
   };
@@ -100,5 +110,5 @@ export function createClientManager({
     if (current !== null) await closeQuietly(current);
   };
 
-  return { get, drop, mustDrop, call, close };
+  return { get, drop, mustDrop, reportFailure, call, close };
 }

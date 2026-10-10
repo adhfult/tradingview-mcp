@@ -135,9 +135,9 @@ export function createAlerts({ alerts, timezone, store, clock, queue, log = () =
       }
     },
 
-    /** Accepted alerts whose time is at or after `sinceMs`. */
+    /** Accepted alerts (heartbeats excluded) whose time is at or after `sinceMs`. */
     countSince(sinceMs) {
-      return store.state.alerts.filter((a) => a.at >= sinceMs).length;
+      return store.state.alerts.filter((a) => a.at >= sinceMs && a.kind !== 'heartbeat').length;
     },
 
     /** Current quiet-hours state, for the health endpoint and heartbeat. */

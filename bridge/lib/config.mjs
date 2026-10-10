@@ -478,6 +478,16 @@ export async function loadConfig(path, { home = homedir() } = {}) {
 const DISCORD_URL = /^https:\/\/(?:ptb\.|canary\.)?discord(?:app)?\.com\/api\/webhooks\/\d+\/[A-Za-z0-9_-]+/;
 const TELEGRAM_TOKEN = /^\d+:[A-Za-z0-9_-]+$/;
 
+/** True for a Discord webhook URL. The value is never echoed. */
+export function isDiscordWebhookUrl(value) {
+  return typeof value === 'string' && DISCORD_URL.test(value);
+}
+
+/** True for a Telegram bot token in the form <number>:<token>. */
+export function isTelegramToken(value) {
+  return typeof value === 'string' && TELEGRAM_TOKEN.test(value);
+}
+
 /**
  * Checks the secret environment variables: their shape only, never their values.
  * Returns `{errors, warnings}` (plain strings).
@@ -487,10 +497,10 @@ export function checkEnv(env = process.env) {
   const warnings = [];
   const has = (name) => typeof env[name] === 'string' && env[name] !== '';
 
-  if (has('DISCORD_WEBHOOK_URL') && !DISCORD_URL.test(env.DISCORD_WEBHOOK_URL)) {
+  if (has('DISCORD_WEBHOOK_URL') && !isDiscordWebhookUrl(env.DISCORD_WEBHOOK_URL)) {
     errors.push('DISCORD_WEBHOOK_URL is set but is not a Discord webhook URL');
   }
-  if (has('TELEGRAM_BOT_TOKEN') && !TELEGRAM_TOKEN.test(env.TELEGRAM_BOT_TOKEN)) {
+  if (has('TELEGRAM_BOT_TOKEN') && !isTelegramToken(env.TELEGRAM_BOT_TOKEN)) {
     errors.push('TELEGRAM_BOT_TOKEN is set but is not in the form <number>:<token>');
   }
   if (has('TELEGRAM_BOT_TOKEN') !== has('TELEGRAM_CHAT_ID')) {
@@ -499,8 +509,8 @@ export function checkEnv(env = process.env) {
   if (has('TRADINGVIEW_SESSION_ID') !== has('TRADINGVIEW_SESSION_SIGN')) {
     warnings.push('TradingView login needs both TRADINGVIEW_SESSION_ID and TRADINGVIEW_SESSION_SIGN; running anonymous');
   }
-  const channels = (has('DISCORD_WEBHOOK_URL') && DISCORD_URL.test(env.DISCORD_WEBHOOK_URL ?? ''))
-    || (has('TELEGRAM_BOT_TOKEN') && has('TELEGRAM_CHAT_ID'));
+  const channels = isDiscordWebhookUrl(env.DISCORD_WEBHOOK_URL)
+    || (isTelegramToken(env.TELEGRAM_BOT_TOKEN) && has('TELEGRAM_CHAT_ID'));
   if (!channels) warnings.push('no notification channel is configured; alerts are only logged');
   if (!has('WATCHER_LOCAL_TOKEN')) warnings.push('WATCHER_LOCAL_TOKEN is not set; the local API stays disabled');
   return { errors, warnings };
