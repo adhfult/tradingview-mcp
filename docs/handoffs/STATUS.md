@@ -18,8 +18,8 @@
 | 1: Node bridge | **done** | db46a6f, 073a9ff, 4902604 | bridge 74/74 | auth cool-down, lib/client.mjs |
 | 2: Python bridge client | **done** | 0e3430e, de65a73, (advisor fixes) | 541 pass + 16 advisor tests | .dockerignore .env leak fixed |
 | 3: tv_* tools + wiring | **done** | 002d8dd, 8a1afef, bb32bcc | 812 pass | Yahoo parity pinned; in-flight cap; backtest follow-ups carried into the 6a review |
-| 4: packaging/Docker/CI/docs | reviewed, Fable advising | 2264f50, 154dbfc | – | Docker not built here (no daemon) |
-| 5: watcher | reviewed, Fable advising | 83e48a1, ee9ca16/84fd28d (review) | bridge 327 pass | 18 review fixes |
+| 4: packaging/Docker/CI/docs | **done** | 2264f50, 154dbfc, d6b5509 | 812 pass | .env.example safe defaults; Docker build deferred to WSL |
+| 5: watcher | Fable done; Sonnet applying advisor fixes | 83e48a1, ee9ca16/84fd28d | bridge 327 pass | must-fix: batch health alerts |
 | 6a: gauntlet | in progress (Haiku) | – | – | – |
 | 6b: paper trader | not started | – | – | – |
 | 7a: dashboard | not started | – | – | – |
@@ -56,6 +56,15 @@
 - Discord / Telegram delivery (`node bridge/watcher.mjs --test-notify`).
 - Raspberry Pi deployment and the systemd restart test.
 - `docker build .` + `/health` (if the cloud session couldn't reach a Docker daemon).
+
+## Before deploying the watcher on the Pi (from the Phase 5 advisor)
+- Run **anonymous (no cookies) for 24h first**; crypto is real-time anonymously. Add cookies only once `connection_drops` in `/health` stays stable. The desktop MCP and the Pi may log each other out when they share the same cookie.
+- `which node` must be `/usr/bin/node` (not nvm).
+- Run `mkdir -p ~/.local/state/tradingview-watcher` and `chmod 600 /etc/tradingview-watcher.env`. Never commit `watcher.config.json`.
+- Run `--check-config`, then `--test-notify`, then `--dry-run` for an hour, watching `journalctl -u tradingview-watcher -f` for `disconnected at` lines.
+- For day one, set `alerts.max_per_hour` to 10 and `trending.enabled=false`.
+- Run `sudo systemctl stop tradingview-watcher` once and confirm the "stopped" log line and exit 0.
+- After a night, check `curl 127.0.0.1:8787/health` shows `healthy == total`.
 
 ## Resume in WSL
 ```bash
