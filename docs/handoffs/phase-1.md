@@ -295,3 +295,56 @@ Reviewed commit db46a6f against the brief and the real 4.0.0 `.d.ts` and `.js`. 
 {"id":1,"result":{"ok":true,"libVersion":"4.0.0","node":"v22.22.0","hasCredentials":false}}
 ```
 Exit 0, stderr empty.
+
+## Advisor fixes (Sonnet)
+
+Applied in `bridge/` only; JSON-RPC protocol unchanged; nothing committed.
+
+1. **Auth cooldown.** On `AUTH_ERROR` (only when cookies are configured; an anonymous client cannot have a credentials problem) the client is dropped as before and `authBlockedUntil = now + 60000` plus the last error are recorded. While blocked, websocket calls throw the same `AUTH_ERROR` (so the same `AUTH_FAILED` bridge error and message) without constructing a client. HTTP calls are unaffected. After the cooldown the next call builds a new client; a further `AUTH_ERROR` restarts the 60 s. A successful call clears the state. The clock is injectable: `createServer({ now })`, default `Date.now`.
+2. **`bridge/lib/client.mjs`**: `createClientManager({ lib, credentials, now, log, authCooldownMs })` returns `{ get, drop, mustDrop, call(timeoutMs, graceMs, fn), close }`. It holds the lazy shared client, closed-client replacement, drop rules, hard deadline, shutting-down flag and the auth cooldown. `server.mjs` now only does `wsCall = (timeoutMs, fn) => () => clients.call(timeoutMs, deadlineGraceMs, fn)` and `close = clients.close`. `timeoutError` moved to `lib/deadline.mjs`. Ready for the Phase 5 watcher to reuse.
+3. **Hotlist comment**: the call now says it is deliberately anonymous (same scanner endpoint as screener; anonymous ties rate limits to our IP, not the account, which suits a 24/7 scan).
+4. README notes the cooldown.
+
+### Tests added (65 -> 74)
+- `test/client.test.mjs` (8): lazy creation, reuse and credentials option; replacement of an idle-closed client; `mustDrop` matrix; drop after a failing call; hard deadline; auth cooldown (fail fast with no client at 59.999 s, new client at 60 s, restart on a new `AUTH_ERROR`, none for anonymous); `close()` once, refuses new work, logs a failing close.
+- `test/server.test.mjs` (1): `AUTH_ERROR`, then an immediate second call gives `AUTH_FAILED` with the same message and no new client; HTTP calls still work; after 60 s (fake clock) a new client is constructed.
+- All 65 earlier tests pass unchanged.
+
+### Real last lines of `cd bridge && npm test`
+```
+1..74
+# tests 74
+# suites 0
+# pass 74
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 2386.903558
+```
+Health echo: `{"id":1,"result":{"ok":true,"libVersion":"4.0.0","node":"v22.22.0","hasCredentials":false}}`
+
+## Advisor notes (Fable)
+- **Must-fix:** none. Checked against the real 4.0.0 `dist/*.js`.
+- **Should-fix (applied by Sonnet, see "Advisor fixes" above):**
+  1. 60s auth cool-down.
+  2. Client lifecycle extracted to `lib/client.mjs` for the watcher to re-use.
+  3. Comment explaining the anonymous hotlist call.
+  4. Skip a `retryable` flag (Phase 2 derives it from codes).
+- **Later (folded into the Phase 3 and 5 briefs):**
+  - `technical` null means unknown or rate-limited.
+  - `health` doesn't validate cookies.
+  - Restart after `.env` changes.
+  - Watcher: re-use `lib/client.mjs`, jitter on restart backoff, and watch for the same cookie used on two devices.
+  - Root `.gitignore` cleanup.
+  - The `quotes` `fields` param is missing (minor).
+  - A short `TELEGRAM_CHAT_ID` value can over-redact (cosmetic).
+
+## Verification (Opus)
+- Commits:
+  - `db46a6f` implementation
+  - `073a9ff` review fixes
+  - `1f94a3b` (WIP snapshot) plus this commit (advisor fixes)
+- `cd bridge && npm test` → 74/74 pass.
+- The health echo prints one line, `ok:true`.
+- Secret grep: only obviously fake test values (in the redaction tests and fixture).

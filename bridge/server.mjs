@@ -2,7 +2,7 @@ import { realpathSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { createInterface } from 'node:readline';
 import { pathToFileURL } from 'node:url';
-import { BridgeValidationError, errorMessage, isConnectionError, toBridgeError } from './lib/errors.mjs';
+import { BridgeValidationError, errorMessage, toBridgeError } from './lib/errors.mjs';
 import { createClientManager } from './lib/client.mjs';
 import { timeoutError, withDeadline } from './lib/deadline.mjs';
 import { makeRedactor } from './lib/redact.mjs';
@@ -174,6 +174,7 @@ export function createServer({
   const redact = makeRedactor(env);
   const credentials = readCredentials(env);
   const semaphore = createSemaphore(readMaxInflight(env));
+
   // Every log line is redacted here, whatever the caller passes in, and a failing
   // log sink can never break a request.
   const emit = (message) => {

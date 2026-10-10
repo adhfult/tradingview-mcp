@@ -50,7 +50,7 @@ function fakeLib(overrides = {}) {
   return { lib, calls, clients, callsTo: (name) => calls.filter((c) => c.name === name) };
 }
 
-function harness(t, { lib, env = {}, deadlineGraceMs } = {}) {
+function harness(t, { lib, env = {}, deadlineGraceMs, now } = {}) {
   const written = [];
   const logs = [];
   const input = new PassThrough();
@@ -61,6 +61,7 @@ function harness(t, { lib, env = {}, deadlineGraceMs } = {}) {
     output: { write: (chunk) => { written.push(chunk); return true; } },
     log: (message) => logs.push(message),
     ...(deadlineGraceMs === undefined ? {} : { deadlineGraceMs }),
+    ...(now === undefined ? {} : { now }),
   });
   t.after(async () => {
     input.end();
@@ -743,4 +744,39 @@ test('a log sink that throws never breaks a request', async (t) => {
   t.after(() => server.close());
   await server.handleLine('{"id":1,"method":"candles","params":{"symbol":"BTCUSD"}}');
   assert.equal(JSON.parse(written[0]).error.code, 'UPSTREAM_ERROR');
+});
+
+test('after AUTH_ERROR calls fail fast with AUTH_FAILED for 60 s, then a new client is built', async (t) => {
+  let fail = true;
+  const fake = fakeLib({
+    getCandles: () => {
+      if (fail) throw Object.assign(new Error('Credentials error: rejected'), { code: 'AUTH_ERROR' });
+      return [];
+    },
+  });
+  let clock = 1_000_000;
+  const h = harness(t, {
+    lib: fake.lib,
+    env: { TRADINGVIEW_SESSION_ID: 'fake-session', TRADINGVIEW_SESSION_SIGN: 'fake-signature' },
+    now: () => clock,
+  });
+
+  const first = await h.request({ id: 1, method: 'candles', params: { symbol: 'BTCUSD' } });
+  assert.equal(first.error.code, 'AUTH_FAILED');
+  assert.equal(fake.clients.length, 1);
+
+  clock += 59_000;
+  const second = await h.request({ id: 2, method: 'quotes', params: { symbols: ['BTCUSD'] } });
+  assert.deepEqual(second.error, { code: 'AUTH_FAILED', message: 'Credentials error: rejected' });
+  assert.equal(fake.clients.length, 1, 'no new client while blocked');
+  assert.equal(fake.callsTo('getQuotes').length, 0);
+
+  // HTTP calls are not affected by the block.
+  assert.equal((await h.request({ id: 3, method: 'technical', params: { symbol: 'BTCUSD' } })).result, null);
+
+  fail = false;
+  clock += 2_000;
+  const third = await h.request({ id: 4, method: 'candles', params: { symbol: 'BTCUSD' } });
+  assert.deepEqual(third.result, []);
+  assert.equal(fake.clients.length, 2, 'a new client after the cooldown');
 });

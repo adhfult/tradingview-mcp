@@ -46,7 +46,7 @@ Every method also takes an optional `timeoutMs`. It defaults to 15000 and is cla
 
 `indicator.strategy` is `null` unless the study produced a strategy report (trades or performance data). `quotes` removes duplicate symbols before the call. `screener` and `hotlist` accept a `market` that is a bare scanner name (letters, digits, `_`, `-`; it becomes a URL path segment).
 
-The shared websocket client is created on first use and replaced when it closed while idle, after a connection or auth error, when a call outlives its deadline, or when a call times out before the connection was ready. The library never reconnects a closed client by itself.
+The shared websocket client is created on first use and replaced when it closed while idle, after a connection or auth error, when a call outlives its deadline, or when a call times out before the connection was ready. The library never reconnects a closed client by itself. After an `AUTH_ERROR` with cookies configured, websocket calls fail fast with the same `AUTH_FAILED` error for 60 seconds without building a new client (each new client costs an account lookup plus a websocket handshake). The lifecycle lives in `lib/client.mjs`.
 
 Error codes: `INVALID_PARAMETER`, `SYMBOL_NOT_FOUND`, `TIMEOUT`, `AUTH_FAILED`, `PERMISSION_OR_SERIES`, `RATE_LIMITED`, `UPSTREAM_UNAVAILABLE`, `NO_DATA`, `UPSTREAM_ERROR`.
 
