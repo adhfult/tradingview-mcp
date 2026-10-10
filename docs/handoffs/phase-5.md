@@ -441,3 +441,18 @@ warning: no notification channel is configured; alerts are only logged
 warning: WATCHER_LOCAL_TOKEN is not set; the local API stays disabled
 exit=0
 ```
+
+## Advisor fixes (Sonnet): PARTIAL, stopped at the handoff (Opus note)
+The session stopped while this was in progress. **Bridge tests: 338/338 pass at the stop point.** By grep, these advisor fixes appear to be in:
+- the must-fix (batched health alerts with `lastError`)
+- (a) silent seeding of trending
+- (b) direction in the cooldown key
+- (c) `stock_stream_down_minutes` / `us_holidays` / early closes
+- (d) crypto `SILENT` self-restart
+- (f) long backoff for `SYMBOL_ERROR` and similar codes
+
+**Still to do or verify:**
+- (e) serial FIFO per notifier, with a 200-job cap, in `queue.mjs`: verify.
+- (g) `watcher.service.example`: `Restart=always`, `MemoryMax=512M`, `After=systemd-time-wait-sync.service`, plus a README journald note. **Not done.**
+- Tests for each item.
+- The review report for this section.

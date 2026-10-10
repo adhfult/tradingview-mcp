@@ -19,17 +19,24 @@
 | 2: Python bridge client | **done** | 0e3430e, de65a73, (advisor fixes) | 541 pass + 16 advisor tests | .dockerignore .env leak fixed |
 | 3: tv_* tools + wiring | **done** | 002d8dd, 8a1afef, bb32bcc | 812 pass | Yahoo parity pinned; in-flight cap; backtest follow-ups carried into the 6a review |
 | 4: packaging/Docker/CI/docs | **done** | 2264f50, 154dbfc, d6b5509 | 812 pass | .env.example safe defaults; Docker build deferred to WSL |
-| 5: watcher | Fable done; Sonnet applying advisor fixes | 83e48a1, ee9ca16/84fd28d | bridge 327 pass | must-fix: batch health alerts |
-| 6a: gauntlet | in progress (Haiku) | – | – | – |
+| 5: watcher | advisor fixes PARTIAL | 83e48a1, review + advisor WIP | bridge 338 pass | see the end of phase-5.md: (e) verify, (g) service file not done, report missing |
+| 6a: gauntlet | PARTIAL (steps 0–4 and 6 done) | WIP | 812 pass | next: gauntlet_service, tools/prompts, tests; see the end of phase-6a.md |
 | 6b: paper trader | not started | – | – | – |
 | 7a: dashboard | not started | – | – | – |
 | 7b: alert images | not started | – | – | – |
 | 7c: PyneCore | not started | – | – | – |
 
-## Current step
-- Fable is advising on Phases 4 and 5.
-- Haiku is implementing Phase 6a. Its Sonnet review must also do the items carried in from Phase 3 (listed at the end of `phase-6a.md`).
-- Then: 6b, 7a, 7b, 7c (briefs ready).
+## Current step (session stopped here, 2026-10-10)
+Everything is committed and pushed. Unit tests: **812 Python pass** and **338 bridge pass** at the stop point.
+1. **Phase 5:** finish the advisor fixes listed at the end of `docs/handoffs/phase-5.md`:
+   - (e) verify the serial queue
+   - (g) the service-file hardening
+   - the missing tests and the report
+
+   Then commit.
+2. **Phase 6a:** finish steps 5, 7 and 8 of `docs/handoffs/phase-6a.md` (see "Status at the handoff" at its end). Then a Sonnet review, which must also do the "Carried in from the Phase 3 advisor" items, then Fable.
+3. **Then** 6b (`phase-6b.md`), 7a, 7b, 7c (`phase-7.md`), each with the same loop: Haiku → Sonnet → Fable → verify, commit, push.
+4. **Finally:** the checks in "Checks only Adham can run" and the Pi checklist.
 
 ## Approved dependencies
 - `@mathieuc/tradingview` 4.0.0 (ISC)

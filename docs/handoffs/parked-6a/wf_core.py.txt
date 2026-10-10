@@ -1,0 +1,264 @@
+# ─── Public API: walk_forward_backtest ────────────────────────────────────────
+
+def _walk_forward_on_candles(
+    candles: list[dict],
+    strategy: str,
+    *,
+    initial_capital: float = 10_000.0,
+    commission_pct: float = 0.1,
+    slippage_pct: float = 0.05,
+    n_splits: int = 3,
+    train_ratio: float = 0.7,
+    interval: str = "1d",
+    risk_free_rate: Optional[float] = None,
+    periods_per_year: Optional[int] = None,
+    params: Optional[dict] = None,
+    fill: str = "signal_close",
+) -> dict:
+    """Folds, averages and verdict for candles that are already fetched (no network).
+
+    Returns ``{"error": ...}`` on failure, otherwise the walk-forward fields that
+    walk_forward_backtest reports. Callers validate n_splits, train_ratio and params.
+    """
+    resolved    = resolve_params(strategy, params)
+    fold_size   = len(candles) // n_splits
+    warmup_bars = _STRATEGY_WARMUP_BARS.get(strategy, 20)
+
+    folds: list[dict]   = []
+    all_test_trades: list[dict] = []
+    insufficient_folds = 0
+
+    for fold_i in range(n_splits):
+        start  = fold_i * fold_size
+        end    = (start + fold_size) if fold_i < n_splits - 1 else len(candles)
+        window = candles[start:end]
+        split  = int(len(window) * train_ratio)
+
+        train_c = window[:split]
+        test_c  = window[split:]
+
+        if len(train_c) < 20 or len(test_c) < 5:
+            continue
+
+        # A test slice too short for the strategy's slowest indicator can
+        # never trade — recording fold_rob=0.0 would falsely count it as
+        # out-of-sample failure. Mark it and exclude it from the average.
+        insufficient = len(test_c) < warmup_bars + 5
+
+        train_t = _apply_costs(_trades_for(train_c, strategy, resolved, fill), commission_pct, slippage_pct)
+        test_t  = _apply_costs(_trades_for(test_c, strategy, resolved, fill),  commission_pct, slippage_pct)
+        train_m = _calc_metrics(train_t, initial_capital, interval, candles=train_c,
+                                risk_free_rate=risk_free_rate, periods_per_year=periods_per_year)
+        test_m  = _calc_metrics(test_t,  initial_capital, interval, candles=test_c,
+                                risk_free_rate=risk_free_rate, periods_per_year=periods_per_year)
+
+        all_test_trades.extend(test_t)
+
+        tr, te = train_m["total_return_pct"], test_m["total_return_pct"]
+        if insufficient:
+            fold_rob = None
+            insufficient_folds += 1
+        elif tr == 0:
+            fold_rob = 1.0 if te == 0 else 0.0
+        elif tr < 0 and te < 0:
+            # Both windows lost money: robustness = did the test lose LESS?
+            # tr/te > 1 when the test loss is smaller than the train loss.
+            # (The old te/tr rewarded losing MORE out-of-sample: train -1%,
+            # test -2% scored a capped 2.0 — "maximally robust".)
+            fold_rob = round(max(min(tr / te, 2.0), 0.0), 2)
+        elif tr < 0:
+            fold_rob = 0.0
+        else:
+            fold_rob = round(max(min(te / tr, 2.0), -1.0), 2)
+
+        folds.append({
+            "fold":                  fold_i + 1,
+            "train_from":            train_c[0]["date"],
+            "train_to":              train_c[-1]["date"],
+            "train_candles":         len(train_c),
+            "train_return_pct":      train_m["total_return_pct"],
+            "train_trades":          train_m["total_trades"],
+            "train_sharpe":          train_m["sharpe_ratio"],
+            "test_from":             test_c[0]["date"],
+            "test_to":               test_c[-1]["date"],
+            "test_candles":          len(test_c),
+            "test_return_pct":       test_m["total_return_pct"],
+            "test_trades":           test_m["total_trades"],
+            "test_sharpe":           test_m["sharpe_ratio"],
+            "fold_robustness_score": fold_rob,
+            "insufficient_data":     insufficient,
+        })
+
+    if not folds:
+        return {"error": "Could not generate any valid folds. Try a longer period or fewer splits."}
+
+    scored_folds = [f for f in folds if not f["insufficient_data"]]
+    if not scored_folds:
+        return {"error": (f"Every test window is shorter than the ~{warmup_bars}-bar "
+                          f"warmup '{strategy}' needs to trade at all. Use a longer "
+                          f"period or fewer splits."), "folds": folds}
+
+    avg_train  = round(statistics.mean(f["train_return_pct"] for f in scored_folds), 2)
+    avg_test   = round(statistics.mean(f["test_return_pct"]  for f in scored_folds), 2)
+    avg_robust = round(statistics.mean(f["fold_robustness_score"] for f in scored_folds), 2)
+    oos_m      = _calc_metrics(all_test_trades, initial_capital, interval,
+                               risk_free_rate=risk_free_rate, periods_per_year=periods_per_year)
+
+    if avg_robust >= 0.8:
+        verdict = "ROBUST — strategy performs consistently in-sample and out-of-sample"
+    elif avg_robust >= 0.5:
+        verdict = "MODERATE — some degradation out-of-sample, use with caution"
+    elif avg_robust >= 0.2:
+        verdict = "WEAK — significant out-of-sample degradation, likely overfitted"
+    else:
+        verdict = "OVERFITTED — strategy fails out-of-sample, do not trade live"
+
+    return {
+        "folds":               folds,
+        "scored_folds":        len(scored_folds),
+        "insufficient_folds":  insufficient_folds,
+        "avg_train":           avg_train,
+        "avg_test":            avg_test,
+        "avg_robust":          avg_robust,
+        "oos_m":               oos_m,
+        "verdict":             verdict,
+        "warmup_bars":         warmup_bars,
+    }
+
+
+def walk_forward_backtest(
+    symbol: str,
+    strategy: str,
+    period: str = "2y",
+    initial_capital: float = 10_000.0,
+    commission_pct: float = 0.1,
+    slippage_pct: float = 0.05,
+    n_splits: int = 3,
+    train_ratio: float = 0.7,
+    interval: str = "1d",
+    risk_free_rate: Optional[float] = None,
+    periods_per_year: Optional[int] = None,
+    data_source: str = "yahoo",
+    tv_symbol: Optional[str] = None,
+    params: Optional[dict] = None,
+    fill: str = "signal_close",
+) -> dict:
+    """
+    Walk-forward backtesting — detect overfitting via train/test splits.
+
+    Splits full history into n_splits folds. Each fold:
+      - Train (70%): in-sample strategy simulation
+      - Test  (30%): out-of-sample forward validation
+
+    Robustness score (test_return / train_return; train/test when both are
+    negative, so losing LESS out-of-sample scores higher):
+      >= 0.8  → ROBUST    (no overfitting)
+      >= 0.5  → MODERATE  (some degradation)
+      >= 0.2  → WEAK      (likely overfitted)
+      < 0.2   → OVERFITTED (do not trade live)
+
+    Folds whose test slice is shorter than the strategy's indicator warmup
+    are flagged ``insufficient_data`` and excluded from the average — a
+    window too small to trade is not evidence of out-of-sample failure.
+    """
+    strategy = strategy.lower().strip()
+    period   = period.lower().strip()
+    interval = interval.lower().strip()
+    data_source, tv_symbol = _normalize_source(data_source, tv_symbol)
+
+    if strategy not in _STRATEGY_MAP:
+        return {"error": f"Unknown strategy '{strategy}'. Choose: {', '.join(_STRATEGY_MAP)}"}
+    src_err = _check_data_source(data_source)
+    if src_err:
+        return {"error": src_err}
+    pi_err = _check_period_interval(period, interval, data_source, tv_symbol)
+    if pi_err:
+        return {"error": pi_err}
+    if not (2 <= n_splits <= 10):
+        return {"error": "n_splits must be between 2 and 10"}
+    if not (0.5 <= train_ratio <= 0.9):
+        return {"error": "train_ratio must be between 0.5 and 0.9"}
+    if strategy in _SMA200_STRATEGIES:
+        return {"error": (f"Strategy '{strategy}' requires SMA200 warmup "
+                          f"(~{_SMA200_MIN_BARS} bars) which exceeds typical "
+                          f"walk-forward fold sizes. Use run_backtest with "
+                          f"period='2y' instead, or pick a shorter-warmup strategy.")}
+    if fill not in _FILLS:
+        return {"error": f"Invalid fill '{fill}'. Choose: {', '.join(_FILLS)}"}
+    try:
+        resolved = resolve_params(strategy, params)
+    except ValueError as e:
+        return {"error": str(e)}
+
+    num_err = _validate_numeric_inputs(initial_capital, commission_pct, slippage_pct)
+    if num_err:
+        return {"error": num_err}
+
+    try:
+        candles, source_meta = _load_candles(symbol, period, interval, data_source, tv_symbol)
+    except Exception as e:
+        return {"error": f"Failed to fetch data for '{symbol}': {e}"}
+
+    min_bars = max(60, n_splits * 20)
+    if len(candles) < min_bars:
+        return {"error": f"Not enough data ({len(candles)} bars) for {n_splits} splits. Try longer period."}
+
+    ppy = periods_per_year
+    if data_source == "tradingview" and periods_per_year is None:
+        ppy = tv_periods_per_year(tv_symbol, interval)
+
+    wf = _walk_forward_on_candles(
+        candles, strategy, initial_capital=initial_capital, commission_pct=commission_pct,
+        slippage_pct=slippage_pct, n_splits=n_splits, train_ratio=train_ratio, interval=interval,
+        risk_free_rate=risk_free_rate, periods_per_year=ppy, params=params, fill=fill,
+    )
+    if "error" in wf:
+        return wf
+    oos_m = wf["oos_m"]
+
+    out = {
+        "symbol":                  symbol.upper(),
+        "strategy":                strategy,
+        "strategy_label":          _STRATEGY_LABELS[strategy],
+        "period":                  period,
+        "interval":                interval,
+        "timeframe":               _TIMEFRAME_LABELS[interval],
+        "total_candles":           len(candles),
+        "n_splits":                n_splits,
+        "train_ratio":             train_ratio,
+        "date_from":               candles[0]["date"],
+        "date_to":                 candles[-1]["date"],
+        "avg_train_return_pct":    wf["avg_train"],
+        "avg_test_return_pct":     wf["avg_test"],
+        "robustness_score":        wf["avg_robust"],
+        "scored_folds":            wf["scored_folds"],
+        "insufficient_data_folds": wf["insufficient_folds"],
+        "verdict":                 wf["verdict"],
+        "caveat": ("No parameters are optimised on the train window (fixed "
+                   "defaults run on both slices), so this score measures "
+                   "regime consistency across windows, not parameter "
+                   "overfitting in the classical sense."),
+        "oos_total_trades":        oos_m["total_trades"],
+        "oos_win_rate_pct":        oos_m["win_rate_pct"],
+        "oos_sharpe_ratio":        oos_m["sharpe_ratio"],
+        "oos_max_drawdown_pct":    oos_m["max_drawdown_pct"],
+        "oos_total_return_pct":    oos_m["total_return_pct"],
+        "buy_and_hold_return_pct": _buy_and_hold_return(candles, commission_pct, slippage_pct),
+        "folds":                   wf["folds"],
+        "initial_capital":         round(initial_capital, 2),
+        "commission_pct":          commission_pct,
+        "slippage_pct":            slippage_pct,
+        "data_source":             source_meta.get("data_source", "Yahoo Finance"),
+        "disclaimer":              "Past performance does not guarantee future results. For educational use only.",
+        "timestamp":               datetime.now(timezone.utc).isoformat(),
+    }
+    if params is not None:
+        out["params"] = resolved
+    if fill != "signal_close":
+        out["fill"] = fill
+    if data_source == "tradingview":
+        out["tv_symbol"] = tv_symbol
+        if source_meta["truncated"]:
+            out["truncated"] = True
+            out["note"] = _truncation_note(period, source_meta)
+    return out

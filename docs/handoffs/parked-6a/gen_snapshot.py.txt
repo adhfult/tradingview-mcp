@@ -1,0 +1,10 @@
+import json, sys
+sys.path.insert(0, "/home/user/tradingview-mcp/tests/unit/services")
+import test_backtest_snapshot as t
+snap = t.build_snapshot()
+with open("/home/user/tradingview-mcp/tests/unit/fixtures/backtest_snapshot.json", "w") as f:
+    json.dump(snap, f, indent=2, sort_keys=True)
+    f.write("\n")
+for s, r in snap["run_backtest"].items():
+    print(s, r.get("total_trades"), r.get("total_return_pct"))
+print("compare winner", snap["compare_strategies"]["winner"], "wf verdict", snap["walk_forward_backtest_rsi"].get("verdict"))

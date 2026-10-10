@@ -131,7 +131,7 @@ test('the restart backoff is 5s, 10s, 30s, then 60s capped (no jitter)', async (
   const expected = [5000, 10000, 30000, 60000, 60000];
   for (let i = 0; i < expected.length; i += 1) {
     const before = lib.watchers.length;
-    lib.watchers.at(-1).fail('SERIES_ERROR');
+    lib.watchers.at(-1).fail('OTHER_ERROR');
     await settle();
     clock.advance(expected[i] - 1);
     await settle();
@@ -162,17 +162,17 @@ test('the backoff goes back to the start after 10 minutes of healthy data', asyn
   streams.start();
   await settle();
   // fail twice to climb the schedule
-  lib.watchers[0].fail('SERIES_ERROR');
+  lib.watchers[0].fail('OTHER_ERROR');
   clock.advance(5000);
   await settle();
-  lib.watchers[1].fail('SERIES_ERROR');
+  lib.watchers[1].fail('OTHER_ERROR');
   clock.advance(10000);
   await settle();
   // now healthy for longer than the reset window
   lib.watchers[2].feed(snapshot([10]));
   clock.advance(BACKOFF_RESET_MS + 1000);
   lib.watchers[2].feed(snapshot([10, 11]));
-  lib.watchers[2].fail('SERIES_ERROR');
+  lib.watchers[2].fail('OTHER_ERROR');
   await settle();
   const before = lib.watchers.length;
   clock.advance(4999);
@@ -203,7 +203,7 @@ test('an error that is not a connection error keeps the shared client', async ()
   const { lib, streams, clock } = setup();
   streams.start();
   await settle();
-  lib.watchers[0].fail('SERIES_ERROR');
+  lib.watchers[0].fail('OTHER_ERROR');
   await settle();
   clock.advance(5000);
   await settle();
@@ -243,11 +243,11 @@ test('a watcher that closes on its own is restarted, and counted as a disconnect
 
 test('a failed start (watchCandles rejects) is retried with backoff', async () => {
   const { lib, streams, clock, log } = setup();
-  lib.failNextWatch(Object.assign(new Error('no data'), { code: 'NO_DATA' }));
+  lib.failNextWatch(Object.assign(new Error('flaky'), { code: 'WS_FLAKY' }));
   streams.start();
   await settle();
   assert.equal(lib.watchers.length, 0);
-  assert.ok(log.lines.some((line) => line.includes('disconnected at') && line.includes('NO_DATA')));
+  assert.ok(log.lines.some((line) => line.includes('disconnected at') && line.includes('WS_FLAKY')));
   clock.advance(5000);
   await settle();
   assert.equal(lib.watchers.length, 1);
@@ -296,7 +296,7 @@ test('stop() cancels pending restarts and stops every watcher', async () => {
   const { lib, streams, clock } = setup();
   streams.start();
   await settle();
-  lib.watchers[0].fail('SERIES_ERROR');
+  lib.watchers[0].fail('OTHER_ERROR');
   await settle();
   await streams.stop();
   clock.advance(120_000);

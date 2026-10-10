@@ -16,6 +16,7 @@ from __future__ import annotations
 import copy
 import json
 import math
+import os
 from datetime import date, timedelta
 from pathlib import Path
 from unittest import mock
@@ -82,7 +83,9 @@ def build_snapshot() -> dict:
     def fake_fetch(symbol, period, interval="1d"):
         return copy.deepcopy(candles)
 
-    with mock.patch.object(bt, "_fetch_ohlcv", side_effect=fake_fetch):
+    env = {k: v for k, v in os.environ.items() if k != "TRADINGVIEW_MCP_MIN_DAILY_VALUE"}
+    with mock.patch.dict(os.environ, env, clear=True), \
+            mock.patch.object(bt, "_fetch_ohlcv", side_effect=fake_fetch):
         out = {"run_backtest": {}}
         for strategy in bt._STRATEGY_MAP:
             out["run_backtest"][strategy] = _clean(bt.run_backtest("SNAP", strategy))
@@ -91,15 +94,48 @@ def build_snapshot() -> dict:
     return out
 
 
+# Phase 6a additive keys: checked by type and meaning, not byte-for-byte.
+RUN_NEW_KEYS = {"trades_per_year", "gross_return_pct", "net_return_pct", "cost_drag_pct",
+                "cost_warnings", "tradability"}
+COMPARE_NEW_KEYS = {"multiple_testing_warning"}
+OPTIONAL_KEYS = {"cost_profile", "params", "fill"}  # present only when the caller passes them
+
+
+def _assert_pre_existing_identical(actual: dict, expected: dict, label: str) -> None:
+    """Every key in the fixture must be present and byte-identical in the result."""
+    missing = set(expected) - set(actual)
+    assert not missing, f"{label}: pre-existing keys missing: {sorted(missing)}"
+    for key in expected:
+        assert actual[key] == expected[key], f"{label}.{key} changed"
+
+
+def _assert_new_run_keys(out: dict, label: str) -> None:
+    assert RUN_NEW_KEYS <= set(out), f"{label}: missing {sorted(RUN_NEW_KEYS - set(out))}"
+    assert isinstance(out["trades_per_year"], (int, float)) and out["trades_per_year"] >= 0
+    assert isinstance(out["gross_return_pct"], (int, float))
+    assert out["net_return_pct"] == out["total_return_pct"]
+    assert out["cost_drag_pct"] == round(out["gross_return_pct"] - out["net_return_pct"], 2)
+    assert isinstance(out["cost_warnings"], list) and all(isinstance(w, str) for w in out["cost_warnings"])
+    tr = out["tradability"]
+    assert set(tr) == {"avg_daily_value", "zero_volume_bar_pct", "bars", "thin_market"}
+    assert isinstance(tr["thin_market"], bool) and tr["bars"] == out["candles_analyzed"]
+    assert not (OPTIONAL_KEYS & set(out)), f"{label}: optional keys leaked into defaults"
+
+
 def test_backtest_outputs_match_snapshot():
     expected = json.loads(FIXTURE.read_text())
     actual = build_snapshot()
     assert set(actual) == set(expected)
     assert set(actual["run_backtest"]) == set(bt._STRATEGY_MAP) == set(expected["run_backtest"])
     for strategy in bt._STRATEGY_MAP:
-        assert actual["run_backtest"][strategy] == expected["run_backtest"][strategy], strategy
-    assert actual["compare_strategies"] == expected["compare_strategies"]
-    assert actual["walk_forward_backtest_rsi"] == expected["walk_forward_backtest_rsi"]
+        _assert_pre_existing_identical(actual["run_backtest"][strategy],
+                                       expected["run_backtest"][strategy], strategy)
+        _assert_new_run_keys(actual["run_backtest"][strategy], strategy)
+    _assert_pre_existing_identical(actual["compare_strategies"], expected["compare_strategies"], "compare")
+    assert COMPARE_NEW_KEYS <= set(actual["compare_strategies"])
+    assert actual["compare_strategies"]["multiple_testing_warning"].startswith("Picking the best of 9")
+    _assert_pre_existing_identical(actual["walk_forward_backtest_rsi"],
+                                   expected["walk_forward_backtest_rsi"], "walk_forward")
 
 
 def test_snapshot_series_is_deterministic():

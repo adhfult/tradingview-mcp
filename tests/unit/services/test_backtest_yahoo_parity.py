@@ -64,6 +64,31 @@ def _digest(result: dict) -> str:
     return hashlib.sha256(json.dumps(clean, sort_keys=True).encode()).hexdigest()[:16]
 
 
+# Keys each default result had before Phase 6a (no optional inputs passed).
+RUN_BACKTEST_PRE_KEYS = {
+    "avg_gain_pct", "avg_loss_pct", "best_trade", "buy_and_hold_return_pct", "calmar_ratio",
+    "candles_analyzed", "commission_pct", "data_source", "date_from", "date_to", "disclaimer",
+    "expectancy_pct", "final_capital", "initial_capital", "interval", "losing_trades",
+    "max_drawdown_pct", "period", "profit_factor", "recent_trades", "sharpe_periods_per_year",
+    "sharpe_ratio", "sharpe_risk_free_pct", "slippage_pct", "strategy", "strategy_label",
+    "symbol", "timeframe", "total_return_pct", "total_trades", "vs_buy_and_hold_pct",
+    "win_rate_pct", "winning_trades", "worst_trade", "timestamp",
+}
+COMPARE_PRE_KEYS = {
+    "symbol", "period", "interval", "timeframe", "candles_analyzed", "date_from", "date_to",
+    "initial_capital", "commission_pct", "slippage_pct", "buy_and_hold_return_pct", "winner",
+    "ranking", "warnings", "disclaimer", "timestamp",
+}
+WALK_FORWARD_PRE_KEYS = {
+    "symbol", "strategy", "strategy_label", "period", "interval", "timeframe", "total_candles",
+    "n_splits", "train_ratio", "date_from", "date_to", "avg_train_return_pct",
+    "avg_test_return_pct", "robustness_score", "scored_folds", "insufficient_data_folds",
+    "verdict", "caveat", "oos_total_trades", "oos_win_rate_pct", "oos_sharpe_ratio",
+    "oos_max_drawdown_pct", "oos_total_return_pct", "buy_and_hold_return_pct", "folds",
+    "initial_capital", "commission_pct", "slippage_pct", "data_source", "disclaimer", "timestamp",
+}
+
+
 def _pre_existing_keys_present(result: dict, pre_existing: set[str]) -> None:
     """A removed or renamed pre-Phase-6a key must fail, even if the digest would not see it."""
     missing = pre_existing - set(result)
@@ -102,6 +127,7 @@ def test_run_backtest_defaults_match_pre_phase3_numbers(daily, strategy):
     ret, trades, sharpe, digest = RUN_BACKTEST_1D[strategy]
     assert (out["total_return_pct"], out["total_trades"], out["sharpe_ratio"]) == (ret, trades, sharpe)
     assert _digest(out) == digest
+    _pre_existing_keys_present(out, RUN_BACKTEST_PRE_KEYS)
     assert out["data_source"] == "Yahoo Finance"
     assert out["sharpe_periods_per_year"] == 252
     assert "tv_symbol" not in out and "truncated" not in out
@@ -115,6 +141,7 @@ def test_run_backtest_hourly_default_annualization_is_unchanged():
             out["sharpe_periods_per_year"]) == (ret, trades, sharpe, ppy)
     assert out["timeframe"] == "Hourly (1h)"
     assert _digest(out) == digest
+    _pre_existing_keys_present(out, RUN_BACKTEST_PRE_KEYS)
 
 
 def test_compare_strategies_defaults_match_pre_phase3_numbers(daily):
@@ -123,6 +150,7 @@ def test_compare_strategies_defaults_match_pre_phase3_numbers(daily):
     winner, bnh, digest = COMPARE_1D
     assert (out["winner"], out["buy_and_hold_return_pct"]) == (winner, bnh)
     assert _digest(out) == digest
+    _pre_existing_keys_present(out, COMPARE_PRE_KEYS)
     assert "data_source" not in out and "tv_symbol" not in out
 
 
@@ -132,6 +160,7 @@ def test_walk_forward_defaults_match_pre_phase3_numbers(daily):
     verdict, avg_test, oos_trades, digest = WALK_FORWARD_1D_MACD
     assert (out["verdict"], out["avg_test_return_pct"], out["oos_total_trades"]) == (verdict, avg_test, oos_trades)
     assert _digest(out) == digest
+    _pre_existing_keys_present(out, WALK_FORWARD_PRE_KEYS)
     assert out["data_source"] == "Yahoo Finance"
 
 
@@ -143,6 +172,7 @@ def test_tool_layer_defaults_reach_the_same_yahoo_numbers(daily):
         direct = bt.run_backtest("AAPL", "rsi", "2y", 10000.0, 0.1, 0.05, "1d", False, False)
         via_tool = server.backtest_strategy("AAPL", "rsi", "2y")
     assert _digest(via_tool) == _digest(direct)
+    _pre_existing_keys_present(via_tool, RUN_BACKTEST_PRE_KEYS)
 
 
 def test_yahoo_ignores_tv_symbol_and_never_touches_the_bridge(daily, monkeypatch):

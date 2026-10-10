@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createScanner, isUsRegularHours } from '../../lib/scanner.mjs';
+import { buildUsCalendar, createScanner, isUsRegularHours } from '../../lib/scanner.mjs';
 import { createStateStore, emptyState } from '../../lib/state.mjs';
 import { createFakeClock } from './support.mjs';
 
@@ -22,9 +22,15 @@ const TRENDING = {
   remember_hours: 6,
 };
 
-function setup({ now = MONDAY_1000_NY, rows = {}, trending = {}, failing = new Set() } = {}) {
+function setup({ now = MONDAY_1000_NY, rows = {}, trending = {}, failing = new Set(), seeded = true } = {}) {
   const clock = createFakeClock(now);
   const store = createStateStore({ dir: '/unused', clock, persist: false });
+  if (seeded) {
+    // A market x kind list that was scanned before; an unseeded one is only remembered (see the seeding tests).
+    for (const market of { ...TRENDING, ...trending }.markets) {
+      for (const kind of { ...TRENDING, ...trending }.kinds) store.state.trending[`${market}|${kind}`] = {};
+    }
+  }
   const sent = [];
   const alerts = { submit: (item) => { sent.push(item); return 'sent'; } };
   const logs = [];
@@ -90,18 +96,84 @@ test('the scan asks for the top_n range of each market and kind', async () => {
   ]);
 });
 
-test('the first scan alerts on every symbol, and a repeat scan alerts on none', async () => {
+test('new entries of one list go out as ONE message, and a repeat scan alerts on none', async () => {
   const { scanner, sent, clock } = setup({ trending: { markets: ['crypto'] }, rows: {
     'crypto|gainers': [row('BINANCE:AAAUSDT'), row('BINANCE:BBBUSDT')],
   } });
   await scanner.runOnce();
-  assert.deepEqual(sent.map((s) => s.summary), [
-    'BINANCE:AAAUSDT trending crypto gainers #1',
-    'BINANCE:BBBUSDT trending crypto gainers #2',
-  ]);
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].message.title, '🟢 2 new in trending crypto gainers');
+  assert.ok(sent[0].message.lines.some((l) => l.startsWith('• #1 BINANCE:AAAUSDT')));
+  assert.ok(sent[0].message.lines.some((l) => l.startsWith('• #2 BINANCE:BBBUSDT')));
+  assert.match(sent[0].summary, /^2 new in trending crypto gainers: BINANCE:AAAUSDT, BINANCE:BBBUSDT$/);
   clock.advance(10 * 60_000);
   await scanner.runOnce();
-  assert.equal(sent.length, 2, 'symbols that stayed in the list do not re-alert');
+  assert.equal(sent.length, 1, 'symbols that stayed in the list do not re-alert');
+});
+
+test('a list that was never scanned is seeded silently, with a log line; later scans alert on new entries only', async () => {
+  const rows = { 'crypto|gainers': [row('BINANCE:AAAUSDT'), row('BINANCE:BBBUSDT'), row('BINANCE:CCCUSDT')] };
+  const { scanner, sent, logs, clock, store } = setup({ seeded: false, trending: { markets: ['crypto'] }, rows });
+  await scanner.runOnce();
+  assert.equal(sent.length, 0, 'the first scan sends nothing');
+  assert.ok(logs.includes('info trending crypto/gainers: seeded 3 symbol(s), no alert for the first scan'));
+  assert.deepEqual(Object.keys(store.state.trending['crypto|gainers']).sort(), ['BINANCE:AAAUSDT', 'BINANCE:BBBUSDT', 'BINANCE:CCCUSDT']);
+  rows['crypto|gainers'] = [row('BINANCE:DDDUSDT'), row('BINANCE:AAAUSDT')];
+  clock.advance(10 * 60_000);
+  await scanner.runOnce();
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].summary, 'BINANCE:DDDUSDT trending crypto gainers #1');
+});
+
+test('seeding is per market x kind: a new kind added to the config is seeded, the others keep alerting', async () => {
+  const rows = {
+    'crypto|gainers': [row('BINANCE:AAAUSDT')],
+    'crypto|losers': [row('BINANCE:ZZZUSDT', -3)],
+  };
+  const { scanner, sent, store } = setup({ seeded: false, trending: { markets: ['crypto'], kinds: ['gainers', 'losers'] }, rows });
+  store.state.trending['crypto|gainers'] = {};
+  await scanner.runOnce();
+  assert.deepEqual(sent.map((s) => s.summary), ['BINANCE:AAAUSDT trending crypto gainers #1']);
+});
+
+test('an empty first result does not count as seeded', async () => {
+  const rows = { 'crypto|gainers': [] };
+  const { scanner, sent, store } = setup({ seeded: false, trending: { markets: ['crypto'] }, rows });
+  await scanner.runOnce();
+  assert.equal(store.state.trending['crypto|gainers'], undefined);
+  rows['crypto|gainers'] = [row('BINANCE:AAAUSDT')];
+  await scanner.runOnce();
+  assert.equal(sent.length, 0, 'now the list is seeded');
+});
+
+test('US calendar: a holiday is closed all day, and an early-close day ends at 13:00', () => {
+  const thanksgiving = Date.UTC(2026, 10, 26, 15, 0, 0);       // Thu 10:00 NY (EST, UTC-5), holiday
+  assert.equal(isUsRegularHours(thanksgiving), false);
+  const dayAfter1230 = Date.UTC(2026, 10, 27, 17, 30, 0);       // Fri 12:30 NY, early close day
+  const dayAfter1300 = Date.UTC(2026, 10, 27, 18, 0, 0);        // Fri 13:00 NY
+  assert.equal(isUsRegularHours(dayAfter1230), true);
+  assert.equal(isUsRegularHours(dayAfter1300), false);
+  const normal = Date.UTC(2026, 10, 30, 19, 0, 0);              // Mon 14:00 NY, ordinary day
+  assert.equal(isUsRegularHours(normal), true);
+  const custom = buildUsCalendar({ holidays: ['2026-11-30'], earlyCloses: [] });
+  assert.equal(isUsRegularHours(normal, custom), false, 'a configured holiday overrides the defaults');
+});
+
+test('the scanner uses the configured US calendar for the america gate', async () => {
+  const calendar = buildUsCalendar({ holidays: ['2026-10-12'], earlyCloses: [] });
+  const clock = createFakeClock(MONDAY_1000_NY);
+  const store = createStateStore({ dir: '/unused', clock, persist: false });
+  const calls = [];
+  const scanner = createScanner({
+    trending: { ...TRENDING, markets: ['america'] },
+    timezone: 'America/New_York',
+    getHotlist: async (q) => { calls.push(q); return { rows: [] }; },
+    store, clock, alerts: { submit: () => 'sent' },
+    logger: { info() {}, warn() {}, error() {} },
+    usCalendar: calendar,
+  });
+  await scanner.runOnce();
+  assert.equal(calls.length, 0, 'Monday 2026-10-12 is a configured holiday');
 });
 
 test('a symbol that drops out and returns within remember_hours is not new', async () => {
@@ -190,6 +262,7 @@ test('the trending alert message is built for the new entry, with its rank and l
 test('printOnce lists every market and kind without touching the seen list or alerts', async () => {
   const { scanner, sent, store } = setup({
     now: SATURDAY_10AM,
+    seeded: false,
     trending: { markets: ['crypto', 'america'] },
     rows: { 'crypto|gainers': [row('BINANCE:AAAUSDT', 2)] },
   });

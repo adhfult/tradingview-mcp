@@ -18,7 +18,9 @@ function setup({ now = NOON_UTC, streams = [], config = {} } = {}) {
     countSince: () => 3,
   };
   const list = streams.map((s) => ({ ...s }));
+  const restarts = [];
   const fakeStreams = {
+    restartSilent: (key) => { restarts.push(key); return true; },
     list: () => list.map((s) => ({ ...s })),
     healthyCount: () => list.filter((s) => s.healthy).length,
     total: list.length,
@@ -33,7 +35,7 @@ function setup({ now = NOON_UTC, streams = [], config = {} } = {}) {
     startedAtMs: now - 3 * 3600_000,
     credentialsInUse: true,
   });
-  return { clock, store, sent, health, list };
+  return { clock, store, sent, health, list, restarts };
 }
 
 const btc = (overrides = {}) => ({
@@ -100,6 +102,9 @@ test('a stock stream silent during US regular hours does raise a "down" alert', 
   const { clock, sent, health } = setup({ now: MON_1000_NY, streams: [nvda] });
   clock.advance(11 * MINUTE);
   health.tick();
+  assert.equal(sent.length, 0, 'stocks use stock_stream_down_minutes (30), not the crypto 10');
+  clock.advance(20 * MINUTE);
+  health.tick();
   assert.equal(sent.length, 1);
   assert.equal(sent[0].message.title, '🔴 NASDAQ:NVDA · 15m · stream down');
 });
@@ -109,7 +114,7 @@ test('a stock stream is not "down" for the closed period that just ended', () =>
     key: 'NASDAQ:NVDA|15', symbol: 'NASDAQ:NVDA', timeframe: '15', market: 'stock',
     lastDataAt: Date.UTC(2026, 9, 12, 13, 0, 0), healthy: true, // 09:00 NY, last bar before the open
   };
-  const { clock, sent, health } = setup({ now: NOON_UTC, streams: [nvda] });
+  const { clock, sent, health } = setup({ now: NOON_UTC, streams: [nvda], config: { stock_stream_down_minutes: 10 } });
   // Health runs every 30 s in production, so tick every minute through the closed period
   // (08:00 to 09:30 NY) and for 8 minutes into the session (inside the 10-minute threshold).
   for (let minute = 0; minute <= 98; minute += 1) {
@@ -188,4 +193,101 @@ test('a silent stream is not counted as healthy in the summary, and counts again
   list[0].lastDataAt = clock.now();
   health.tick();
   assert.deepEqual(health.summary(), { healthy: 1, total: 1 });
+});
+
+
+// --- advisor fixes: batching, error codes, silent restart ---
+
+const many = (n, overrides = {}) => Array.from({ length: n }, (_, i) => btc({
+  key: `BINANCE:C${i}USDT|15`, symbol: `BINANCE:C${i}USDT`, status: 'healthy', ...overrides,
+}));
+
+test('an outage that silences 35 streams (more than a message lists) sends ONE "down" message with each last error code, then ONE "recovered"', () => {
+  const { clock, sent, health, list } = setup({ streams: many(35, { lastError: 'AUTH_ERROR' }) });
+  clock.advance(11 * MINUTE);
+  health.tick();
+  assert.equal(sent.length, 1, 'one critical message, not 35');
+  assert.equal(sent[0].critical, true);
+  assert.equal(sent[0].message.title, '🔴 35 streams down');
+  assert.ok(sent[0].message.lines.includes('• BINANCE:C0USDT · 15m (AUTH_ERROR)'));
+  assert.ok(sent[0].message.lines.some((l) => l.includes('…and 5 more')), 'long lists are cut');
+  assert.ok(sent[0].message.lines.some((l) => l.includes('expired or invalid TradingView login')), 'cookie problem is named');
+  health.tick();
+  assert.equal(sent.length, 1, 'no repeat while they stay down');
+
+  clock.advance(1000);
+  for (const s of list) s.lastDataAt = clock.now();
+  health.tick();
+  assert.equal(sent.length, 2);
+  assert.equal(sent[1].message.title, '🟢 35 streams recovered');
+});
+
+test('connection errors are diagnosed as an unreachable TradingView, not a cookie problem', () => {
+  const { clock, sent, health } = setup({ streams: many(3, { lastError: 'CONNECTION_ERROR' }) });
+  clock.advance(11 * MINUTE);
+  health.tick();
+  const text = sent[0].message.lines.join('\n');
+  assert.match(text, /TradingView is unreachable/);
+  assert.ok(!text.includes('expired or invalid'));
+});
+
+test('mixed error codes give no diagnosis line, and a single stream shows its last error', () => {
+  const mixed = [
+    ...many(1, { lastError: 'AUTH_ERROR' }),
+    btc({ key: 'BINANCE:ETHUSDT|15', symbol: 'BINANCE:ETHUSDT', status: 'healthy', lastError: 'CONNECTION_ERROR' }),
+  ];
+  const a = setup({ streams: mixed });
+  a.clock.advance(11 * MINUTE);
+  a.health.tick();
+  assert.ok(!a.sent[0].message.lines.join('\n').match(/Looks like/));
+
+  const b = setup({ streams: [btc({ lastError: 'SYMBOL_ERROR', status: 'healthy' })] });
+  b.clock.advance(11 * MINUTE);
+  b.health.tick();
+  assert.equal(b.sent[0].message.title, '🔴 BINANCE:BTCUSDT · 15m · stream down');
+  assert.ok(b.sent[0].message.lines.includes('Last error: SYMBOL_ERROR'));
+});
+
+test('a silent crypto stream is restarted once while other streams still get data', () => {
+  const quiet = btc({ key: 'BINANCE:ETHUSDT|15', symbol: 'BINANCE:ETHUSDT', status: 'healthy', lastDataAt: NOON_UTC });
+  const live = btc({ status: 'healthy', lastDataAt: NOON_UTC });
+  const { clock, health, list, restarts } = setup({ streams: [quiet, live] });
+  clock.advance(11 * MINUTE);
+  list[1].lastDataAt = clock.now();                       // BTC keeps ticking, ETH is silent
+  health.tick();
+  assert.deepEqual(restarts, ['BINANCE:ETHUSDT|15']);
+  clock.advance(MINUTE);
+  list[1].lastDataAt = clock.now();
+  health.tick();
+  assert.equal(restarts.length, 1, 'only once per silent episode');
+});
+
+test('no silent restart when every stream is silent (the connection itself is suspect) or for a stock', () => {
+  const all = setup({ streams: many(3).map((s) => ({ ...s })) });
+  all.clock.advance(11 * MINUTE);
+  all.health.tick();
+  assert.deepEqual(all.restarts, []);
+
+  const nvda = {
+    key: 'NASDAQ:NVDA|15', symbol: 'NASDAQ:NVDA', timeframe: '15', market: 'stock',
+    lastDataAt: MON_1000_NY, status: 'healthy', healthy: true,
+  };
+  const live = btc({ status: 'healthy', lastDataAt: MON_1000_NY });
+  const stock = setup({ now: MON_1000_NY, streams: [nvda, live] });
+  stock.clock.advance(31 * MINUTE);
+  stock.list[1].lastDataAt = stock.clock.now();
+  stock.health.tick();
+  assert.deepEqual(stock.restarts, [], 'stocks are never restarted for silence');
+});
+
+test('a US holiday is not a session, so a silent stock stream does not alert', () => {
+  const thanksgiving = Date.UTC(2026, 10, 26, 15, 0, 0);   // Thu 10:00 NY, holiday
+  const nvda = {
+    key: 'NASDAQ:NVDA|15', symbol: 'NASDAQ:NVDA', timeframe: '15', market: 'stock',
+    lastDataAt: thanksgiving, status: 'healthy', healthy: true,
+  };
+  const { clock, sent, health } = setup({ now: thanksgiving, streams: [nvda] });
+  clock.advance(2 * 3600_000);
+  health.tick();
+  assert.equal(sent.length, 0);
 });

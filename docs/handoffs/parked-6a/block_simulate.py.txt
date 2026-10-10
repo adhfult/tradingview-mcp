@@ -1,0 +1,126 @@
+# ─── Strategy parameters, fill model and the simulation engine ────────────────
+
+_FILLS = ("signal_close", "next_open")
+_LENGTH_NAMES = {"period", "fast", "slow", "signal", "fast_ma", "slow_ma"}
+_POSITIVE_NAMES = {"multiplier", "std_mult"}
+_ORDERED_PAIRS = (("fast_period", "slow_period"), ("fast", "slow"), ("fast_ma", "slow_ma"))
+
+
+def _is_length_param(name: str) -> bool:
+    return name in _LENGTH_NAMES or name.endswith("_period")
+
+
+def strategy_param_defaults(strategy: str) -> dict:
+    """Named tunable parameters of a strategy with their defaults.
+
+    The first parameter (candles) and any **kwargs catch-all are not tunable.
+    """
+    params = {}
+    sig = inspect.signature(_STRATEGY_MAP[strategy])
+    for idx, (name, p) in enumerate(sig.parameters.items()):
+        if idx == 0 or p.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD):
+            continue
+        if p.default is not inspect.Parameter.empty:
+            params[name] = p.default
+    return params
+
+
+def resolve_params(strategy: str, params: Optional[dict]) -> dict:
+    """Strategy defaults overlaid with the caller's params, checked.
+
+    Raises ValueError (message suitable for a tool error) on unknown names,
+    non-numeric or non-finite values, lengths below 2, non-positive multipliers,
+    and fast/slow or oversold/overbought orderings that do not hold.
+    """
+    allowed = strategy_param_defaults(strategy)
+    resolved = dict(allowed)
+    if params is not None:
+        if not isinstance(params, dict):
+            raise ValueError("params must be an object mapping parameter names to numbers")
+        unknown = sorted(set(params) - set(allowed))
+        if unknown:
+            raise ValueError(
+                f"Unknown parameter(s) for '{strategy}': {', '.join(unknown)}. "
+                f"Allowed: {', '.join(allowed) or 'none'}")
+        for name, value in params.items():
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+                raise ValueError(f"Parameter '{name}' must be a finite number, got {value!r}")
+            if _is_length_param(name):
+                if value != int(value):
+                    raise ValueError(f"Parameter '{name}' must be a whole number, got {value}")
+                value = int(value)
+                if value < 2:
+                    raise ValueError(f"Parameter '{name}' must be at least 2, got {value}")
+            if name in _POSITIVE_NAMES and value <= 0:
+                raise ValueError(f"Parameter '{name}' must be greater than 0, got {value}")
+            resolved[name] = value
+    for fast_name, slow_name in _ORDERED_PAIRS:
+        if fast_name in resolved and slow_name in resolved and not resolved[fast_name] < resolved[slow_name]:
+            raise ValueError(f"{fast_name} ({resolved[fast_name]}) must be less than "
+                             f"{slow_name} ({resolved[slow_name]})")
+    if "oversold" in resolved and "overbought" in resolved and not resolved["oversold"] < resolved["overbought"]:
+        raise ValueError(f"oversold ({resolved['oversold']}) must be less than "
+                         f"overbought ({resolved['overbought']})")
+    return resolved
+
+
+def _apply_fill(trades: list[dict], candles: list[dict], fill: str) -> list[dict]:
+    """Move trade prices to the bar after the signal when fill="next_open".
+
+    A signal on the last bar has no next open: an entry there is dropped; an exit
+    there keeps the last bar's close and is flagged forced_exit. "signal_close"
+    returns the trades untouched.
+    """
+    if fill == "signal_close":
+        return trades
+    last = len(candles) - 1
+    out = []
+    for t in trades:
+        entry_at = t["entry_idx"] + 1
+        if entry_at > last:
+            continue
+        new = {**t, "entry_date": candles[entry_at]["date"], "entry_price": candles[entry_at]["open"]}
+        exit_at = t["exit_idx"] + 1
+        if exit_at <= last:
+            new["exit_date"] = candles[exit_at]["date"]
+            new["exit_price"] = candles[exit_at]["open"]
+        else:
+            new["exit_date"] = candles[last]["date"]
+            new["exit_price"] = candles[last]["close"]
+            new["forced_exit"] = True
+        out.append(new)
+    return out
+
+
+def _trades_for(candles: list[dict], strategy: str, resolved: dict, fill: str) -> list[dict]:
+    """Raw trades (before costs) for one candle window, with the fill applied."""
+    return _apply_fill(_STRATEGY_MAP[strategy](candles, **resolved), candles, fill)
+
+
+def _simulate(
+    candles: list[dict],
+    strategy: str,
+    *,
+    params: Optional[dict] = None,
+    commission_pct: float,
+    slippage_pct: float,
+    fill: str = "signal_close",
+    interval: str = "1d",
+    periods_per_year: Optional[int] = None,
+    risk_free_rate: Optional[float] = None,
+    initial_capital: float = 10_000.0,
+) -> dict:
+    """One simulation: runner, fill, costs, metrics. Every backtest entry point goes through here.
+
+    Returns {trades, metrics, bnh, params} where params are the resolved values.
+    """
+    if fill not in _FILLS:
+        raise ValueError(f"Invalid fill '{fill}'. Choose: {', '.join(_FILLS)}")
+    resolved = resolve_params(strategy, params)
+    trades = _apply_costs(_trades_for(candles, strategy, resolved, fill), commission_pct, slippage_pct)
+    metrics = _calc_metrics(trades, initial_capital, interval, candles=candles,
+                            risk_free_rate=risk_free_rate, periods_per_year=periods_per_year)
+    bnh = _buy_and_hold_return(candles, commission_pct, slippage_pct)
+    return {"trades": trades, "metrics": metrics, "bnh": bnh, "params": resolved}
+
+

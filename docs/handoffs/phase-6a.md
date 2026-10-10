@@ -223,3 +223,20 @@ None in the working tree. The fixture was not changed after it was generated, so
 ....................                                                     [100%]
 812 passed in 14.00s
 ```
+
+## Status at the handoff (Opus note)
+The session stopped mid-implementation. **812 unit tests pass at the stop point**, with and without Node.
+- **Done:**
+  - step 0, snapshot test plus fixture
+  - step 1, `entry_idx` / `exit_idx`
+  - step 2, `resolve_params`, `_apply_fill`, `_simulate`, `_walk_forward_on_candles`
+  - step 3, `COST_PROFILES` and cost metrics
+  - step 4, `_tradability`
+  - step 6, `multiple_testing_warning`
+  - the parity test excludes exactly the additive keys (the option A decision in STATUS)
+- **Not done:**
+  - step 5, `gauntlet_service.py`: `run_gauntlet`, gates, fingerprint, reports, `gauntlet_stats`, `verify_report`
+  - step 7, MCP tools `strategy_gauntlet` and `gauntlet_stats`, the new backtest tool params, prompts `strategy_builder` / `strategy_reviewer`
+  - step 8, most tests: `test_no_lookahead.py`, gates, fingerprint, reports
+  - then the Sonnet review, **including the items carried in from Phase 3** (listed above), then Fable
+- **Parked reference code from Haiku** (not active; may be partly applied already): `docs/handoffs/parked-6a/*.py.txt`. Compare it against the current `backtest_service.py` before re-using anything.

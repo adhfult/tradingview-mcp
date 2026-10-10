@@ -1,0 +1,110 @@
+# ─── Public API: run_backtest ─────────────────────────────────────────────────
+
+def run_backtest(
+    symbol: str,
+    strategy: str,
+    period: str = "1y",
+    initial_capital: float = 10_000.0,
+    commission_pct: float = 0.1,
+    slippage_pct: float = 0.05,
+    interval: str = "1d",
+    include_trade_log: bool = False,
+    include_equity_curve: bool = False,
+    risk_free_rate: Optional[float] = None,
+    periods_per_year: Optional[int] = None,
+    data_source: str = "yahoo",
+    tv_symbol: Optional[str] = None,
+    params: Optional[dict] = None,
+    fill: str = "signal_close",
+) -> dict:
+    strategy = strategy.lower().strip()
+    period   = period.lower().strip()
+    interval = interval.lower().strip()
+    data_source, tv_symbol = _normalize_source(data_source, tv_symbol)
+
+    if strategy not in _STRATEGY_MAP:
+        return {"error": f"Unknown strategy '{strategy}'. Choose: {', '.join(_STRATEGY_MAP)}"}
+    src_err = _check_data_source(data_source)
+    if src_err:
+        return {"error": src_err}
+    pi_err = _check_period_interval(period, interval, data_source, tv_symbol)
+    if pi_err:
+        return {"error": pi_err}
+
+    num_err = _validate_numeric_inputs(initial_capital, commission_pct, slippage_pct)
+    if num_err:
+        return {"error": num_err}
+
+    if fill not in _FILLS:
+        return {"error": f"Invalid fill '{fill}'. Choose: {', '.join(_FILLS)}"}
+    try:
+        resolve_params(strategy, params)
+    except ValueError as e:
+        return {"error": str(e)}
+
+    try:
+        candles, source_meta = _load_candles(symbol, period, interval, data_source, tv_symbol)
+    except Exception as e:
+        return {"error": f"Failed to fetch data for '{symbol}': {e}"}
+
+    min_bars = 30 if interval == "1d" else 100
+    if len(candles) < min_bars:
+        return {"error": f"Not enough data ({len(candles)} bars). Try a longer period."}
+
+    if strategy in _SMA200_STRATEGIES and len(candles) < _SMA200_MIN_BARS:
+        return {"error": (f"Strategy '{strategy}' needs ≥{_SMA200_MIN_BARS} bars "
+                          f"(SMA200 warmup); got {len(candles)}. "
+                          f"Use period='1y' or '2y'.")}
+
+    ppy = periods_per_year
+    if data_source == "tradingview" and periods_per_year is None:
+        ppy = tv_periods_per_year(tv_symbol, interval)
+
+    sim     = _simulate(candles, strategy, params=params, commission_pct=commission_pct,
+                        slippage_pct=slippage_pct, fill=fill, interval=interval,
+                        periods_per_year=ppy, risk_free_rate=risk_free_rate,
+                        initial_capital=initial_capital)
+    trades, metrics, bnh = sim["trades"], sim["metrics"], sim["bnh"]
+
+    result = {
+        "symbol":                  symbol.upper(),
+        "strategy":                strategy,
+        "strategy_label":          _STRATEGY_LABELS[strategy],
+        "period":                  period,
+        "interval":                interval,
+        "timeframe":               _TIMEFRAME_LABELS[interval],
+        "candles_analyzed":        len(candles),
+        "date_from":               candles[0]["date"],
+        "date_to":                 candles[-1]["date"],
+        "initial_capital":         round(initial_capital, 2),
+        "commission_pct":          commission_pct,
+        "slippage_pct":            slippage_pct,
+        **metrics,
+        "buy_and_hold_return_pct": bnh,
+        "vs_buy_and_hold_pct":     round(metrics["total_return_pct"] - bnh, 2),
+        "recent_trades":           [_public_trade(t) for t in trades[-5:]],
+        "data_source":             source_meta.get("data_source", "Yahoo Finance"),
+        "disclaimer":              "Past performance does not guarantee future results. For educational use only.",
+        "timestamp":               datetime.now(timezone.utc).isoformat(),
+    }
+    # Optional inputs appear in the result only when the caller used them.
+    if params is not None:
+        result["params"] = sim["params"]
+    if fill != "signal_close":
+        result["fill"] = fill
+
+    if data_source == "tradingview":
+        result["tv_symbol"] = tv_symbol
+        if source_meta["truncated"]:
+            result["truncated"] = True
+            result["note"] = _truncation_note(period, source_meta)
+
+    if include_trade_log:
+        result["trade_log"] = _build_trade_log(trades, initial_capital)
+
+    if include_equity_curve:
+        result["equity_curve"] = _build_equity_curve(trades, initial_capital)
+
+    return result
+
+
