@@ -31,7 +31,7 @@ All of it is authenticated with the owner's session cookies, so data matches wha
 3. **Credentials come from environment variables only:** `TRADINGVIEW_SESSION_ID` (`sessionid` cookie) and `TRADINGVIEW_SESSION_SIGN` (`sessionid_sign` cookie).
    - Never log them, never put them in errors or tool output, never commit them. Add a test that checks for redaction.
    - Document in the README that this is the owner's real account. Automated use can break TradingView's terms and get an account flagged, so keep traffic low.
-4. **Live data streaming is out of scope.** MCP tools answer one request at a time. Use the library's one-shot calls (`getCandles`, `getQuote(s)`, `getIndicatorData`, `searchMarkets`, `getScreener`). The `watch*` functions can come later.
+4. **No live streaming in the MCP tools.** MCP tools answer one request at a time, so the helper uses only the library's one-shot calls (`getCandles`, `getQuote(s)`, `getIndicatorData`, `searchMarkets`, `getScreener`). Streaming (`watch*`) is used only by the separate Phase 5 watcher.
 5. **Supply-chain safety is mandatory.** Copies of this repo published under other accounts have spread malware through a `package.json` (see the README warning and SECURITY.md).
    - Pin `@mathieuc/tradingview` to an **exact** version and commit `bridge/package-lock.json`.
    - Install with `npm ci --ignore-scripts`. Use no other runtime dependencies unless strictly needed.
