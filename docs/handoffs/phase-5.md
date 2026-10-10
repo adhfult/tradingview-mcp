@@ -365,3 +365,79 @@ warning: WATCHER_LOCAL_TOKEN is not set; the local API stays disabled
 exit=0
 ```
 (The two warnings go to stderr because this sandbox has no channel or token set. They do not change the result.)
+
+
+## Review report (Sonnet)
+
+Baseline was 296 passing. After the review, `cd bridge && npm test` passes 327 of 327. The indicator parity test against the Python fixture still passes unchanged. Scope: `bridge/**` and this file only. No commit, push, stash or reset. No new dependencies. All new tests use fakes (no network, no real clock except a short real-time wait for disk writes).
+
+### Defects found and fixed (file, what was wrong, fix)
+
+1. **Bars missed across a reconnect** (`bridge/lib/stream.mjs`, `handleData`). Every restart reset `lastBarTime` and evaluated nothing on the first snapshot. A bar that closed during a 5 to 60 s reconnect was never evaluated, so a normal websocket blip could silently drop an alert. Fix: on the first snapshot after a (re)start, bars after the persisted `lastEvaluatedTime` are evaluated once, but only if they closed within two bar lengths (at least 5 minutes). The forming bar is still never evaluated, a stream with no persisted time still evaluates nothing, and a long outage never replays old bars. The `evaluated` check still prevents double evaluation.
+2. **Bad cookies hammered TradingView** (`stream.mjs`, `nextDelay`). After an `AUTH_ERROR` each stream retried every 60 s forever (one client construction with an account lookup per minute, all night). Fix: auth errors back off 5, 15, 30, then 60 minutes (plus jitter), and the step resets when data arrives. The client manager's 60 s fast-fail cool-down stays as the inner guard.
+3. **Held alerts could be stranded after a restart** (`bridge/lib/alerts.mjs`, `tick`). Held alerts were released only on a quiet to not-quiet edge seen by the running process (`wasQuiet`, in memory). If the Pi was down or restarting when quiet hours ended, the saved held alerts were never released, and went out with the next night's digest. Fix: release whenever not in quiet hours and something is held.
+4. **Unbounded digest buffers** (`alerts.mjs`). `digest.held` and `digest.overflow` grew without limit during a long quiet period or an alert storm. Fix: each keeps the newest 500 summaries.
+5. **Health alerts consumed the hourly cap** (`alerts.mjs`, `deliver`). Critical alerts bypassed the cap but were still counted as sends, so a burst of "stream down" alerts (one shared-connection loss can raise 25) starved rule alerts afterwards. Fix: critical messages are not counted.
+6. **A clock that stepped back could silence alerts** (`alerts.mjs`). A Raspberry Pi has no battery clock. Cooldown and dedupe entries with a time in the future suppressed alerts until real time caught up. Fix: a time in the future never counts as "recent". `watcher.service.example` now waits for `time-sync.target`. `prune()` is also called from `alerts.tick()`, so dry-run (which never writes state) no longer grows `seen` and `cooldowns` forever.
+7. **`/health` and heartbeat overstated health** (`bridge/lib/health.mjs`). A stream that was connected but silent (flagged "down") still counted as healthy. Fix: `summary()` and the heartbeat exclude streams currently flagged down.
+8. **Shutdown could lose state** (`bridge/watcher.mjs`, `stop`). The order was streams, then a 5 s queue drain, then state flush, while the hard-exit timer was also 5 s. If a notifier hung, the process exited before the state was saved. Fix: flush state right after the streams stop and again at the end, and the hard-exit grace is now 15 s.
+9. **`--test-notify --dry-run` sent for real** (`watcher.mjs`, `runTestNotify`). The brief says dry-run never sends. Fix: with `--dry-run`, the test message is printed and nothing is sent.
+10. **A bug in housekeeping crashed the process** (`watcher.mjs`, `tick`). `alerts.tick()` and `health.tick()` ran unguarded inside `void tick()`, so one exception became an `unhandledRejection` and exit 1. Fix: each step is wrapped and logged.
+11. **Crash could repeat an alert** (`watcher.mjs`). State is debounced by 5 s, so a crash right after an alert lost the dedupe record, and the restart (now with catch-up) could send the same alert again. Fix: state is flushed immediately after any bar that produced a hit, and the fatal handlers (`unhandledRejection`, `uncaughtException`) flush state (bounded to 2 s) before `exit(1)`.
+12. **Discord could ping @everyone** (`bridge/lib/notifiers.mjs`, `discordPayload`). Text from `/notify` or a symbol name was sent without `allowed_mentions`. Fix: `allowed_mentions: {parse: []}`.
+13. **Secret scrubbing relied only on the env-based redactor** (`notifiers.mjs`, `postJson`). A transport error that echoed only the bot token or the webhook secret part (not the whole URL) was cleaned only if the caller's redactor knew the value. Fix: the notifier also removes the token and the webhook secret segment itself.
+14. **Pointless retries** (`bridge/lib/queue.mjs`). A 400/401/403/404 (revoked webhook, wrong chat id, bad payload) was retried 3 times. Fix: permanent 4xx errors (other than 408 and 429) are dropped at once with a log line. 408, 429 and 5xx are still retried.
+15. **Local API token check leaked the token length** (`bridge/lib/localapi.mjs`, `tokenMatches`). Fix: both sides are SHA-256 hashed, then compared with `timingSafeEqual` (always equal length). A declared `Content-Length` over 8 KB is refused with 400 before reading, and the server has request and header timeouts. Authentication is still checked before any body is read.
+16. **State write durability** (`bridge/lib/state.mjs`). The rename was not made durable. Fix: the directory is fsynced after the rename (best effort). On an SD card this matters for power loss.
+17. **Rules that can never fire were accepted** (`bridge/lib/config.mjs`, `rules.mjs`). Each stream keeps 300 bars, but `new_extreme.lookback`, `pct_move.bars`, `volume_spike.lookback` and others allowed up to 500, so such a rule silently never fired. Fix: `barsNeeded(rule)` is checked against 300 and reports `rules[i]: needs N closed bars but the watcher keeps only 300 per stream`.
+18. **Deployment** (`watcher.service.example`, `README.md`). `ReadWritePaths=` points at a directory that did not exist; systemd fails the unit with a namespace error. The README now creates `~/.local/state/tradingview-watcher`, and the unit has a comment about it.
+
+### Confirmed correct (no change)
+- **Rule semantics.** `pct_move` reference = close N bars ago, index `n-1-bars`. This is the intended meaning (it matches TradingView's ROC, and a literal Python `[-bars]` would span `bars-1` bars). The existing test hand-checks it. `price_cross` down is the exact mirror (previous >= level, close < level), with no double fire at equality. `rsi_cross` reports one hit per bar listing every level crossed, all in one direction: fine. Defaults are fine. Indicators match the Python fixture.
+- Closed-candle logic for repeated, older (out-of-order) and gapped snapshots; the forming bar is never evaluated.
+- Shared-client loss: the library fails all watchers on one `close` event, each stream restarts with its own jitter (0 to 30%), and the first one creates the single replacement client. `connection_drops` counts it once.
+- Stale detection respects stock sessions (US regular hours) and gives a grace period when the session reopens.
+- Library facts verified from `dist/data/operation.js`: `onError` also receives non-fatal `warn` errors (any `onError` triggers our restart, as the brief says), the client has its own 60 s inactivity watchdog, and `watchCandles` times out after 15 s waiting for first data.
+- Local API binds to `127.0.0.1` only. `/health` holds no secrets.
+
+### Tests added (31 new; 296 to 327)
+- `stream.test.mjs`: catch-up of recent bars; catch-up refuses old bars; no catch-up without persisted state and never the forming bar; replay after an in-process reconnect; out-of-order snapshot; auth backoff 5 then 15 min; auth backoff reset by data; jitter spreads many streams onto one new client. Updated: the auth cool-down test now allows the longer wait.
+- `alerts.test.mjs`: held alerts released after a restart; health alerts not counted against the cap; bounded digest buffers; quiet hours across autumn DST and spring DST in New York; future-dated cooldown does not silence; cooldown across local midnight.
+- `health.test.mjs`: silent stream not counted healthy, healthy again after recovery.
+- `notifiers.test.mjs`: `allowed_mentions`; scrubbing of the token and the webhook secret segment without help from the redactor; Telegram HTML escaping of title, body and link.
+- `queue.test.mjs`: permanent 4xx dropped without retry; 408 and 5xx retried.
+- `localapi.test.mjs`: digest-based token compare (any length); oversize `Content-Length` refused early; 401 before reading a big body; `/health` has no token or secret words.
+- `config.test.mjs`: rules needing more than 300 bars are reported.
+- `watcher.test.mjs`: `--test-notify --dry-run` never calls fetch; a housekeeping bug is logged, not fatal; a hit is saved at once; shutdown saves state before waiting for a hung delivery (verified to fail against the old order); chat id, local token, cookies, webhook and bot token never appear in any log even when Telegram and Discord fail.
+- `state.test.mjs`: write order is now temp write, fsync, rename, directory fsync.
+
+### Follow-ups and open decisions (not changed)
+- **First trending scan floods.** A first-ever scan (or one after state loss or a gap longer than `remember_hours`) alerts on every top-N symbol, up to 60 messages. The cap and digest absorb it, but the first 20 are sent. Consider seeding a never-seen market x kind silently. This is a product decision.
+- **Cooldown key ignores direction.** A `price_cross` up followed by a down within `cooldown_minutes` (default 60) is suppressed. Consider adding the direction for `price_cross`.
+- **Stock streams and thin tickers.** "Stream down" fires after `stream_down_minutes` with no tick during US hours. An illiquid stock can be quiet that long, and the check ignores US holidays and early closes. It also assumes every `stock` is a US stock. Consider a longer threshold for stocks and a holiday list.
+- **No self-restart of a silent stream.** A stream that is connected but silent is alerted and recovers if data resumes, but it is not restarted. The library's own 60 s inactivity watchdog covers dead sockets, and a forced restart would make quiet stocks flap down/recovered. Revisit after live data.
+- **Delivery is parallel.** A burst can hit Discord's webhook rate limit (429, handled by `retry_after`). A per-notifier serial queue would keep order and avoid 429s.
+- **Signal wiring in `main()` is untested.** SIGTERM/SIGINT/fatal handlers need a live process (the real library would try the network). `createWatcher().stop()` is tested. Check once on the Pi: `systemctl stop`, then expect the "stopped" log and exit code 0.
+- **Open live question (unchanged):** does TradingView drop one of two websockets sharing a cookie? Watch `connection_drops` and `disconnects` in `GET /health`.
+- **Not verified (needs Adham or the Pi):** live candles, live `--test-notify`, the systemd unit, the real `loadLibrary()` path.
+
+### Real output: `cd bridge && npm test` (last lines)
+```
+1..327
+# tests 327
+# suites 0
+# pass 327
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 2384.123655
+```
+
+### Real output: `node bridge/watcher.mjs --config bridge/watcher.config.example.json --check-config`
+```
+OK
+warning: no notification channel is configured; alerts are only logged
+warning: WATCHER_LOCAL_TOKEN is not set; the local API stays disabled
+exit=0
+```
