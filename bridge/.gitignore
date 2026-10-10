@@ -1,1 +1,5 @@
 node_modules/
+# The root .gitignore hides these names repo-wide (Python project); re-include the bridge copies.
+!package.json
+!package-lock.json
+!lib/

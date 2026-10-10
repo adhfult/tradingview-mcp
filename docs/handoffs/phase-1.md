@@ -161,3 +161,69 @@ Build a fake `lib` whose functions record their arguments and return canned data
 - any `.d.ts` mismatches with this brief
 - the real last lines of `npm test` output
 - the real output of the `health` echo command
+
+## Implementation report (Haiku)
+
+**Status:** complete. 40 of 40 bridge tests pass. Nothing committed or pushed.
+
+### Files created
+- `bridge/package.json`, `bridge/package-lock.json`, `bridge/.npmrc`
+- `bridge/.gitignore` (`node_modules/` plus re-includes, see Notes)
+- `bridge/server.mjs`
+- `bridge/lib/redact.mjs`, `bridge/lib/errors.mjs`, `bridge/lib/semaphore.mjs`, `bridge/lib/validate.mjs`
+- `bridge/test/redact.test.mjs`, `bridge/test/errors.test.mjs`, `bridge/test/semaphore.test.mjs`, `bridge/test/validate.test.mjs`, `bridge/test/server.test.mjs`
+- `bridge/README.md`
+
+(`bridge/node_modules/` is created by npm and ignored.)
+
+### npm ls
+```
+tradingview-mcp-bridge@0.1.0 /home/user/tradingview-mcp/bridge
+`-- @mathieuc/tradingview@4.0.0
+```
+`npm ls --all` adds `ws@8.22.0` under it, with two unmet optional peers (`bufferutil`, `utf-8-validate`). Both are expected and not installed.
+
+Lockfile `resolved` URLs: 2 entries, both `https://registry.npmjs.org/...` (`@mathieuc/tradingview-4.0.0.tgz`, `ws-8.22.0.tgz`).
+
+### .d.ts mismatches with the brief
+1. `searchMarkets` (`dist/http/market.d.ts`): options are `SearchMarketsOptions extends HttpOptions`, which has no `credentials`. The brief's `{type, credentials}` and test 3 (credentials passed to `searchMarkets`) conflict with the type. I followed the .d.ts: `searchMarkets` gets `{type, signal}` only. The runtime (`http/market.js`) never reads credentials either, so nothing is lost.
+2. `getHotlist` (`dist/http/watchlists.d.ts`): the options argument is `HttpOptions`, with no `credentials`. The brief's `{credentials?}` is not typed. At runtime `getHotlist` forwards its options to `getScreener`, which would read them. Per the brief's own rule ("where their type accepts it"), `hotlist` runs without credentials.
+3. `getTechnicalAnalysis` (`dist/http/market.d.ts`): options are `HttpOptions` (no `credentials`), so `technical` runs without credentials. The return type is `Record<'1'|'5'|'15'|'60'|'240'|'1D'|'1W'|'1M', {Other, All, MA}> | null`, not a single rating object. The bridge returns it as-is.
+
+Checked and matching: `TradingViewClient` is re-exported from `dist/index.d.ts` (via `client/index.js`). The `TradingViewError` code union has exactly the 18 codes listed in the brief. `getCandles`, `getQuotes`, `getIndicatorData`, `getScreener`, `getSymbolInfo`, `summarizeStrategyReport` and `getHotlist` (`kind` union) match. `IndicatorData` has no `name` field, so `name` comes from the indicator's `description`, `shortDescription` or `type`, when present.
+
+### Decisions beyond the brief
+- `createServer` attaches readline to `input` (the brief implies this) and returns `done`, which resolves when input closes and pending requests finish. The entry point waits on `done`. This is an extra field beyond `{handleLine, close}`.
+- Validation errors are `BridgeValidationError` instances (an Error subclass with `bridgeCode = 'INVALID_PARAMETER'`), not plain objects.
+- `candles` rejects `count` together with `from`, and rejects `to` or `maxCount` without `from`. `null` counts as absent for optional params.
+- HTTP calls get `signal: AbortSignal.timeout(timeoutMs)`, since `HttpOptions` has no timeout field.
+- Built-ins used beyond the brief's list: `node:url` (pathToFileURL), `node:module` (createRequire) and `node:util` (format, for console routing). The brief requires the first two.
+- Tests are five files. Helpers are inlined because `node --test` runs every `.mjs` under `test/`.
+
+### Notes
+- The root `.gitignore` (outside `bridge/`, not changed) ignores `package.json`, `package-lock.json` and `lib/` repo-wide, because of its Python template. Without a fix, git would drop `bridge/lib/*` and the lockfile. I added `bridge/.gitignore` re-includes (`!package.json`, `!package-lock.json`, `!lib/`), verified with `git status -uall`. That goes beyond the brief's single `node_modules/` line. The root rule may need a fix in a separate change.
+- HEAD already has commit `a537e63 phase 1: WIP snapshot`, which tracks `bridge/.npmrc` and `bridge/.gitignore`. My `.gitignore` edit differs from that version.
+- I wrote two scratch files to `/tmp` by mistake (a test log and a stderr check). I removed both.
+
+### npm test (last lines of the real run)
+```
+# tests 40
+# suites 0
+# pass 40
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 205.560485
+```
+
+### Health echo (`echo '{"id":1,"method":"health"}' | node bridge/server.mjs`, from repo root)
+```
+{"id":1,"result":{"ok":true,"libVersion":"4.0.0","node":"v22.22.0","hasCredentials":false}}
+```
+Exit 0, stderr empty.
+
+### Other acceptance
+- `cd bridge && npm ci --ignore-scripts && npm test`: passes.
+- `uv run pytest tests/unit -q`: 422 passed.
+- `git status`: only `bridge/**` and this file are changed or new. Nothing staged or committed.
