@@ -90,6 +90,7 @@ from tradingview_mcp.core.services.backtest_service import (
     compare_strategies as _compare_strategies,
     walk_forward_backtest,
 )
+from tradingview_mcp.core.services import freshness
 from tradingview_mcp.core.utils.validators import (
     validate_timeframe,
     validate_exchange,
@@ -1250,6 +1251,45 @@ def _offload_sync_tools() -> int:
 
 
 _OFFLOADED_TOOL_COUNT = _offload_sync_tools()
+
+
+# ---------------------------------------------------------------------------
+# Data-freshness wrapper for every tool.
+#
+# Upstream fetches (TradingView scanner/TA, Yahoo) record where and when their
+# data came from into a per-call collector (core/services/freshness.py). This
+# wrapper opens that collector around each tool call and, when any upstream
+# fetch happened, adds a ``data_freshness`` key to the result so callers can
+# see the data's source, fetch time and whether it is a stale fallback.
+# Runs after _offload_sync_tools, so every tool here is already a coroutine.
+# Fresh list results are returned unchanged; stale list rows get the key.
+# ---------------------------------------------------------------------------
+def _attach_freshness_to_tools() -> int:
+    import functools
+    import inspect
+
+    wrapped = 0
+    for _tool in mcp._tool_manager.list_tools():
+        if not inspect.iscoroutinefunction(_tool.fn):
+            continue
+        _fn = _tool.fn
+
+        @functools.wraps(_fn)
+        async def _with_freshness(*args, __fn=_fn, **kwargs):
+            records, token = freshness.start_collection()
+            try:
+                result = await __fn(*args, **kwargs)
+            finally:
+                freshness.stop_collection(token)
+            return freshness.attach(result, records)
+
+        _tool.fn = _with_freshness
+        _tool.is_async = True
+        wrapped += 1
+    return wrapped
+
+
+_FRESHNESS_TOOL_COUNT = _attach_freshness_to_tools()
 
 
 def main() -> None:

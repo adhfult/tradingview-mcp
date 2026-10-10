@@ -117,3 +117,30 @@ async def _with_freshness(*args, __fn=_fn, **kwargs):
 - files changed, with one line each on what changed
 - any mismatch between this brief and the code
 - the last 3 lines of `uv run pytest tests/unit -q`
+
+## Implementation report (Haiku)
+
+### Files changed
+- `src/tradingview_mcp/core/services/freshness.py` (new): contextvar collector, `record`, `start_collection`/`stop_collection`, `summarize`, and `attach` (the tool-boundary folding logic, factored out so it is unit-testable).
+- `src/tradingview_mcp/core/services/screener_provider.py`: added `_cache_entry_ts` helper; `record` calls on every successful return and stale fallback in `_scan_with_retry` and `resilient_get_multiple_analysis`, plus the fresh-cache hit path. No behaviour change.
+- `src/tradingview_mcp/core/services/yahoo_finance_service.py`: `_fetch_quote` and `_afetch_quote` record `"yahoo"` after a successful parse, before returning the same value.
+- `src/tradingview_mcp/core/services/backtest_service.py`: `_fetch_ohlcv` records `"yahoo"` before `return candles`.
+- `src/tradingview_mcp/server.py`: `freshness` import; `_attach_freshness_to_tools()` wrapper after `_OFFLOADED_TOOL_COUNT`, storing `_FRESHNESS_TOOL_COUNT`.
+- `tests/unit/services/test_freshness.py` (new): 25 hermetic tests covering summarize, collector across `to_thread`/`gather`, no-collector no-op, screener cache paths (fresh, cache hit, forced stale, session auth), `attach`, and end-to-end through `yahoo_price` and `top_losers`.
+
+### Brief vs code mismatches
+- None that block the work. Notes:
+  - `core/services/` has no `__init__.py` (namespace package). The new imports work; no change needed.
+  - `screener_provider.py` uses relative imports, so I used `from . import freshness` there. The other two modules use absolute imports. This follows each module's existing style.
+  - The brief's wrapper assumes every tool is async. I added a guard (`inspect.iscoroutinefunction`) that skips non-async tools instead of breaking them. In practice every tool is async, so `_FRESHNESS_TOOL_COUNT == len(tools)` holds, and a test asserts it.
+  - Minor race in `_cache_entry_ts`: if the entry is evicted between `_cache_get` and `_cache_entry_ts`, the cache-hit record falls back to `time.time()`, which reports age 0 for that rare case. The brief did not cover this.
+  - `stop_collection` falls back to `set(None)` if `reset` fails. The brief did not specify this.
+- Verified via FastMCP's own `call_tool` dispatch (not only the raw function): `yahoo_price` returns the `data_freshness` key.
+
+### Test output (last 3 lines of `uv run pytest tests/unit -q`)
+```
+........................................................................ [ 88%]
+...............................................                          [100%]
+407 passed in 6.60s
+```
+Baseline before changes was 382 passed. 382 + 25 new = 407. `git diff --stat` touches only the brief's files plus the two new files.

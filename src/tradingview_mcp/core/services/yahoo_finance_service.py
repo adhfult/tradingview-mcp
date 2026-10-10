@@ -22,12 +22,14 @@ Two parallel APIs:
 from __future__ import annotations
 
 import json
+import time
 import urllib.request
 from datetime import datetime, timezone
 from typing import Optional
 
 import httpx
 
+from tradingview_mcp.core.services import freshness
 from tradingview_mcp.core.services.proxy_manager import (
     build_opener_with_proxy,
     get_httpx_proxy,
@@ -161,7 +163,9 @@ def _fetch_quote(symbol: str) -> dict:
     opener = build_opener_with_proxy(_UA)
     with opener.open(req, timeout=_TIMEOUT) as resp:
         data = json.loads(resp.read().decode("utf-8"))
-    return data["chart"]["result"][0]
+    result = data["chart"]["result"][0]
+    freshness.record("yahoo", time.time())
+    return result
 
 
 def get_price(symbol: str) -> dict:
@@ -210,7 +214,9 @@ async def _afetch_quote(client: httpx.AsyncClient, symbol: str) -> dict:
     resp = await client.get(_quote_url(symbol))
     resp.raise_for_status()
     data = resp.json()
-    return data["chart"]["result"][0]
+    result = data["chart"]["result"][0]
+    freshness.record("yahoo", time.time())
+    return result
 
 
 async def get_price_async(symbol: str) -> dict:

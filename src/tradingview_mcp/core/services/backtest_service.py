@@ -17,10 +17,12 @@ from __future__ import annotations
 import json
 import math
 import statistics
+import time
 import urllib.request
 from datetime import datetime, timezone
 from typing import Optional
 
+from tradingview_mcp.core.services import freshness
 from tradingview_mcp.core.services.indicators_calc import (
     calc_rsi, calc_bollinger, calc_macd, calc_ema, calc_sma, calc_atr,
     calc_supertrend, calc_donchian,
@@ -110,6 +112,7 @@ def _fetch_ohlcv(symbol: str, period: str, interval: str = "1d") -> list[dict]:
             "close":  round(c, 4),
             "volume": v or 0,
         })
+    freshness.record("yahoo", time.time())
     return candles
 
 

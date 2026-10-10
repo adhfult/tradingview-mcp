@@ -1,6 +1,7 @@
 from __future__ import annotations
 from typing import List, Dict, Any, Optional, Tuple
 from ..utils.validators import get_market_type
+from . import freshness
 import json as _json
 import os as _os
 import random as _random
@@ -219,6 +220,14 @@ def _cache_get_stale(key: Tuple) -> Optional[Tuple[float, Any]]:
         return (age, payload)
 
 
+def _cache_entry_ts(key: Tuple) -> Optional[float]:
+    """Timestamp (time.time()) of the cache entry for ``key``, or None.
+    Used for freshness metadata only; never changes cache behaviour."""
+    with _SCREENER_CACHE_LOCK:
+        entry = _SCREENER_CACHE.get(key)
+        return entry[0] if entry else None
+
+
 def _cache_set(key: Tuple, payload: Any) -> None:
     """Store payload. We always store (even if fresh TTL is 0) so the
     stale-while-error fallback can serve it later within STALE_TTL."""
@@ -345,6 +354,8 @@ def _scan_with_retry(q, cookies=None, cache_key: Optional[Tuple] = None):
     stale-but-usable cached payload before raising — callers that pass a key
     get stale-while-error behavior automatically."""
     _wait_for_failure_cooldown()
+    # Phase 3 adds cookie-authenticated calls; until then this is always anonymous.
+    auth = "session" if cookies else "anonymous"
     delays = (0.0,) + _retry_delays()  # immediate try, then back off
     last_exc: Optional[BaseException] = None
     total_wait = 0.0
@@ -360,6 +371,7 @@ def _scan_with_retry(q, cookies=None, cache_key: Optional[Tuple] = None):
             # passing cache_key (nothing was ever stored under it).
             if cache_key is not None:
                 _cache_set(cache_key, result)
+            freshness.record("tradingview_scanner", _time.time(), auth=auth)
             return result
         except Exception as e:  # noqa: BLE001 - intentionally broad, narrowed below
             if not _is_transient_screener_error(e):
@@ -381,6 +393,9 @@ def _scan_with_retry(q, cookies=None, cache_key: Optional[Tuple] = None):
         stale = _cache_get_stale(cache_key)
         if stale is not None:
             age, payload = stale
+            freshness.record(
+                "tradingview_scanner", _time.time() - age, cache_hit=True, stale=True, auth=auth
+            )
             try:
                 print(
                     f"[tradingview_mcp] returning stale cache (age {age:.0f}s) after "
@@ -410,6 +425,13 @@ def resilient_get_multiple_analysis(screener, interval, symbols):
     cache_key = ('ta_multi_v1', screener, interval, sym_key)
     cached = _cache_get(cache_key)
     if cached is not None:
+        entry_ts = _cache_entry_ts(cache_key)
+        freshness.record(
+            "tradingview_scanner",
+            entry_ts if entry_ts is not None else _time.time(),
+            cache_hit=True,
+            auth="anonymous",
+        )
         return cached
 
     _wait_for_failure_cooldown()
@@ -436,6 +458,7 @@ def resilient_get_multiple_analysis(screener, interval, symbols):
             finally:
                 _ta_throttle_release()
             _cache_set(cache_key, result)
+            freshness.record("tradingview_scanner", _time.time(), auth="anonymous")
             return result
         except Exception as e:  # noqa: BLE001
             if not _is_transient_screener_error(e):
@@ -456,6 +479,9 @@ def resilient_get_multiple_analysis(screener, interval, symbols):
     stale = _cache_get_stale(cache_key)
     if stale is not None:
         age, payload = stale
+        freshness.record(
+            "tradingview_scanner", _time.time() - age, cache_hit=True, stale=True, auth="anonymous"
+        )
         try:
             print(
                 f"[tradingview_mcp] returning stale TA cache (age {age:.0f}s, symbols={symbols}) "
