@@ -60,9 +60,9 @@ export function createAlerts({ alerts, timezone, store, clock, queue, log = () =
 
   // Critical (health) messages are not counted against the hourly cap, so a burst of
   // "stream down" alerts can never starve the rule alerts that follow.
-  const deliver = (message, now, { counted = true } = {}) => {
+  const deliver = (message, now, { counted = true, critical = false } = {}) => {
     if (counted) store.state.sends.push(now);
-    queue.enqueue(message);
+    queue.enqueue(message, { critical });
     store.touch();
   };
 
@@ -106,7 +106,7 @@ export function createAlerts({ alerts, timezone, store, clock, queue, log = () =
       if (s.alerts.length > 500) s.alerts.splice(0, s.alerts.length - 500);
 
       if (status === 'sent') {
-        deliver(message, now, { counted: item.critical !== true });
+        deliver(message, now, { counted: item.critical !== true, critical: item.critical === true });
       } else if (status === 'held') {
         pushBounded(s.digest.held, { summary, at: now });
         store.touch();

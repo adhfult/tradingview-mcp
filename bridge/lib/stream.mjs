@@ -17,9 +17,10 @@
  * 0 to 30% random jitter, so N streams do not reconnect in the same instant. The
  * backoff goes back to the start after 10 minutes of healthy data. A connection
  * failure drops the shared client (via clients.reportFailure), so the next start
- * creates a new one. An AUTH_ERROR (bad or expired cookies) backs off much longer
- * (5, 15, 30, then 60 minutes), so the watcher never hammers TradingView with a
- * login that cannot work.
+ * creates a new one. An error that a retry cannot fix (AUTH_ERROR for bad or expired
+ * cookies, SYMBOL_ERROR / NO_DATA / SERIES_ERROR / INVALID_ARGUMENT for a typo'd or
+ * unavailable symbol) backs off much longer (5, 15, 30, then 60 minutes), so the
+ * watcher never hammers TradingView with a request that cannot work.
  *
  * Catch-up: a bar that closes while a stream is reconnecting would otherwise be
  * missed for good. On the first snapshot after a (re)start, bars that closed after
@@ -33,7 +34,11 @@ export const CANDLE_COUNT = 300;
 export const RESTART_BACKOFF_MS = Object.freeze([5000, 10000, 30000, 60000]);
 export const JITTER_RATIO = 0.3;
 export const BACKOFF_RESET_MS = 10 * 60_000;
-export const AUTH_BACKOFF_MS = Object.freeze([5 * 60_000, 15 * 60_000, 30 * 60_000, 60 * 60_000]);
+export const LONG_BACKOFF_MS = Object.freeze([5 * 60_000, 15 * 60_000, 30 * 60_000, 60 * 60_000]);
+/** Kept for the earlier name. */
+export const AUTH_BACKOFF_MS = LONG_BACKOFF_MS;
+/** Error codes that a quick retry cannot fix. */
+export const LONG_BACKOFF_CODES = Object.freeze(['AUTH_ERROR', 'SYMBOL_ERROR', 'NO_DATA', 'SERIES_ERROR', 'INVALID_ARGUMENT']);
 export const CATCHUP_MIN_SECONDS = 300;
 
 /**
@@ -73,7 +78,9 @@ export function createStreams({
     healthySince: null,
     restartTimer: null,
     disconnects: 0,
-    authFailures: 0,
+    longFailures: 0,
+    lastError: null,
+    silentRestarted: false,
   }));
 
   const iso = () => new Date(clock.now()).toISOString();
@@ -90,9 +97,9 @@ export function createStreams({
     if (s.healthySince !== null && clock.now() - s.healthySince >= BACKOFF_RESET_MS) s.attempt = 0;
     let base = RESTART_BACKOFF_MS[Math.min(s.attempt, RESTART_BACKOFF_MS.length - 1)];
     s.attempt += 1;
-    if (code === 'AUTH_ERROR') {
-      s.authFailures += 1;
-      base = Math.max(base, AUTH_BACKOFF_MS[Math.min(s.authFailures - 1, AUTH_BACKOFF_MS.length - 1)]);
+    if (LONG_BACKOFF_CODES.includes(code)) {
+      s.longFailures += 1;
+      base = Math.max(base, LONG_BACKOFF_MS[Math.min(s.longFailures - 1, LONG_BACKOFF_MS.length - 1)]);
     }
     return Math.round(base * (1 + JITTER_RATIO * random()));
   };
@@ -129,7 +136,8 @@ export function createStreams({
     s.lastDataAt = t;
     if (s.healthySince === null) s.healthySince = t;
     s.status = 'healthy';
-    s.authFailures = 0;
+    s.longFailures = 0;
+    s.silentRestarted = false;
     if (!Array.isArray(candles) || candles.length === 0) return;
 
     const last = candles[candles.length - 1].time;
@@ -155,6 +163,7 @@ export function createStreams({
     s.gen += 1;
     s.disconnects += 1;
     const code = err?.code ?? err?.name ?? 'error';
+    s.lastError = String(code);
     logger.warn(`${s.key} disconnected at ${iso()} (${code})`);
 
     const old = s.watcher;
@@ -259,7 +268,22 @@ export function createStreams({
         lastDataAt: s.lastDataAt,
         attempt: s.attempt,
         disconnects: s.disconnects,
+        lastError: s.lastError,
       }));
+    },
+
+    /**
+     * Restarts one stream that is connected but silent, through the normal failure path
+     * (backoff, jitter, counters) with the code SILENT. The shared connection is left alone.
+     * Returns false when the stream is unknown, not running, or was already restarted this way
+     * without receiving data since.
+     */
+    restartSilent(key) {
+      const s = list.find((entry) => entry.key === key);
+      if (!s || stopping || s.status !== 'healthy' || s.silentRestarted) return false;
+      s.silentRestarted = true;
+      fail(s, s.gen, { code: 'SILENT', message: 'no data' }, null);
+      return true;
     },
 
     /** Streams with data flowing right now (first snapshot received, not restarting). */

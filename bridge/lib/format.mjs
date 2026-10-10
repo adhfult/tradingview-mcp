@@ -202,6 +202,27 @@ function formatTrendValue(key, value) {
   return formatValue(value);
 }
 
+/**
+ * One message for several symbols that just entered the same market x kind list.
+ * `entries`: [{rank, symbol, values}].
+ */
+export function renderTrendBatch({ market, kind, entries, now, timezone }) {
+  const level = kind === 'gainers' ? 'up' : kind === 'losers' ? 'down' : 'info';
+  const shown = entries.slice(0, BATCH_LINE_LIMIT).map(({ rank, symbol, values = {} }) => {
+    const parts = ['close', 'change', 'relative_volume_10d_calc']
+      .filter((key) => values[key] !== undefined && values[key] !== null)
+      .map((key) => formatTrendValue(key, values[key]));
+    return `• #${rank} ${symbol}${parts.length > 0 ? ` · ${parts.join(' · ')}` : ''}`;
+  });
+  if (entries.length > BATCH_LINE_LIMIT) shown.push(`…and ${entries.length - BATCH_LINE_LIMIT} more`);
+  return {
+    level,
+    title: `${LEVEL_EMOJI[level]} ${entries.length} new in trending ${market} ${kind}`,
+    lines: [...shown, `Scanned: ${formatLocal(now, timezone)}`],
+    timestamp: ISO(now),
+  };
+}
+
 /** Message for a new trending entry (one symbol that just entered the top list). */
 export function renderTrendAlert({ market, kind, rank, symbol, values = {}, now, timezone }) {
   const level = kind === 'gainers' ? 'up' : kind === 'losers' ? 'down' : 'info';
@@ -220,14 +241,36 @@ export function renderTrendAlert({ market, kind, rank, symbol, values = {}, now,
   };
 }
 
+const CONNECTION_CODES = ['CONNECTION_ERROR', 'DISCONNECTED', 'PROTOCOL_ERROR', 'TIMEOUT'];
+
+/** One line that says what the last error codes most likely mean, or '' when unclear. */
+export function healthHint(errors) {
+  const codes = errors.filter((code) => typeof code === 'string' && code !== '');
+  if (codes.length === 0) return '';
+  if (codes.every((code) => code === 'AUTH_ERROR')) {
+    return 'Looks like an expired or invalid TradingView login (AUTH_ERROR): refresh TRADINGVIEW_SESSION_ID and TRADINGVIEW_SESSION_SIGN.';
+  }
+  if (codes.every((code) => CONNECTION_CODES.includes(code))) {
+    return 'Looks like TradingView is unreachable (connection errors). The watcher keeps retrying.';
+  }
+  if (codes.every((code) => ['SYMBOL_ERROR', 'NO_DATA', 'SERIES_ERROR', 'INVALID_ARGUMENT'].includes(code))) {
+    return 'Looks like the symbol is wrong or has no data for your account.';
+  }
+  return '';
+}
+
 /** Message for a stream that went quiet, or that came back. */
-export function renderHealthAlert({ event, symbol, timeframe, silentMinutes = 0, now }) {
+export function renderHealthAlert({ event, symbol, timeframe, silentMinutes = 0, error = null, now }) {
   const tf = timeframeLabel(timeframe);
   if (event === 'down') {
+    const lines = [`No data for ${Math.round(silentMinutes)} min. The watcher keeps retrying.`];
+    if (error) lines.push(`Last error: ${error}`);
+    const hint = healthHint([error]);
+    if (hint) lines.push(hint);
     return {
       level: 'down',
       title: `${LEVEL_EMOJI.down} ${symbol} · ${tf} · stream down`,
-      lines: [`No data for ${Math.round(silentMinutes)} min. The watcher keeps retrying.`],
+      lines,
       timestamp: ISO(now),
     };
   }
@@ -235,6 +278,36 @@ export function renderHealthAlert({ event, symbol, timeframe, silentMinutes = 0,
     level: 'up',
     title: `${LEVEL_EMOJI.up} ${symbol} · ${tf} · stream recovered`,
     lines: ['Data is flowing again.'],
+    timestamp: ISO(now),
+  };
+}
+
+const BATCH_LINE_LIMIT = 30;
+
+/**
+ * One message for several streams that went quiet (or came back) in the same health check.
+ * `items`: [{symbol, timeframe, error?}]. Down messages carry each stream's last error code
+ * and a one-line diagnosis.
+ */
+export function renderHealthBatch({ event, items, now }) {
+  const count = items.length;
+  const down = event === 'down';
+  const shown = items.slice(0, BATCH_LINE_LIMIT).map((item) => {
+    const error = down && item.error ? ` (${item.error})` : '';
+    return `• ${item.symbol} · ${timeframeLabel(item.timeframe)}${error}`;
+  });
+  if (count > BATCH_LINE_LIMIT) shown.push(`…and ${count - BATCH_LINE_LIMIT} more`);
+  const lines = down
+    ? [`No data from ${count} streams. The watcher keeps retrying.`, ...shown]
+    : [`Data is flowing again on ${count} streams.`, ...shown];
+  if (down) {
+    const hint = healthHint(items.map((item) => item.error));
+    if (hint) lines.push(hint);
+  }
+  return {
+    level: down ? 'down' : 'up',
+    title: `${down ? LEVEL_EMOJI.down : LEVEL_EMOJI.up} ${count} streams ${down ? 'down' : 'recovered'}`,
+    lines,
     timestamp: ISO(now),
   };
 }

@@ -2,7 +2,7 @@
  * Loads and validates the watcher config. Validation collects every problem with
  * its JSON path, instead of stopping at the first one.
  *
- * `parseConfig` returns `{config, errors}`. On success `errors` is empty and
+ * `parseConfig` returns `{config, errors, warnings}` (warnings never fail validation). On success `errors` is empty and
  * `config` is the normalised object (defaults filled in, symbols upper-cased,
  * `state_dir` expanded, and `streams` listed). On failure `config` is null.
  */
@@ -12,12 +12,15 @@ import { join } from 'node:path';
 import * as v from './validate.mjs';
 import { RULE_TYPES, barsNeeded, normalizeRule, validateRuleParams } from './rules.mjs';
 import { CANDLE_COUNT } from './stream.mjs';
+import { DEFAULT_US_EARLY_CLOSES, DEFAULT_US_HOLIDAYS } from './scanner.mjs';
 
 /** Timeframes the watcher accepts (a narrower set than the library's). */
 export const WATCH_TIMEFRAMES = Object.freeze(['1', '3', '5', '15', '30', '45', '60', '120', '180', '240', 'D', 'W', 'M']);
 export const CRYPTO_EXCHANGES = Object.freeze([
   'BINANCE', 'BYBIT', 'COINBASE', 'KUCOIN', 'OKX', 'BITGET', 'MEXC', 'GATEIO', 'HUOBI', 'BITFINEX', 'KRAKEN', 'BITSTAMP',
 ]);
+/** Exchanges whose stocks follow US regular hours. Any other `stock` gets a warning. */
+export const US_EXCHANGES = Object.freeze(['NYSE', 'NASDAQ', 'AMEX', 'CBOE', 'ARCA']);
 export const MARKETS = Object.freeze(['crypto', 'stock']);
 export const HOTLIST_KINDS = Object.freeze(['gainers', 'losers', 'mostActive', 'volumeGainers']);
 /** Hard cap on symbol x timeframe streams. The limits.max_streams setting can only go lower. */
@@ -109,7 +112,7 @@ function readHHMM(value, path, errors) {
   return minutes === null ? undefined : value;
 }
 
-function parseWatchlist(input, errors) {
+function parseWatchlist(input, errors, warnings) {
   if (!Array.isArray(input.watchlist)) {
     errors.push('watchlist: must be an array');
     return [];
@@ -156,7 +159,13 @@ function parseWatchlist(input, errors) {
       if (MARKETS.includes(raw.market)) market = raw.market;
       else errors.push(`${path}.market: must be "crypto" or "stock"`);
     }
-    if (symbol !== null) entries.push({ symbol, timeframes, market });
+    if (symbol !== null) {
+      entries.push({ symbol, timeframes, market });
+      const exchange = symbol.includes(':') ? symbol.split(':')[0] : '';
+      if (market === 'stock' && !US_EXCHANGES.includes(exchange)) {
+        warnings.push(`${path}.symbol: ${symbol} is a stock outside ${US_EXCHANGES.join('/')}; sessions assume US hours`);
+      }
+    }
   });
   return entries;
 }
@@ -352,9 +361,32 @@ function parseAlerts(input, errors) {
   };
 }
 
+const ISO_DATE = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
+
+function readDateList(object, key, path, errors, fallback) {
+  const value = object[key];
+  if (value === undefined) return [...fallback];
+  if (!Array.isArray(value) || value.length > 400) {
+    errors.push(`${path}.${key}: must be a list of YYYY-MM-DD dates`);
+    return [...fallback];
+  }
+  const out = [];
+  value.forEach((date, index) => {
+    if (typeof date !== 'string' || !ISO_DATE.test(date)) errors.push(`${path}.${key}[${index}]: must be YYYY-MM-DD`);
+    else if (!out.includes(date)) out.push(date);
+  });
+  return out;
+}
+
 function parseHealth(input, errors) {
   const path = 'health';
-  const defaults = { stream_down_minutes: 10, daily_heartbeat: '08:00' };
+  const defaults = {
+    stream_down_minutes: 10,
+    stock_stream_down_minutes: 30,
+    daily_heartbeat: '08:00',
+    us_holidays: [...DEFAULT_US_HOLIDAYS],
+    us_early_closes: [...DEFAULT_US_EARLY_CLOSES],
+  };
   if (input.health === undefined) return defaults;
   if (!isPlainObject(input.health)) {
     errors.push(`${path}: must be an object`);
@@ -369,7 +401,12 @@ function parseHealth(input, errors) {
     stream_down_minutes: readNumber(h, 'stream_down_minutes', path, errors, {
       min: 0, max: 1440, exclusiveMin: true, fallback: 10,
     }),
+    stock_stream_down_minutes: readNumber(h, 'stock_stream_down_minutes', path, errors, {
+      min: 0, max: 1440, exclusiveMin: true, fallback: 30,
+    }),
     daily_heartbeat: heartbeat,
+    us_holidays: readDateList(h, 'us_holidays', path, errors, defaults.us_holidays),
+    us_early_closes: readDateList(h, 'us_early_closes', path, errors, defaults.us_early_closes),
   };
 }
 
@@ -395,8 +432,9 @@ function parseLocalApi(input, errors) {
  */
 export function parseConfig(input, { home = homedir() } = {}) {
   const errors = [];
+  const warnings = [];
   if (!isPlainObject(input)) {
-    return { config: null, errors: ['$: the config must be a JSON object'] };
+    return { config: null, errors: ['$: the config must be a JSON object'], warnings };
   }
   checkKeys(input, [
     'timezone', 'watchlist', 'rules', 'trending', 'alerts', 'health', 'state_dir', 'local_api', 'limits',
@@ -405,7 +443,7 @@ export function parseConfig(input, { home = homedir() } = {}) {
   const timezone = input.timezone ?? 'UTC';
   if (!isValidTimezone(timezone)) errors.push('timezone: is not a valid IANA timezone name');
 
-  const watchlist = parseWatchlist(input, errors);
+  const watchlist = parseWatchlist(input, errors, warnings);
   const streams = [];
   const streamKeys = new Set();
   for (const entry of watchlist) {
@@ -448,7 +486,7 @@ export function parseConfig(input, { home = homedir() } = {}) {
     errors.push(`watchlist: ${streams.length} symbol x timeframe streams exceed limits.max_streams (${limits.max_streams}; hard cap ${HARD_MAX_STREAMS})`);
   }
 
-  if (errors.length > 0) return { config: null, errors };
+  if (errors.length > 0) return { config: null, errors, warnings };
 
   const config = {
     timezone,
@@ -462,7 +500,7 @@ export function parseConfig(input, { home = homedir() } = {}) {
     local_api: localApi,
     limits,
   };
-  return { config, errors: [] };
+  return { config, errors: [], warnings };
 }
 
 /** Reads and validates a config file. Problems come back in `errors`, never thrown. */
@@ -471,13 +509,13 @@ export async function loadConfig(path, { home = homedir() } = {}) {
   try {
     text = await readFile(path, 'utf8');
   } catch (err) {
-    return { config: null, errors: [`${path}: cannot read the config file (${err.code ?? 'read error'})`] };
+    return { config: null, errors: [`${path}: cannot read the config file (${err.code ?? 'read error'})`], warnings: [] };
   }
   let raw;
   try {
     raw = JSON.parse(text);
   } catch {
-    return { config: null, errors: [`${path}: the file is not valid JSON`] };
+    return { config: null, errors: [`${path}: the file is not valid JSON`], warnings: [] };
   }
   return parseConfig(raw, { home });
 }

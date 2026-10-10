@@ -1,11 +1,18 @@
 /**
- * Delivery queue. `enqueue` returns at once, so streams are never blocked. Each
- * message goes to every notifier as its own job, and each job runs on its own.
+ * Delivery queue. `enqueue` returns at once, so streams are never blocked.
+ *
+ * Each notifier has its own FIFO lane: its messages go out one at a time, in the order
+ * they were queued, so the order is kept and a rate-limit wait (HTTP 429 retry_after)
+ * also holds back the messages behind it. Notifiers run in parallel with each other, so a
+ * slow Discord never delays Telegram.
  *
  * A failed attempt is retried: 3 attempts in total, with backoff 2s then 5s. On
  * HTTP 429 the wait is the server's retry_after (seconds, capped at 60s) instead.
  * A permanent client error (4xx other than 408 and 429) is dropped at once.
  * After the last failure the job is logged (redacted by the logger) and dropped.
+ *
+ * Each lane holds at most `maxQueued` waiting messages (200). When it is full the oldest
+ * non-critical message is dropped (the oldest message if all are critical), with a log line.
  *
  * Notifiers are `{name, send(message)}`. A failing send throws an error with an
  * optional numeric `status` and `retryAfterSec`. All waits use the injectable clock.
@@ -13,6 +20,7 @@
 export const DEFAULT_ATTEMPTS = 3;
 export const DEFAULT_BACKOFF_MS = Object.freeze([2000, 5000]);
 export const RETRY_AFTER_CAP_MS = 60_000;
+export const MAX_QUEUED = 200;
 
 export function createQueue({
   notifiers,
@@ -21,9 +29,10 @@ export function createQueue({
   attempts = DEFAULT_ATTEMPTS,
   backoffMs = DEFAULT_BACKOFF_MS,
   retryAfterCapMs = RETRY_AFTER_CAP_MS,
+  maxQueued = MAX_QUEUED,
 }) {
-  const jobs = new Set();
   let closed = false;
+  const lanes = notifiers.map((notifier) => ({ notifier, items: [], current: false, done: Promise.resolve() }));
 
   const sleep = (ms) => new Promise((resolve) => {
     clock.setTimeout(resolve, ms);
@@ -65,33 +74,52 @@ export function createQueue({
     return false;
   };
 
+  const pump = async (lane) => {
+    lane.current = true;
+    try {
+      while (lane.items.length > 0) {
+        const job = lane.items.shift();
+        try {
+          await runJob(lane.notifier, job.message);
+        } catch (err) {
+          log(`${lane.notifier.name}: delivery crashed (${describe(err)})`);
+        }
+      }
+    } finally {
+      lane.current = false;
+    }
+  };
+
+  const pendingCount = () => lanes.reduce((sum, lane) => sum + lane.items.length + (lane.current ? 1 : 0), 0);
+
   return {
-    /** Queues a message for every notifier. Never throws, never waits. */
-    enqueue(message) {
+    /** Queues a message for every notifier. Never throws, never waits. `critical` protects it from overflow drops. */
+    enqueue(message, { critical = false } = {}) {
       if (closed) {
         log('alert dropped: the watcher is shutting down');
         return;
       }
-      for (const notifier of notifiers) {
-        const job = runJob(notifier, message).catch((err) => {
-          log(`${notifier.name}: delivery crashed (${describe(err)})`);
-          return false;
-        });
-        jobs.add(job);
-        job.finally(() => jobs.delete(job));
+      for (const lane of lanes) {
+        if (lane.items.length >= maxQueued) {
+          const index = lane.items.findIndex((job) => !job.critical);
+          lane.items.splice(index === -1 ? 0 : index, 1);
+          log(`${lane.notifier.name}: queue is full (${maxQueued}), the oldest ${index === -1 ? '' : 'non-critical '}alert was dropped`);
+        }
+        lane.items.push({ message, critical });
+        if (!lane.current) lane.done = pump(lane);
       }
     },
 
     /** Resolves once every queued job has finished (sent or dropped). */
     async idle() {
-      while (jobs.size > 0) {
-        await Promise.allSettled([...jobs]);
+      while (pendingCount() > 0) {
+        await Promise.allSettled(lanes.map((lane) => lane.done));
       }
     },
 
-    /** Number of jobs still running (sending, or waiting to retry). */
+    /** Number of jobs still waiting or running (sending, or waiting to retry). */
     pending() {
-      return jobs.size;
+      return pendingCount();
     },
 
     /** Stops accepting new messages. Jobs already queued still run. */

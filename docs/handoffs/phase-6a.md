@@ -173,3 +173,53 @@ These touch `backtest_service.py`, which 6a is editing, so they wait for the 6a 
 2. **TradingView-path labels:** the fetch-error text and `result["symbol"]` must use `tv_symbol` (not the Yahoo `symbol`) when `data_source="tradingview"`.
 3. **Split the conversion** out of `_fetch_tv_candles` into a pure `tv_bars_to_candles(bars, interval)`, and add a `time` (unix seconds) key to TradingView candle dicts. 6a's sensitivity runs and 6b's forming-bar drop need the pure converter.
 4. **Gauntlet scores closed bars only:** drop a still-forming last TradingView bar before scoring.
+
+## Implementation report (Haiku)
+
+**Status: STOPPED at a brief-versus-test conflict.** Steps 0 to 2 are done and green. Steps 3 onward (cost profiles, tradability, new default keys, gauntlet, server routing, prompts, most tests) are not started. The brief says to stop and report when it disagrees with the code, and this is that case. Decision needed below.
+
+### Files
+- `src/tradingview_mcp/core/services/backtest_service.py` (modified)
+  - Step 1: `entry_idx` / `exit_idx` added to all 9 `_run_*` runners, and `exit_idx = len(candles) - 1` on forced exits in `_finalize_trades`. `_public_trade()` strips both keys from `recent_trades`, the only place they would have leaked.
+  - Step 2: `import inspect`; `strategy_param_defaults`, `resolve_params` (validation: unknown names, non-numeric or non-finite values, lengths under 2 or non-integer, non-positive `multiplier` / `std_mult`, fast < slow, oversold < overbought); `_apply_fill` (`next_open`: entry at the next bar's open, dropped if no next bar; exit at the next bar's open, or the last close with `forced_exit`); `_trades_for`; `_simulate`.
+  - `run_backtest` now calls `_simulate` and takes `params=None` and `fill="signal_close"`. The `params` and `fill` keys appear in the result only when the caller passes them.
+  - `walk_forward_backtest` now takes `params` and `fill`, and its per-fold logic moved into `_walk_forward_on_candles(...)`, which makes no fetch.
+  - `_simulate` takes one extra keyword, `initial_capital=10_000.0`, which the brief's signature omitted. Metrics need it.
+- `tests/unit/services/test_backtest_snapshot.py` (new): deterministic builder `snapshot_candles()` (600 daily bars, seed 20240601, 100-bar blocks of up, chop, down, chop, up, chop), `build_snapshot()`, and two tests.
+- `tests/unit/fixtures/backtest_snapshot.json` (new): generated from the unmodified code before any refactor. It holds 9 `run_backtest` results, `compare_strategies`, and `walk_forward_backtest` (rsi), with `timestamp` removed.
+- `docs/handoffs/phase-6a.md`: this report.
+- Not touched: `bridge/` (another agent has `bridge/lib/stream.mjs` modified; I did not touch it), `uv.lock`, and every other doc.
+
+### Snapshot keys added
+None in the working tree. The fixture was not changed after it was generated, so the snapshot still matches the pre-refactor output exactly.
+
+### Why I stopped: brief versus pinned parity test
+- Brief sections 3, 4 and 6 add new keys to the default output of `run_backtest` (`trades_per_year`, `gross_return_pct`, `net_return_pct`, `cost_drag_pct`, `cost_warnings`, `tradability`) and of `compare_strategies` (`multiple_testing_warning`).
+- `tests/unit/services/test_backtest_yahoo_parity.py` pins a SHA-256 digest of the whole default result (only `timestamp` and `data_freshness` are excluded). With the new keys in place, 11 parity tests fail on the digest assertion. The numeric pins (return, trade count, Sharpe, annualization) still match. The task says this test must stay unchanged, so the brief and the test cannot both hold as written.
+- Options for the owner to choose:
+  - A. Recommended. Change `_digest` in the parity test to skip the keys the brief adds. This edits the test, so it needs approval. The pinned numbers stay as they are.
+  - B. Add the new keys only when a caller asks for them (for example when `cost_profile` is passed). Default output stays byte-identical, but the brief's wording for sections 3, 4 and 6 changes.
+  - C. Accept the new default keys and re-pin all 11 digests. The pinned numbers stay the same.
+
+### Other mismatches and notes
+- The baseline at the start of this run was 810 passing, not the 777 in the brief. The extra tests came from other work on this branch. With my 2 snapshot tests the count is 812.
+- The first run of the snapshot test failed on a wrong fixture path (`parents[2]` instead of `parents[1]`). It was a test bug, fixed, and it did not change any output.
+- Automated "WIP snapshot: phase 6a in progress" commits on this branch (`9e7a0ee`, `905e5d7`) captured intermediate states of `backtest_service.py`. `905e5d7` contains my step-3 intermediate, which fails the parity digests. I did not commit, push, stash, checkout or reset. The working tree is at the steps 1 and 2 state, and its diff against HEAD is the removal of that parked step-3 code. The snapshot test and fixture were captured by `9e7a0ee`; the fixture is identical to HEAD.
+- The Phase 3 advisor carry-ins (truncation flag, `tv_symbol` labels, `tv_bars_to_candles`, closed-bar scoring) are assigned to the Sonnet review pass, so they are not done here.
+- Parked step-3 code, ready to re-apply once the decision is made: `/tmp/claude-0/-home-user-tradingview-mcp/1660ad19-c0e1-5f2f-957f-206c2869ce52/scratchpad/` (`block_costs.py`, `run_bt.py`, `wf_core.py`, `backtest_service.step3_parked.py`). The snapshot generator is `scratchpad/gen_snapshot.py`.
+
+### Pytest tails (real)
+`uv run --frozen pytest tests/unit -q`:
+```
+........................................................................ [ 88%]
+........................................................................ [ 97%]
+....................                                                     [100%]
+812 passed in 14.53s
+```
+`PATH=/usr/bin:/bin /root/.local/bin/uv run --frozen pytest tests/unit -q`:
+```
+........................................................................ [ 88%]
+........................................................................ [ 97%]
+....................                                                     [100%]
+812 passed in 14.00s
+```

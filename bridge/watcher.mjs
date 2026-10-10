@@ -22,7 +22,7 @@ import { createQueue } from './lib/queue.mjs';
 import { buildNotifiers, createStdoutNotifier } from './lib/notifiers.mjs';
 import { createLogger, renderNotify, renderRuleAlert, renderTest } from './lib/format.mjs';
 import { evaluateRules } from './lib/rules.mjs';
-import { createScanner } from './lib/scanner.mjs';
+import { buildUsCalendar, createScanner } from './lib/scanner.mjs';
 import { createStateStore } from './lib/state.mjs';
 import { createStreams } from './lib/stream.mjs';
 import { makeRedactor } from './lib/redact.mjs';
@@ -118,7 +118,7 @@ export function createWatcher({
         message,
         summary: `${hit.symbol} ${hit.timeframe} ${hit.ruleId}: ${hit.message}`,
         dedupeKey: `${hit.symbol}|${hit.timeframe}|${hit.ruleId}|${hit.barTime}`,
-        cooldownKey: `${hit.symbol}|${hit.timeframe}|${hit.ruleId}`,
+        cooldownKey: `${hit.symbol}|${hit.timeframe}|${hit.ruleId}|${hit.direction}`,
       });
     }
     // Save at once when something was sent: a crash inside the 5 s debounce window would
@@ -155,6 +155,7 @@ export function createWatcher({
     clock,
     alerts,
     logger,
+    usCalendar: buildUsCalendar({ holidays: config.health.us_holidays, earlyCloses: config.health.us_early_closes }),
   });
 
   const health = createHealth({
@@ -323,7 +324,7 @@ export function parseArgs(argv) {
  * missing channels go to stderr and do not fail the check.
  */
 export async function runCheckConfig({ configPath, env, out, err, redact }) {
-  const { config, errors } = await loadConfig(configPath);
+  const { config, errors, warnings = [] } = await loadConfig(configPath);
   const envCheck = checkEnv(env);
   const problems = [...errors, ...envCheck.errors];
   if (config === null || problems.length > 0) {
@@ -331,7 +332,7 @@ export async function runCheckConfig({ configPath, env, out, err, redact }) {
     return 1;
   }
   out('OK\n');
-  for (const warning of envCheck.warnings) err(`warning: ${redact(warning)}\n`);
+  for (const warning of [...warnings, ...envCheck.warnings]) err(`warning: ${redact(warning)}\n`);
   return 0;
 }
 
@@ -409,11 +410,12 @@ export async function main(argv, { env = process.env, fetch = globalThis.fetch }
     return runCheckConfig({ configPath: args.config, env, out: write, err, redact });
   }
 
-  const { config, errors } = await loadConfig(args.config);
+  const { config, errors, warnings = [] } = await loadConfig(args.config);
   if (config === null) {
     for (const problem of errors) err(`${redact(problem)}\n`);
     return 1;
   }
+  for (const warning of warnings) err(`warning: ${redact(warning)}\n`);
   const envCheck = checkEnv(env);
   if (envCheck.errors.length > 0) {
     for (const problem of envCheck.errors) err(`${redact(problem)}\n`);

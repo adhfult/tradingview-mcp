@@ -45,12 +45,29 @@ def _candles(n: int, intraday: bool = False) -> list[dict]:
     return out
 
 
+# Phase 6a additive keys; every pre-existing key must stay byte-identical.
+# Only these keys may be missing from the digest, and only when a result carries them.
+PHASE6A_ADDITIVE_KEYS = frozenset({
+    "trades_per_year", "gross_return_pct", "net_return_pct", "cost_drag_pct",
+    "cost_warnings", "tradability", "cost_profile", "params", "fill",
+    "multiple_testing_warning",
+})
+
+
 def _digest(result: dict) -> str:
     """Hash of the whole result minus volatile / added keys."""
     clean = json.loads(json.dumps(result))
     clean.pop("timestamp", None)
     clean.pop("data_freshness", None)
+    for key in PHASE6A_ADDITIVE_KEYS:
+        clean.pop(key, None)
     return hashlib.sha256(json.dumps(clean, sort_keys=True).encode()).hexdigest()[:16]
+
+
+def _pre_existing_keys_present(result: dict, pre_existing: set[str]) -> None:
+    """A removed or renamed pre-Phase-6a key must fail, even if the digest would not see it."""
+    missing = pre_existing - set(result)
+    assert not missing, f"pre-existing keys missing from result: {sorted(missing)}"
 
 
 # ── PINS (from the pre-Phase-3 code) ──────────────────────────────────────────

@@ -17,7 +17,6 @@ from __future__ import annotations
 import inspect
 import json
 import math
-import os
 import statistics
 import time
 import urllib.request
@@ -635,83 +634,6 @@ def _simulate(
     return {"trades": trades, "metrics": metrics, "bnh": bnh, "params": resolved}
 
 
-# ─── Cost profiles, tradability and cost summary (6.1, 6.3) ──────────────────
-
-# ASSUMPTIONS: check against your real fees before trusting results.
-COST_PROFILES = {
-    "default":           {"commission_pct": 0.10, "slippage_pct": 0.05},
-    "binance_spot":      {"commission_pct": 0.10, "slippage_pct": 0.05},
-    "coinbase_advanced": {"commission_pct": 0.60, "slippage_pct": 0.10},
-    "us_stock_broker":   {"commission_pct": 0.00, "slippage_pct": 0.05},
-}
-
-MULTIPLE_TESTING_WARNING = (
-    "Picking the best of 9 strategies on one symbol overstates how good it is. "
-    "Run the winner through strategy_gauntlet."
-)
-
-_HIGH_TURNOVER_PER_YEAR = 200
-_THIN_ZERO_VOLUME_PCT = 5.0
-_DEFAULT_MIN_DAILY_VALUE = 1_000_000.0
-
-
-def _min_daily_value() -> float:
-    raw = os.environ.get("TRADINGVIEW_MCP_MIN_DAILY_VALUE", str(int(_DEFAULT_MIN_DAILY_VALUE)))
-    try:
-        return float(raw)
-    except ValueError:
-        return _DEFAULT_MIN_DAILY_VALUE
-
-
-def _tradability(candles: list[dict], interval: str = "1d") -> dict:
-    """Liquidity of the bars: average traded value per day and the share of zero-volume bars.
-
-    Value per bar is close x volume. Intraday bars are summed per calendar day
-    first, then the days are averaged.
-    """
-    bars = len(candles)
-    zero = sum(1 for c in candles if not c.get("volume"))
-    zero_pct = round(100.0 * zero / bars, 2) if bars else 0.0
-    if interval == "1d":
-        values = [float(c["close"]) * float(c.get("volume") or 0) for c in candles]
-    else:
-        per_day: dict[str, float] = {}
-        for c in candles:
-            day = str(c["date"])[:10]
-            per_day[day] = per_day.get(day, 0.0) + float(c["close"]) * float(c.get("volume") or 0)
-        values = list(per_day.values())
-    avg = sum(values) / len(values) if values else 0.0
-    return {
-        "avg_daily_value": round(avg, 2),
-        "zero_volume_bar_pct": zero_pct,
-        "bars": bars,
-        "thin_market": avg < _min_daily_value() or zero_pct > _THIN_ZERO_VOLUME_PCT,
-    }
-
-
-def _cost_summary(trades: list[dict], initial_capital: float, bars: int, ann: int,
-                  net_return_pct: float) -> dict:
-    """Gross return compounded from per-trade gross returns, and what the costs took."""
-    gross_capital = initial_capital
-    for t in trades:
-        gross_capital *= (1 + t["gross_return_pct"] / 100)
-    gross = round((gross_capital - initial_capital) / initial_capital * 100, 2)
-    drag = round(gross - net_return_pct, 2)
-    trades_per_year = round(len(trades) * ann / bars, 2) if bars else 0.0
-    warnings = []
-    if trades_per_year > _HIGH_TURNOVER_PER_YEAR:
-        warnings.append("High turnover (>200 trades/yr): costs dominate")
-    if gross > 0 and drag > gross / 2:
-        warnings.append("Costs consume more than half of gross return")
-    return {
-        "trades_per_year":   trades_per_year,
-        "gross_return_pct":  gross,
-        "net_return_pct":    net_return_pct,
-        "cost_drag_pct":     drag,
-        "cost_warnings":     warnings,
-    }
-
-
 # ─── Transaction Costs ────────────────────────────────────────────────────────
 
 def _apply_costs(trades: list[dict], commission_pct: float, slippage_pct: float) -> list[dict]:
@@ -982,7 +904,6 @@ def run_backtest(
     tv_symbol: Optional[str] = None,
     params: Optional[dict] = None,
     fill: str = "signal_close",
-    cost_profile: Optional[str] = None,
 ) -> dict:
     strategy = strategy.lower().strip()
     period   = period.lower().strip()
@@ -997,15 +918,6 @@ def run_backtest(
     pi_err = _check_period_interval(period, interval, data_source, tv_symbol)
     if pi_err:
         return {"error": pi_err}
-
-    # A named cost profile wins over commission_pct / slippage_pct when given.
-    profile_name = None
-    if cost_profile is not None:
-        profile_name = cost_profile.strip().lower()
-        if profile_name not in COST_PROFILES:
-            return {"error": f"Unknown cost_profile '{cost_profile}'. Choose: {', '.join(COST_PROFILES)}"}
-        commission_pct = COST_PROFILES[profile_name]["commission_pct"]
-        slippage_pct = COST_PROFILES[profile_name]["slippage_pct"]
 
     num_err = _validate_numeric_inputs(initial_capital, commission_pct, slippage_pct)
     if num_err:
@@ -1068,12 +980,6 @@ def run_backtest(
         result["params"] = sim["params"]
     if fill != "signal_close":
         result["fill"] = fill
-    if profile_name is not None:
-        result["cost_profile"] = profile_name
-    ann = ppy or _ANNUALIZATION.get(interval, 252)
-    result.update(_cost_summary(trades, initial_capital, len(candles), ann,
-                                metrics["total_return_pct"]))
-    result["tradability"] = _tradability(candles, interval)
 
     if data_source == "tradingview":
         result["tv_symbol"] = tv_symbol
@@ -1181,7 +1087,6 @@ def compare_strategies(
         "winner":                  results[0]["strategy"] if results else None,
         "ranking":                 results,
         "warnings":                warnings,
-        "multiple_testing_warning": MULTIPLE_TESTING_WARNING,
         "disclaimer":              "Past performance does not guarantee future results.",
         "timestamp":               datetime.now(timezone.utc).isoformat(),
     }
