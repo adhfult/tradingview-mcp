@@ -266,3 +266,57 @@ Reviewed commit 0e3430e against the brief and the current bridge (`bridge/server
   - Phase 3/4: a client-side in-flight gate sized to `TRADINGVIEW_BRIDGE_MAX_INFLIGHT`, so queued calls don't time out client-side. Note the shared `to_thread` executor.
   - Phase 4+: restart a hung-but-alive bridge after N consecutive timeouts with no replies.
   - Minor: `close()` racing a write.
+
+## Advisor fixes (Sonnet)
+
+### Changes
+- `src/tradingview_mcp/core/services/tv_bridge_client.py`
+  - **stderr levels:** a bridge stderr line containing `fatal`, `uncaught`, `unhandled`, `exiting` or `error` (case-insensitive) is logged at WARNING. All other lines stay at DEBUG. Every line is still redacted first.
+  - **unexpected exit:** when the bridge process exits and `close()` did not cause it, the client logs `bridge process exited unexpectedly (exit code N)` at WARNING. `close()` sets `_Process.closing`, so an intentional stop logs nothing.
+  - **cool-down API:** new public `cooling_down() -> bool` and `cooldown_remaining_s() -> float` (0.0 when not cooling down). `_check_cooldown` uses them.
+  - **`health` exempt:** `call("health", ...)` skips `_check_cooldown`, so `tv_status` can probe during a cool-down. A good `health` reply resets the failure count, as any good reply does, which ends the cool-down. A failed `health` still counts as a failure.
+  - **`is_available()`:** returns False while `cooling_down()`, without probing and without writing the cache. It recovers as soon as the cool-down ends instead of staying False for up to 60 s. Outside a cool-down it behaves as before: it needs a configured bridge, a `health` reply with `ok: true`, and a 60 s cache. The docstring says this. Phase 3's `tv_status` should check `cooling_down()` / `cooldown_remaining_s()` first to report "cooling down" instead of "unavailable".
+- `src/tradingview_mcp/core/utils/env_file.py`
+  - **`TRADINGVIEW_ENV_FILE`:** `load_env_file()` with no path argument reads this file, if set and non-empty, before the default repo-root `.env`. An explicit `path` argument still wins. If the variable points at a missing file, nothing is loaded and no error is raised. It does not fall back to the default file. A DEBUG line on logger `tradingview_mcp.env_file` names the variable only, never a path or value. `~` is expanded.
+  - **duplicate keys:** the file is parsed into an ordered dict first, so the last line for a name wins. A variable already in `os.environ` before loading is never overridden. Returned names are unique, in first-seen order. A value containing NUL is skipped at parse time, so an earlier valid line for that name stays.
+
+### Tests added
+- `tests/unit/services/test_tv_bridge_client.py`
+  - `test_health_is_exempt_from_the_cooldown`
+  - `test_cooling_down_and_remaining_seconds_are_exposed`
+  - `test_a_good_health_reply_ends_the_cooldown`
+  - `test_is_available_is_false_while_cooling_down_and_never_cached_then`
+  - `test_fatal_looking_stderr_lines_are_logged_at_warning` (5 parametrized markers)
+  - `test_ordinary_stderr_lines_stay_at_debug`
+  - `test_warning_level_stderr_is_still_redacted`
+  - `test_unexpected_bridge_exit_is_logged_at_warning_with_the_exit_code`
+  - `test_close_does_not_log_an_unexpected_exit`
+- `tests/unit/test_env_file.py`
+  - `test_env_file_variable_points_at_another_file`
+  - `test_env_file_variable_wins_over_the_default_path`
+  - `test_explicit_path_argument_beats_the_env_file_variable`
+  - `test_env_file_variable_pointing_at_a_missing_file_is_a_quiet_noop`
+  - `test_empty_env_file_variable_is_ignored`
+  - `test_duplicate_keys_last_one_wins`
+  - `test_duplicate_keys_never_override_a_preexisting_variable`
+
+All use `fake_bridge.py`, `caplog`, `tmp_path` and `monkeypatch`. No network, no Node.
+
+### Real pytest output
+Two touched test files:
+```
+$ uv run pytest tests/unit/services/test_tv_bridge_client.py tests/unit/test_env_file.py -q
+........................................................................ [ 51%]
+...................................................................      [100%]
+139 passed in 4.11s
+```
+Whole unit suite, run while other agents were editing `freshness.py` and `screener_provider.py`:
+```
+$ uv run pytest tests/unit -q
+FAILED tests/unit/services/test_freshness.py::test_summarize_single_fresh_record
+FAILED tests/unit/services/test_freshness.py::test_ta_fresh_fetch_records_one_non_stale_entry
+FAILED tests/unit/services/test_freshness.py::test_scan_with_retry_stale_fallback_records_stale
+FAILED tests/unit/services/test_screener_provider_resilience.py::test_stale_while_error_returns_cached_payload
+4 failed, 557 passed in 11.09s
+```
+The 4 failures are in files this change did not touch (freshness and screener provider, being edited concurrently). They are not caused by these fixes, but I did not re-run them after the other agents finish. Re-run the full suite once the concurrent work lands.

@@ -43,6 +43,10 @@ _CLOSE_WAIT_S = 2.0
 _PROBE_TIMEOUT_S = 10.0
 _MIN_NODE_MAJOR = 20
 
+# Bridge stderr lines containing one of these (case-insensitive) are logged at WARNING;
+# all other stderr lines stay at DEBUG.
+_STDERR_WARN_MARKERS = ("fatal", "uncaught", "unhandled", "exiting", "error")
+
 # Bridge timing (bridge/lib/validate.mjs and bridge/server.mjs): a data call defaults to
 # 15 s, a requested timeoutMs is clamped to 1..60 s, and the bridge's own hard deadline
 # is that value plus 5 s. The client must outwait it, so it adds a margin on top.
@@ -239,6 +243,8 @@ class _Process:
         self.pending: dict[int, Future] = {}
         self.write_lock = threading.Lock()
         self.dead = False
+        # Set by close(): the exit that follows is intentional, not a crash.
+        self.closing = False
         # One process death is one failure, however many requests it orphaned.
         self.failure_counted = False
 
@@ -302,8 +308,27 @@ class BridgeClient:
         """True when both session variables are non-empty. Never returns the values."""
         return all(bool(os.environ.get(name)) for name in _CREDENTIAL_VARS)
 
+    def cooling_down(self) -> bool:
+        """True while calls (other than ``health``) are refused after repeated failures."""
+        return self.cooldown_remaining_s() > 0.0
+
+    def cooldown_remaining_s(self) -> float:
+        """Seconds until the cool-down ends; 0.0 when the bridge is not cooling down."""
+        with self._lock:
+            if self._fail_count < _FAIL_THRESHOLD:
+                return 0.0
+            return max(0.0, _COOLDOWN_S - (time.monotonic() - self._last_fail))
+
     def is_available(self) -> bool:
-        """True when the bridge is configured and answers ``health``. Cached for a while."""
+        """True when the bridge is configured and answers ``health``. Cached for a while.
+
+        Returns False, without probing or caching, while the client is cooling down
+        (see :meth:`cooling_down`), so it recovers as soon as the cool-down ends.
+        ``tv_status`` should check :meth:`cooling_down` first to tell "cooling down"
+        apart from "unavailable".
+        """
+        if self.cooling_down():
+            return False
         now = time.monotonic()
         with self._lock:
             cached = self._avail
@@ -340,8 +365,13 @@ class BridgeClient:
         params: Optional[dict] = None,
         timeout_s: float = _DEFAULT_TIMEOUT_S,
     ) -> Any:
-        """Send one request and return its ``result``. Raises :class:`BridgeError`."""
-        self._check_cooldown()
+        """Send one request and return its ``result``. Raises :class:`BridgeError`.
+
+        ``health`` is exempt from the cool-down so a status check can still probe
+        the bridge. A successful reply resets the failure count.
+        """
+        if method != "health":
+            self._check_cooldown()
         reason = self.check_configured()
         if reason is not None:
             raise BridgeError("NOT_CONFIGURED", reason)
@@ -370,12 +400,7 @@ class BridgeClient:
         return await asyncio.to_thread(self.call, method, params, timeout_s)
 
     def _check_cooldown(self) -> None:
-        with self._lock:
-            cooling = (
-                self._fail_count >= _FAIL_THRESHOLD
-                and time.monotonic() - self._last_fail < _COOLDOWN_S
-            )
-        if cooling:
+        if self.cooling_down():
             raise BridgeError("UPSTREAM_UNAVAILABLE", "bridge cooling down after repeated failures")
 
     def _note_failure(self, proc: Optional[_Process] = None) -> None:
@@ -482,8 +507,15 @@ class BridgeClient:
         try:
             for raw in popen.stderr:  # type: ignore[union-attr]
                 line = raw.rstrip("\r\n")
-                if line:
-                    _log.debug("%s", _redact(line))
+                if not line:
+                    continue
+                lowered = line.lower()
+                level = (
+                    logging.WARNING
+                    if any(marker in lowered for marker in _STDERR_WARN_MARKERS)
+                    else logging.DEBUG
+                )
+                _log.log(level, "%s", _redact(line))
         except (OSError, ValueError):
             pass
         finally:
@@ -558,6 +590,8 @@ class BridgeClient:
             proc.popen.wait(timeout=_CLOSE_WAIT_S)
         except subprocess.TimeoutExpired:
             pass
+        if not proc.closing:
+            _log.warning("bridge process exited unexpectedly (exit code %s)", proc.popen.poll())
 
     # ------------------------------------------------------------------
     # shutdown
@@ -568,6 +602,8 @@ class BridgeClient:
         with self._lock:
             proc, self._proc = self._proc, None
             self._avail = None
+            if proc is not None:
+                proc.closing = True
         if proc is None:
             return
 

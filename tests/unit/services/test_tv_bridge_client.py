@@ -207,6 +207,61 @@ def test_repeated_crashes_cool_down_without_starting_a_process(make_client, monk
     assert len(starts) == 1
 
 
+def _trip_cooldown(client) -> None:
+    for _ in range(tvb._FAIL_THRESHOLD):
+        with pytest.raises(BridgeError):
+            client.call("crash")
+
+
+def test_health_is_exempt_from_the_cooldown(make_client):
+    client = make_client()
+    _trip_cooldown(client)
+    assert client.cooling_down() is True
+
+    with pytest.raises(BridgeError) as exc:
+        client.call("echo", {})
+    assert "cooling down" in exc.value.message
+
+    reply = client.call("health")
+    assert reply["ok"] is True
+
+
+def test_cooling_down_and_remaining_seconds_are_exposed(make_client, monkeypatch):
+    client = make_client()
+    assert client.cooling_down() is False
+    assert client.cooldown_remaining_s() == 0.0
+
+    _trip_cooldown(client)
+    assert client.cooling_down() is True
+    assert 0.0 < client.cooldown_remaining_s() <= tvb._COOLDOWN_S
+
+    monkeypatch.setattr(tvb, "_COOLDOWN_S", 0.0)
+    assert client.cooling_down() is False
+    assert client.cooldown_remaining_s() == 0.0
+
+
+def test_a_good_health_reply_ends_the_cooldown(make_client):
+    client = make_client()
+    _trip_cooldown(client)
+    assert client.cooling_down() is True
+
+    client.call("health")
+
+    assert client.cooling_down() is False
+    assert client.call("echo", {"ok": 1}) == {"ok": 1}
+
+
+def test_is_available_is_false_while_cooling_down_and_never_cached_then(make_client, monkeypatch):
+    client = make_client()
+    assert client.is_available() is True  # now cached as True
+    _trip_cooldown(client)
+
+    assert client.is_available() is False
+
+    monkeypatch.setattr(tvb, "_COOLDOWN_S", 0.0)
+    assert client.is_available() is True
+
+
 # ---------------------------------------------------------------------------
 # configuration
 # ---------------------------------------------------------------------------
@@ -335,6 +390,85 @@ def test_stderr_lines_and_error_messages_are_redacted(make_client, monkeypatch, 
     assert FAKE_SESSION not in exc.value.message
     assert "abc123xyz" not in exc.value.message
     assert FAKE_SESSION not in repr(exc.value.to_envelope())
+
+
+def _bridge_records(caplog):
+    return [r for r in caplog.records if r.name == "tradingview_mcp.bridge"]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "FATAL: something broke",
+        "Uncaught exception in handler",
+        "UnhandledPromiseRejection: nope",
+        "bridge exiting now",
+        "Error: boom",
+    ],
+)
+def test_fatal_looking_stderr_lines_are_logged_at_warning(make_client, caplog, text):
+    caplog.set_level(logging.DEBUG, logger="tradingview_mcp.bridge")
+    client = make_client()
+
+    client.call("stderr", {"text": text})
+    assert _wait_until(lambda: any(text in r.getMessage() for r in _bridge_records(caplog)))
+
+    record = next(r for r in _bridge_records(caplog) if text in r.getMessage())
+    assert record.levelno == logging.WARNING
+
+
+def test_ordinary_stderr_lines_stay_at_debug(make_client, caplog):
+    caplog.set_level(logging.DEBUG, logger="tradingview_mcp.bridge")
+    client = make_client()
+
+    client.call("stderr", {"text": "connected to chart session"})
+    assert _wait_until(lambda: any("connected to chart" in r.getMessage() for r in _bridge_records(caplog)))
+
+    record = next(r for r in _bridge_records(caplog) if "connected to chart" in r.getMessage())
+    assert record.levelno == logging.DEBUG
+
+
+def test_warning_level_stderr_is_still_redacted(make_client, monkeypatch, caplog):
+    monkeypatch.setenv("TRADINGVIEW_SESSION_ID", FAKE_SESSION)
+    caplog.set_level(logging.DEBUG, logger="tradingview_mcp.bridge")
+    client = make_client()
+
+    client.call("stderr", {"text": f"Fatal: bad cookie {FAKE_SESSION}"})
+    assert _wait_until(lambda: any("Fatal" in r.getMessage() for r in _bridge_records(caplog)))
+
+    record = next(r for r in _bridge_records(caplog) if "Fatal" in r.getMessage())
+    assert record.levelno == logging.WARNING
+    assert FAKE_SESSION not in caplog.text
+    assert "[REDACTED]" in record.getMessage()
+
+
+def test_unexpected_bridge_exit_is_logged_at_warning_with_the_exit_code(client, caplog):
+    caplog.set_level(logging.DEBUG, logger="tradingview_mcp.bridge")
+
+    with pytest.raises(BridgeError):
+        client.call("crash")
+
+    def exit_record():
+        return next(
+            (r for r in _bridge_records(caplog) if "exited unexpectedly" in r.getMessage()), None
+        )
+
+    assert _wait_until(lambda: exit_record() is not None)
+    record = exit_record()
+    assert record.levelno == logging.WARNING
+    assert "exit code 1" in record.getMessage()
+
+
+def test_close_does_not_log_an_unexpected_exit(client, caplog):
+    caplog.set_level(logging.DEBUG, logger="tradingview_mcp.bridge")
+    client.call("health")
+    popen = client._proc.popen
+
+    client.close()
+    popen.wait(timeout=5)
+    time.sleep(0.3)  # let the reader thread notice the exit
+
+    assert not any("exited unexpectedly" in r.getMessage() for r in _bridge_records(caplog))
 
 
 def test_child_process_gets_only_the_allowlisted_environment(make_client, monkeypatch):

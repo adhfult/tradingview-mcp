@@ -15,11 +15,11 @@
 | Phase | Status | Commits | Unit tests | Notes |
 |---|---|---|---|---|
 | 0: data freshness | **done** | 82ef2f8, ae1b011, (advisor fixes) | 422 pass (with and without Node) | Fable: no must-fix |
-| 1: Node bridge | review done, Fable advising | db46a6f, 073a9ff | bridge 65/65 | Sonnet fixed stdout leaks, dead-client reuse, hung calls, validation |
-| 2: Python bridge client | implemented, Sonnet reviewing | 0e3430e | 483 pass (with and without Node) | – |
-| 3: tv_* tools + wiring | not started | – | – | – |
+| 1: Node bridge | **done** | db46a6f, 073a9ff, 4902604 | bridge 74/74 | auth cool-down, lib/client.mjs |
+| 2: Python bridge client | **done** | 0e3430e, de65a73, (advisor fixes) | 541 pass + 16 advisor tests | .dockerignore .env leak fixed |
+| 3: tv_* tools + wiring | in progress (Haiku) | – | – | brief corrected (timeoutMs, 20k bars, restart wording) |
 | 4: packaging/Docker/CI/docs | not started | – | – | – |
-| 5: watcher | not started | – | – | – |
+| 5: watcher | in progress (Haiku) | – | – | – |
 | 6a: gauntlet | not started | – | – | – |
 | 6b: paper trader | not started | – | – | – |
 | 7a: dashboard | not started | – | – | – |
@@ -27,10 +27,9 @@
 | 7c: PyneCore | not started | – | – | – |
 
 ## Current step
-- Phase 1: waiting for Fable's advice, then apply must/should-fix.
-- Phase 2: Sonnet review in progress, then Fable.
-- Next: Phase 3 (Haiku), brief at `docs/handoffs/phase-3.md`.
-- Briefs already written: phases 3, 4, 5, 6a.
+- Phase 3: Haiku implementing (then Sonnet, then Fable).
+- Phase 5: Haiku implementing (then Sonnet, then Fable).
+- Then: Phase 4, Phase 6a (briefs written), 6b, 7a–c (briefs to write).
 
 ## Approved dependencies
 - `@mathieuc/tradingview` 4.0.0 (ISC)
