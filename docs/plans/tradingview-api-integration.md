@@ -1,391 +1,883 @@
-# Plan: add TradingView-API (Mathieu2301) to tradingview-mcp
+# Master plan: TradingView account data, market watcher, strategy gauntlet, charts
 
-Hand this whole file to a new Claude Code session working on `adhfult/tradingview-mcp`.
+---
 
-## Context
+## 1. Context
 
-This repo is a Python MCP server (FastMCP, `src/tradingview_mcp/server.py`) with 37 read-only market-data tools. Its data has three known weaknesses:
+`adhfult/tradingview-mcp` is a fork of `atilaahmettaner/tradingview-mcp`, a Python MCP server (FastMCP) with 37 read-only market-data tools. A code review found four problems:
 
-- **Anonymous access only.** Indicator snapshots come from TradingView's undocumented `scanner.tradingview.com` endpoint, and no login cookies are ever sent (`_scan_with_retry(cookies=None)` in `core/services/screener_provider.py`). Stock data is therefore often delayed.
-- **No real price history from TradingView.** Candle history comes only from Yahoo's unofficial chart API (`backtest_service._fetch_ohlcv`). It is limited to daily or hourly bars, 2 years at most.
-- **Old data can look fresh.** When TradingView fails, the cache fallback in `screener_provider.py` (`_scan_with_retry`, `resilient_get_multiple_analysis`) serves results up to 6 hours old. Nothing in the response says the data is old.
+- **Anonymous TradingView access.** Indicator snapshots come from TradingView's undocumented `scanner.tradingview.com`, and no login cookies are sent, so stock data is often delayed.
+- **Limited price history.** Candle history comes only from Yahoo's unofficial chart API: daily or hourly bars, 2 years at most.
+- **Old data looks fresh.** When TradingView fails, cached results up to 6 hours old are returned with nothing marking them as old (`core/services/screener_provider.py`).
+- **No monitoring or charts.** The server only answers when asked.
 
-The owner has a TradingView account and wants to add **[Mathieu2301/TradingView-API](https://github.com/Mathieu2301/TradingView-API)** (npm `@mathieuc/tradingview`, v4, TypeScript/ESM, Node ≥ 20.19). It connects the way TradingView's own chart page does, and gives:
-- real candles at any timeframe, with deep history
-- quotes
-- built-in and Pine indicator values
-- symbol search
-- screener results
+Adham has a TradingView account (plan unknown, so this document assumes **free**). He wants:
+1. authenticated, current data, using **Mathieu2301/TradingView-API** (npm `@mathieuc/tradingview`)
+2. an **always-on watcher** for crypto and US stocks: what's trending, plus candle-move alerts to **Discord and/or Telegram**, running on a **Raspberry Pi 400**
+3. a **strategy gauntlet** that turns good testing practice into code: name who loses the trade, realistic costs, no future data, parameter sensitivity, double costs, most recent year alone, walk-forward, paper trading, re-test on change, separate builder and reviewer
+4. **charts** (TradingView Lightweight Charts) and **Pine indicators** (PyneCore) inside the gauntlet
 
-All of it is authenticated with the owner's session cookies, so data matches what their TradingView plan allows.
+**Nothing in this plan places real trades.** Paper trading only.
 
-**Goal:** add authenticated TradingView data as the preferred source. Keep the current sources as automatic fallbacks, and make the age and origin of all data visible.
+---
 
-## Decisions already made (keep them unless something is technically impossible)
+## 2. Facts checked on 2026-10-10 (re-check versions before pinning)
 
-1. **Single MCP server, Node helper process.** The Python server stays the only MCP server. A small Node helper (`bridge/`) runs as a long-lived child process the Python server starts on first use. The two talk over newline-delimited JSON-RPC on the child's stdin/stdout.
-   - No network port is opened.
-   - One TradingView connection is reused across tool calls.
-   - The Python side has to cope with the helper not starting or crashing (see Phase 3).
-2. **Optional.** If Node, the helper or credentials are missing, every existing tool works exactly as today. New tools return a clear "not configured" error envelope, built with the existing `make_error` in `core/errors.py`.
-3. **Credentials come from environment variables only:** `TRADINGVIEW_SESSION_ID` (`sessionid` cookie) and `TRADINGVIEW_SESSION_SIGN` (`sessionid_sign` cookie).
-   - Never log them, never put them in errors or tool output, never commit them. Add a test that checks for redaction.
-   - Document in the README that this is the owner's real account. Automated use can break TradingView's terms and get an account flagged, so keep traffic low.
-4. **No live streaming in the MCP tools.** MCP tools answer one request at a time, so the helper uses only the library's one-shot calls (`getCandles`, `getQuote(s)`, `getIndicatorData`, `searchMarkets`, `getScreener`). Streaming (`watch*`) is used only by the separate Phase 5 watcher.
-5. **Supply-chain safety is mandatory.** Copies of this repo published under other accounts have spread malware through a `package.json` (see the README warning and SECURITY.md).
-   - Pin `@mathieuc/tradingview` to an **exact** version and commit `bridge/package-lock.json`.
-   - Install with `npm ci --ignore-scripts`. Use no other runtime dependencies unless strictly needed.
-   - Put `package.json` only under `bridge/`, never at the repo root.
-   - Update the README security note: the repo now has one Node helper with exactly one dependency.
+| Package | Registry | Latest seen | Licence | Notes |
+|---|---|---|---|---|
+| `@mathieuc/tradingview` | npm | **4.0.0** | **ISC** | ESM; `engines.node >=20.0.0`; one dependency, `ws ^8.18.0`; no install scripts. Has a `bin` launcher (`tradingview`) that we never use. |
+| `lightweight-charts` | npm | **5.2.1** | Apache-2.0 | ESM; v5 interface (`chart.addSeries(CandlestickSeries, …)`, `createSeriesMarkers`). Attribution notice is required. |
+| `playwright-core` | npm | 1.64.0 | Apache-2.0 | Optional (Phase 7.2) only. |
+| `pynesys-pynecore` | PyPI | 6.10.9 | **not in metadata: check the repo's LICENSE** | **Needs Python ≥ 3.11.** Extras: `cli`, `all`, `providers`/`ccxt`. |
+| `tradingview-screener` | PyPI | 3.2.2 | MIT | **Stays pinned to 3.0.0** (see `pyproject.toml`: 3.2.0 silently returns 0 rows for crypto and futures). |
+| `tradingview-ta` | PyPI | 3.3.0 | MIT | No cookie support, so it stays anonymous. |
 
-## Phase 0: make cached data say how old it is (do this first, on its own)
+### TradingView-API v4 interface we rely on
+Read from `dist/data/*.d.ts` and `dist/http/*.d.ts`. Import from `@mathieuc/tradingview/data`; `TradingViewClient` comes from the package root.
 
-The goal is that no tool can hand out old cached data that looks fresh.
+- `getCandles(query: CandleQuery | string): Promise<Candle[]>`
+  - Returns bars **oldest first**.
+  - `query` takes either `{symbol, timeframe, count}` or `{symbol, timeframe, from, to, maxCount}`. Deep history loads automatically; `maxCount` defaults to 20 000.
+- `watchCandles(query, {onData(candles), onError}): Promise<CandleWatcher>`
+  - `onData` receives the latest snapshot each update.
+  - The watcher has `.latest`, `.stop()`, `.closed` and `.isActive`.
+  - **A fatal error stops the watcher, so our code must restart it.**
+- `getQuote(q)`, `getQuotes({symbols, fields?, session?}) → Record<string, QuoteData>`, `watchQuotes(...)`
+- `getIndicatorData({symbol, timeframe, indicator, inputs?, version?, to?, count?}) → {indicator, candles, values: StudyValue[], graphics, strategyReport}`
+  - `StudyValue = {$time, [plot]: number}`
+  - `summarizeStrategyReport()` is exported.
+- `searchMarkets(query, {type?, country?, sector?}) → MarketSearchResult[]`, with fields `id`, `exchange`, `fullExchange`, `symbol`, …
+- `getScreener({market?, columns, filter?, sort?, range?, symbols?}, {credentials?}) → {totalCount, rows: [{symbol, values}]}`
+- `getHotlist({kind: 'gainers'|'losers'|'mostActive'|'volumeGainers', market?, filter?, range?}, opts)`
+- `getTechnicalAnalysis(symbol)` and `getSymbolInfo(...)`
+- **Shared types:**
+  - `Candle = {time, open, high, low, close, volume}`, where `time` is the bar's **open** time in Unix seconds.
+  - `Timeframe`: `'1'…'240'`, `'D'`, `'W'`, `'M'`, `'1S'`, …
+  - `Credentials = {session: <sessionid cookie>, signature?: <sessionid_sign cookie>}`
+- **Every call accepts `OperationOptions`:** `{client?, credentials?, clientOptions?, timeoutMs? (default 15000), signal?}`. Passing a shared `client` reuses one connection.
+- `new TradingViewClient({credentials, connectTimeoutMs?, inactivityTimeoutMs?, …})`; always `await client.close()`.
+- `TradingViewError.code` is one of:
+  - `PROTOCOL_ERROR`, `CONNECTION_ERROR`, `DISCONNECTED`, `AUTH_ERROR`
+  - `SYMBOL_ERROR`, `SERIES_ERROR`, `CRITICAL_ERROR`, `STUDY_ERROR`, `QUOTE_ERROR`, `PARSE_ERROR`
+  - `INVALID_STATE`, `INVALID_ARGUMENT`, `HTTP_ERROR`, `NOT_FOUND`, `NO_DATA`
+  - `TIMEOUT`, `ABORTED`, `CALLBACK_ERROR`
 
-**`core/services/screener_provider.py`:**
-- Store `as_of` (Unix time) next to each cached entry.
-- Track whether the last result returned for a given cache key came from the fallback. A tiny accessor works, or return an `(payload, meta)` pair internally. This must not break the "drop-in replacement" contract of `resilient_get_multiple_analysis`.
+### Repo facts this plan builds on
+- `server.py` is a routing layer only. Every tool uses `@mcp.tool(annotations=ToolAnnotations(..., readOnlyHint=True, openWorldHint=True))`.
+- `_offload_sync_tools()` (around `server.py:1233`) wraps sync tools in `asyncio.to_thread`. Tests in `tests/unit/test_tool_annotations.py` and `test_tool_offload.py` cover all tools.
+- **Errors** (`core/errors.py`):
+  - `ErrorCode` enum: `SYMBOL_NOT_FOUND`, `INVALID_EXCHANGE`, `INVALID_TIMEFRAME`, `INVALID_PARAMETER`, `UPSTREAM_RATE_LIMIT`, `UPSTREAM_TIMEOUT`, `UPSTREAM_ERROR`, `ALL_BATCHES_FAILED`, `NO_DATA`, `PARTIAL_DATA`, `DEPENDENCY_MISSING`, `INTERNAL_ERROR`
+  - helpers: `make_error(code, message, **extra)`, `ScreenerServiceError`, `exception_to_envelope`
+- **Validators** (`core/utils/validators.py`):
+  - `ALLOWED_TIMEFRAMES = {5m, 15m, 1h, 4h, 1D, 1W, 1M}`, plus `_TIMEFRAME_ALIASES` (which already accepts TradingView's numeric codes)
+  - `validate_timeframe`, `validate_exchange`, `normalize_tradingview_symbol`, `get_tv_exchange_prefix`, `get_market_type`, `EXCHANGE_SCREENER`, `_TA_ONLY_SCREENERS`
+- **Scanner calls:**
+  - `_scan_with_retry(q, cookies=None, cache_key=None)` is used by `screener_service.py:497` and `egx_service.py:1071`.
+  - Direct `get_scanner_data(timeout=…)` calls: `futures_service.py:130,143,170,193` and `stock_screener_service.py:144`.
+  - About 20 `get_multiple_analysis` call sites go through `resilient_get_multiple_analysis` (tradingview_ta, anonymous).
+- **Backtests** (`core/services/backtest_service.py`):
+  - `_STRATEGY_MAP` holds 9 runners with keyword parameters, for example `_run_rsi(candles, oversold=40, overbought=60, period=14, **_)`.
+  - Other pieces: `_STRATEGY_WARMUP_BARS`, `_apply_costs`, `_calc_metrics` (Sharpe, Calmar, expectancy, profit factor, drawdown), `_buy_and_hold_return`, `run_backtest`, `compare_strategies`, `walk_forward_backtest`.
+  - Data comes from Yahoo via `_fetch_ohlcv(symbol, period, interval)`. `_VALID_PERIODS = {1mo,3mo,6mo,1y,2y}`, `_VALID_INTERVALS = {1d,1h}`, `_ANNUALIZATION = {1d: 252, 1h: 1638}`.
+  - **Fills happen at the signal candle's close.** Tool defaults are commission 0.1% and slippage 0.05%.
+  - Indicator maths lives in `core/services/indicators_calc.py`.
+- **Tests:**
+  - `tests/unit/**` (pytest, `asyncio_mode=auto`)
+  - `tests/stress/**`, marked `stress` and excluded by default (`addopts = -m "not stress"`)
+  - CI: `.github/workflows/test.yml` runs Python 3.10–3.13 with `uv sync --dev && uv run pytest tests/unit -q`
+- **Other:**
+  - `Dockerfile` is a two-stage `python:3.11-slim` build with a `/health` route.
+  - `.gitignore` already ignores `.env`. `python-dotenv` is **not** a dependency (`proxy_manager.py` only tries to import it).
+  - There is no `AGENTS.md`, `CLAUDE.md` or `.githooks`.
 
-**Each tool's response:**
-- Add a `data_freshness` block to the response of every tool that goes through `_scan_with_retry` or `resilient_get_multiple_analysis`. Do it in the service functions, or in one helper the tools call.
-- Contents: `{source: "tradingview_scanner", as_of_utc, age_seconds, stale: bool, auth: "anonymous"|"session"}`.
+---
 
-**Tests** in `tests/unit/services/test_screener_provider_resilience.py`:
-- a fresh result reports `stale: false`
-- a fallback result reports `stale: true` and the right age
+## 3. Ground rules (apply to every phase)
 
-Commit this phase separately.
+1. **Workflow per phase:**
+   - plan the phase
+   - implement it
+   - write its tests
+   - run the checks (§15)
+   - one commit (or a few) with a clear message
+   - **stop for Adham's review**
+   - push only when he says so
+2. **Secrets:**
+   - Secrets are `TRADINGVIEW_SESSION_ID`, `TRADINGVIEW_SESSION_SIGN`, `DISCORD_WEBHOOK_URL`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `WATCHER_DASHBOARD_TOKEN` and `WATCHER_LOCAL_TOKEN`.
+   - They come only from environment variables or the gitignored `.env`.
+   - Never read, print, log, return or commit their values. All logs and error text go through a redaction function, and tests prove it.
+   - Before each commit, grep the diff for cookie- or token-shaped strings.
+3. **Dependencies:**
+   - Exact version pins plus lockfiles. Install npm packages with `--ignore-scripts` (also set in `bridge/.npmrc`).
+   - **Ask Adham before adding any dependency not named in this plan.**
+   - Never upgrade `mcp` or `tradingview-screener`.
+   - `package.json` lives **only** under `bridge/`, never at the repo root. The README already warns about malicious npm copies of this repo.
+4. **Don't break what works.**
+   - With no Node, no `bridge/node_modules` or no credentials, every existing tool behaves exactly as today (apart from the new `data_freshness` block).
+   - Existing backtest numbers must not change with default arguments.
+   - CI's Python jobs run without Node.
+5. **`server.py` stays routing only.** Logic goes in `core/services/*`.
+6. **Read-only.** No tool or process places orders, moves funds or edits the TradingView account.
+7. **Keep traffic light on his account.**
+   - one shared TradingView connection per process
+   - at most 2 requests in flight
+   - at most 25 live streams
+   - the trending scan no more than every 5 minutes
 
-## Phase 1: helper skeleton (`bridge/`)
+---
+
+## 4. Architecture
+
+```
+                 ┌────────────── Claude (MCP client) ──────────────┐
+                 │                                                   │
+          stdio / http                                               │
+                 ▼                                                   │
+   Python MCP server (src/tradingview_mcp)                           │
+     ├─ existing tools (scanner/TA/Yahoo) ── data_freshness (Phase 0)
+     ├─ tv_* tools (Phase 3) ──► tv_bridge_client.py ──stdin/stdout JSON-RPC──► bridge/server.mjs ──► TradingView (your account)
+     ├─ backtests: Yahoo or TradingView candles (Phase 3)
+     ├─ strategy_gauntlet / gauntlet_stats / prompts (Phase 6)
+     └─ Pine via PyneCore (Phase 7.3, optional extra)
+
+   Raspberry Pi 400 (always on)
+     ├─ bridge/watcher.mjs (Phase 5): live candles + trending scan ─► Discord / Telegram
+     │     ├─ 127.0.0.1 /notify endpoint (paper runner posts here)
+     │     └─ dashboard on 127.0.0.1 (Phase 7.1, Lightweight Charts)
+     └─ tradingview-mcp-paper (Phase 6.6): Python paper trader, reads candles via the bridge
+```
+
+Phase order and dependencies:
+- **0** (freshness) first, on its own.
+- **1 → 2 → 3 → 4** form the TradingView data path.
+- **5** needs 1.
+- **6** needs only 0. It can come right after 0 if Adham asks. 6.6 needs 2 and 5.
+- **7** needs 5 and 6. 7.3 needs 3 for the `tv_indicator` comparison.
+
+---
+
+## 5. Adham's setup checklist (things only he can do)
+
+1. **TradingView cookies.**
+   - Log in at tradingview.com, then DevTools → Application → Cookies → `https://www.tradingview.com`.
+   - Copy `sessionid` and `sessionid_sign` into `~/code/tradingview-mcp/.env` as `TRADINGVIEW_SESSION_ID=` and `TRADINGVIEW_SESSION_SIGN=`.
+   - Never paste them into a chat.
+   - To revoke them, log out of all sessions in TradingView's settings.
+   - **Know your plan:** open AAPL while logged in. If it's marked delayed, US-stock data through this setup will be delayed too.
+2. **Discord** (optional): Server Settings → Integrations → Webhooks → New Webhook → pick a channel → Copy Webhook URL → `DISCORD_WEBHOOK_URL`.
+3. **Telegram** (optional):
+   - Message `@BotFather`, send `/newbot` and keep the token (`TELEGRAM_BOT_TOKEN`).
+   - Send any message to your new bot.
+   - Open `https://api.telegram.org/bot<TOKEN>/getUpdates` in your own browser and copy `message.chat.id` (`TELEGRAM_CHAT_ID`).
+4. **Raspberry Pi 400:**
+   - Raspberry Pi OS **64-bit**, updated.
+   - Node 22 LTS (NodeSource apt repo or `nvm`), `git`, Python 3.11+ with `uv` (for the paper trader).
+   - Optional for Phase 7.2: the `chromium` apt package.
+5. **Machine for development:** WSL Ubuntu, repo at `~/code/tradingview-mcp`.
+
+---
+
+## 6. Phase 0: make cached data say how old it is
+
+**Goal:** every tool that returns scanner or TA data says where the data came from and how old it is.
 
 **Files:**
-- `bridge/package.json`: `"type": "module"`, `"private": true`, one dependency (exact version), `engines.node >= 20.19`.
-- `bridge/package-lock.json`.
-- `bridge/server.mjs`.
-- `bridge/README.md`.
+- `core/services/screener_provider.py`
+- `server.py` (one wrapper, applied at import like `_offload_sync_tools`)
+- a new `core/services/freshness.py`
+- tests
 
-**Before writing the helper, check the library's real interface.** Read `docs/data-api.md` in the upstream repo and the `.d.ts` files in the installed package for exact names, arguments and return shapes. My knowledge of the library comes only from its README. Notes from that README:
-- Symbols look like `EXCHANGE:SYMBOL`.
-- Timeframes are `'1'`, `'5'`, `'60'`, `'240'`, `'D'`, `'W'`, `'M'`.
-- Credentials are passed as `credentials: { session, signature }`.
-- An optional shared `client` can be passed in.
-- Errors are `TradingViewError` objects with a `code`.
+**Steps:**
+1. `freshness.py`:
+   - a `ContextVar[list | None]` "collector"
+   - `record(meta)`, which appends when a collector is active
+   - `summarize(metas)`:
+     - `source`: a set of strings
+     - `as_of_utc`: the **oldest** timestamp
+     - `age_seconds`: the maximum
+     - `stale`: any stale
+     - `cache_hit`: any
+     - `auth`: `"session"` only if all are session, otherwise `"anonymous"` or `"mixed"`
+   - The list object is shared by reference. `asyncio.to_thread` copies the context, so records made in worker threads still reach it.
+2. `screener_provider.py`:
+   - Cache entries keep `(ts, payload)` as now.
+   - On every return path of `_scan_with_retry` and `resilient_get_multiple_analysis`, call `freshness.record({source: "tradingview_scanner", as_of: ts, cache_hit, stale, auth})`:
+     - fresh fetch: `cache_hit=False, stale=False`
+     - fresh-cache hit: `cache_hit=True`, `as_of` is the entry's time
+     - stale fallback: `stale=True`
+   - **Function signatures and return values don't change.**
+3. Also record from Yahoo fetches (`yahoo_finance_service._fetch_quote`, `backtest_service._fetch_ohlcv`) with `source="yahoo"` and `as_of` = newest candle or quote time.
+4. `server.py` `_attach_freshness()`, applied to every tool at import, **after** `_offload_sync_tools`:
+   - set a new collector
+   - await the tool
+   - if the result is a `dict` and records exist, add `result["data_freshness"] = summarize(...)`
+   - if the result is a `list[dict]` and the data is stale, add `"data_freshness"` to each row. When it's not stale, list output stays the same.
+5. Tests (`tests/unit/services/test_freshness.py`):
+   - fresh fetch
+   - fresh-cache hit (age > 0)
+   - stale fallback (`stale: true`, correct age)
+   - collector works across `asyncio.to_thread`
+   - list results unchanged when fresh
+   - existing resilience tests still pass
 
-**Protocol:**
-- One JSON object per line.
-- Request: `{id, method, params}`. Response: `{id, result}` or `{id, error: {code, message}}`.
-- Send nothing else to stdout. Logs go to stderr, with credentials redacted.
+**Done when:** `coin_analysis` returns `data_freshness`, and a forced stale fallback in a test shows `stale: true`.
 
-**Methods (each a thin wrapper around a library call, with a `timeoutMs`):**
+**Commit:** `feat: report data freshness (source, age, stale) on scanner/TA/Yahoo results`
 
-| Method | Library call |
+---
+
+## 7. Phase 1: Node helper (`bridge/`)
+
+**Files:**
+- `bridge/package.json`, `bridge/package-lock.json`, `bridge/.npmrc`
+- `bridge/server.mjs`, `bridge/lib/redact.mjs`, `bridge/lib/errors.mjs`, `bridge/lib/semaphore.mjs`
+- `bridge/test/*.test.mjs`
+- `bridge/README.md`
+
+**Steps:**
+1. **`package.json`:**
+   - `{"name":"tradingview-mcp-bridge","private":true,"type":"module","engines":{"node":">=20"}}`
+   - dependencies: `"@mathieuc/tradingview": "4.0.0"` (exact)
+   - scripts: `"test": "node --test"`
+   - Check the installed package name is exactly `@mathieuc/tradingview` and that the lockfile's `resolved` URLs point to `registry.npmjs.org`.
+2. **`.npmrc`:** `ignore-scripts=true`, `save-exact=true`, `fund=false`.
+3. **Protocol:**
+   - newline-delimited JSON on stdin/stdout
+   - request `{"id":<int>,"method":<str>,"params":{...}}`
+   - response `{"id":…,"result":…}` or `{"id":…,"error":{"code":<BRIDGE_CODE>,"message":<redacted>}}`
+   - At startup, point `console.log`, `console.info` and `console.debug` at **stderr**, so stdout carries only protocol lines.
+4. **Structure:** `server.mjs` exports `createServer({ lib, env, stdin, stdout, stderr })`. The real entry point imports the library and calls it, so tests can inject a fake library.
+5. **Shared client:**
+   - Created lazily: `new TradingViewClient({ credentials })`, with credentials only if both environment variables are set.
+   - Passed as `client` to every call.
+   - On `DISCONNECTED`, `CONNECTION_ERROR` or `PROTOCOL_ERROR`: close it, drop it, and create a new one on the next call.
+6. **Concurrency:** a semaphore with `TRADINGVIEW_BRIDGE_MAX_INFLIGHT` (default 2). `timeoutMs` defaults to 15000, capped at 60000.
+7. **Methods.** Validate every parameter (types, ranges, symbol pattern `^[A-Z0-9_.!:-]+$` after upper-casing):
+
+| method | library call | params | result |
+|---|---|---|---|
+| `health` | none | – | `{ok, libVersion, node, hasCredentials}` |
+| `candles` | `getCandles` | `symbol, timeframe, count?≤5000 \| from?, to?, maxCount?≤20000` | `[{time,open,high,low,close,volume}]` |
+| `quotes` | `getQuotes` | `symbols[≤50], fields?` | `{SYMBOL: {...}}` |
+| `indicator` | `getIndicatorData` | `symbol, timeframe, indicator, inputs?, count?≤500` | `{name, plots:[...], values:[{time, ...plots}], strategy?: summarizeStrategyReport(...)}` |
+| `search` | `searchMarkets` | `query, type?` | `[{symbol, exchange, fullExchange, id, type, description}]` (≤20) |
+| `symbol_info` | `getSymbolInfo` | `symbol` | trimmed metadata (timezone, session, type, currency, delay info if present) |
+| `screener` | `getScreener` | `market, columns[≤20], filter?, sort?, range?≤[0,200]` | `{totalCount, rows}` |
+| `hotlist` | `getHotlist` | `kind, market?, range?` | `{totalCount, rows}` |
+| `technical` | `getTechnicalAnalysis` | `symbol` | rating object or `null` |
+
+8. **Error mapping** (`lib/errors.mjs`), library code → bridge code:
+
+| Library code(s) | Bridge code |
 |---|---|
-| `health` | no TradingView call: returns library version, whether credentials are present, Node version |
-| `candles` | `getCandles({symbol, timeframe, count?, from?, to?})`, returns `[{time, open, high, low, close, volume}]` |
-| `quotes` | `getQuotes(symbols[])` |
-| `indicator` | `getIndicatorData({symbol, timeframe, indicator, inputs?, count?})`. Supports built-in `STD;…` ids and the owner's Pine ids |
-| `search` | `searchMarkets(query, {type?})` |
-| `screener` | `getScreener(...)`. Only add it if its shape is clearly useful; otherwise leave it out |
+| `SYMBOL_ERROR`, `NOT_FOUND` | `SYMBOL_NOT_FOUND` |
+| `TIMEOUT` | `TIMEOUT` |
+| `AUTH_ERROR` | `AUTH_FAILED` |
+| `SERIES_ERROR`, `STUDY_ERROR`, `CRITICAL_ERROR` | `PERMISSION_OR_SERIES` (often plan limits) |
+| `HTTP_ERROR` with status 429 | `RATE_LIMITED` |
+| `CONNECTION_ERROR`, `DISCONNECTED`, `PROTOCOL_ERROR` | `UPSTREAM_UNAVAILABLE` |
+| `INVALID_ARGUMENT` | `INVALID_PARAMETER` |
+| `NO_DATA` | `NO_DATA` |
+| anything else | `UPSTREAM_ERROR` |
 
-**Behaviour:**
-- Reuse one shared library client for the whole process.
-- Allow at most 2 TradingView requests at once, configurable with `TRADINGVIEW_BRIDGE_MAX_INFLIGHT`.
-- Turn library errors into stable codes: `SYMBOL_ERROR`, `TIMEOUT`, `AUTH_ERROR`, `RATE_LIMITED`, `UPSTREAM_ERROR`.
+9. **Redaction** (`lib/redact.mjs`): replace the values of every secret environment variable, plus anything matching `sessionid(_sign)?=[^;\s]+`, `bot\d+:[A-Za-z0-9_-]+` and `discord(app)?\.com/api/webhooks/\S+`, with `[REDACTED]`. Apply it to all stderr output and error messages.
+10. **Shutdown:** on stdin end, SIGTERM or SIGINT, call `await client?.close()`, then exit 0. On an unhandled rejection, log (redacted) and exit 1.
+11. **Tests** (`node --test`, fake library):
+    - framing, including several requests in flight answered out of order
+    - parameter validation
+    - every error-mapping row
+    - redaction of secrets in an error message
+    - stdout carries only protocol lines
+    - semaphore limit
+    - client recreated after `DISCONNECTED`
+    - shutdown closes the client
 
-**Tests:** add a small set of Node tests (`node --test`) that mock the library module and check protocol framing and error mapping.
+**Done when:** `cd bridge && npm ci && node --test` passes, and `echo '{"id":1,"method":"health"}' | node server.mjs` prints one JSON line.
 
-## Phase 2: Python client (`core/services/tv_bridge_client.py`)
+**Commit:** `feat(bridge): Node JSON-RPC helper around @mathieuc/tradingview 4.0.0`
 
-**Starting the helper:**
-- Start `node bridge/server.mjs` the first time it's needed. The Node path can be overridden with `TRADINGVIEW_BRIDGE_NODE`, the script path with `TRADINGVIEW_BRIDGE_PATH`.
-- Pass only the environment variables the helper needs.
-- `is_available()` returns whether Node is present, the helper responds to `health`, and credentials are set. Cache the answer for about 60 seconds.
+---
 
-**Calls:**
-- Send requests over a thread-safe channel with a reader thread and ids matched to replies. Remember that sync tools run in worker threads (`_offload_sync_tools` in `server.py`).
-- Give each call a timeout.
-- Expose an async API as well, since some tools are `async def`.
+## 8. Phase 2: Python client for the helper
 
-**Recovery:** if the helper dies, restart it on the next call. After 3 failures in a row, wait 30 seconds before trying again (same idea as `_wait_for_failure_cooldown`).
+**Files:**
+- `core/services/tv_bridge_client.py`
+- `core/utils/env_file.py`
+- `core/errors.py` (add codes)
+- `core/utils/validators.py` (`to_tv_timeframe`)
+- tests
 
-**Errors:** map them into the existing envelopes in `core/errors.py` (`ErrorCode`, `make_error`). Never let credentials into a message.
+**Steps:**
+1. **`env_file.py`** (stdlib only, no `python-dotenv`):
+   - Parse `<repo root>/.env` once at import of `tv_bridge_client`. Format: `KEY=VALUE`, optional quotes, `#` comments.
+   - Never override variables that are already set.
+   - Skip entirely when `TRADINGVIEW_MCP_NO_DOTENV=1`.
+   - Never log values.
+2. **New `ErrorCode` members:** `NOT_CONFIGURED`, `AUTH_FAILED`, `PERMISSION_DENIED`.
+3. **`to_tv_timeframe(tf)`:** `5m→"5"`, `15m→"15"`, `1h→"60"`, `4h→"240"`, `1D→"D"`, `1W→"W"`, `1M→"M"`. Validate input with `validate_timeframe`.
+4. **`BridgeClient`:**
+   - **Finding Node:** `TRADINGVIEW_BRIDGE_NODE` or `shutil.which("node")`. Require major version ≥ 20 (`node --version`).
+   - **Finding the script:** `TRADINGVIEW_BRIDGE_PATH`, or the repo-relative `bridge/server.mjs` located from the package path. If `bridge/node_modules/@mathieuc/tradingview` is missing, return `NOT_CONFIGURED` with the hint "run `npm ci --ignore-scripts` in bridge/".
+   - **Starting it:** `subprocess.Popen([node, script], stdin=PIPE, stdout=PIPE, stderr=PIPE, env=<allowlist>)`.
+     - Allowlist: `PATH`, `HOME`, `NODE_EXTRA_CA_CERTS`, `HTTPS_PROXY`, `NO_PROXY`, `TRADINGVIEW_SESSION_ID`, `TRADINGVIEW_SESSION_SIGN`, `TRADINGVIEW_BRIDGE_MAX_INFLIGHT`.
+     - The command can be injected for tests.
+   - **Reading replies:** one reader thread matches responses to `concurrent.futures.Future` by id. A stderr thread forwards lines, redacted, to `logging` at debug level.
+   - **Sending:** a write lock.
+   - **API:** `call(method, params, timeout_s=20)` (sync) and `async acall(...)` using `asyncio.wrap_future`.
+   - **Recovery:**
+     - If the process dies, fail pending calls with `UPSTREAM_ERROR` and restart on the next call.
+     - After 3 failures in a row, wait 30 seconds before retrying (mirrors `_wait_for_failure_cooldown`).
+   - **Availability:** `is_available()` checks Node, the script, `node_modules` and a successful `health`. Cache the answer for 60 seconds.
+   - `has_credentials()` checks that both environment variables are present.
+   - **Process lifetime:** a module-level singleton; `atexit` closes it.
+5. **Error mapping** to `make_error` codes:
 
-**Timeframes:** add a `to_tv_timeframe()` helper next to `validate_timeframe` in `core/utils/validators.py`. It converts this repo's `5m`/`1h`/`4h`/`1D`/`1W`/`1M` to TradingView's `5`/`60`/`240`/`D`/`W`/`M`. The repo already accepts TradingView's numeric codes (commit `eade8dc`), so reuse that logic.
-
-**Tests** (`tests/unit/services/test_tv_bridge_client.py`): fake the helper with a Python script, and cover:
-- request framing
-- timeouts
-- crash, then restart
-- the wait after repeated failures
-- "not configured" when Node or credentials are missing
-- credential redaction
-
-## Phase 3: new tools and wiring existing tools in
-
-New tools in `server.py`:
-- Follow the existing pattern: `@mcp.tool(annotations=ToolAnnotations(..., readOnlyHint=True, openWorldHint=True))`.
-- Keep the logic in a new `core/services/tv_data_service.py`, since `server.py` is only a routing layer.
-- Each result includes `data_freshness` with `source: "tradingview_session"`.
-
-| Tool | Purpose |
+| Bridge code | `ErrorCode` |
 |---|---|
-| `tv_candles(symbol, exchange, timeframe="1D", count=300)` | real TradingView candles; cap `count`, for example at 5000 |
-| `tv_quotes(symbols)` | batch quotes for a comma-separated list |
-| `tv_indicator(symbol, exchange, indicator, timeframe="1D", inputs=None, count=100)` | values of any built-in or Pine indicator |
-| `tv_symbol_search(query, type=None)` | resolve names to `EXCHANGE:SYMBOL` |
+| `SYMBOL_NOT_FOUND` | `SYMBOL_NOT_FOUND` |
+| `TIMEOUT` | `UPSTREAM_TIMEOUT` |
+| `RATE_LIMITED` | `UPSTREAM_RATE_LIMIT` |
+| `AUTH_FAILED` | `AUTH_FAILED` (message: "TradingView rejected the session cookies; refresh them") |
+| `PERMISSION_OR_SERIES` | `PERMISSION_DENIED` |
+| `INVALID_PARAMETER` | `INVALID_PARAMETER` |
+| `NO_DATA` | `NO_DATA` |
+| others | `UPSTREAM_ERROR` |
 
-Wire into existing code (each falls back automatically to the current path):
+   Mark transient errors `retryable=True`.
+6. **Tests** (`tests/unit/services/test_tv_bridge_client.py`), using a **fake helper written in Python** (`tests/unit/fixtures/fake_bridge.py`) run as `[sys.executable, fake_bridge.py]`:
+   - framing
+   - concurrent calls
+   - timeout
+   - crash, then restart
+   - the cool-down
+   - `NOT_CONFIGURED` when Node, the script or `node_modules` is missing
+   - redaction in logs
+   - `.env` parsing without overriding existing variables
+   - `to_tv_timeframe` table
 
-1. **Backtests.** Give `backtest_service._fetch_ohlcv` an optional TradingView source.
-   - When the helper is available, fetch candles from TradingView. Convert `period` to a bar count and `interval` (`1d`/`1h`) to the TradingView timeframe.
-   - Otherwise use Yahoo, exactly as today.
-   - Add `data_source` to backtest results.
-   - Allow more timeframes (for example `4h`, `15m`) **only** when the TradingView source is active. Validation must still reject them on the Yahoo path, and the walk-forward and annualization tables (`_ANNUALIZATION`) need matching entries.
-2. **Logged-in screener.** When credentials exist, pass `cookies={"sessionid": ..., "sessionid_sign": ...}` into `_scan_with_retry(...)`. Check that `tradingview-screener==3.0.0`'s `get_scanner_data(cookies=...)` accepts this shape before relying on it. Report `auth: "session"` in `data_freshness`. Do **not** change the `tradingview-screener` version pin (see the comment in `pyproject.toml`).
-3. **Prices.** Have `yahoo_price` and `stock_prices` try `tv_quotes` first when available, fall back to Yahoo, and report which source answered.
-4. Update the FastMCP `instructions` string and the README tool table.
+**Done when:** unit tests pass with and without Node on `PATH`.
 
-## Phase 4: packaging, Docker, CI, docs
+**Commit:** `feat: Python client for the TradingView bridge (.env loading, restart, error mapping)`
 
-- **Dockerfile:** add Node 22 to the runtime image, copy `bridge/`, and run `npm ci --ignore-scripts --omit=dev` in `bridge/`. The image must still start and pass its `/health` check without credentials.
-- **pyproject / PyPI:** don't try to ship `node_modules`. If installed from PyPI, the helper path must be set with `TRADINGVIEW_BRIDGE_PATH`. Document both "run from source" and Docker setups.
-- **CI** (`.github/workflows/test.yml`): add a job that runs Node 22, `npm ci --ignore-scripts` and `node --test` in `bridge/`. Existing Python jobs must pass unchanged with no Node available, which proves the fallback works.
-- **Live tests:** put them under `tests/stress/` with the existing `stress` marker. They are skipped unless the credential variables are set, and never run in CI.
-- **Docs:**
-  - a new `docs/tradingview-session.md`: how to copy `sessionid` and `sessionid_sign` from browser DevTools, where to keep them (env/secret store), the account-risk warning, and how to revoke them (log out of all sessions)
-  - updated README security section
-  - a `CHANGELOG.md` entry
+---
 
-## Phase 5: market watcher (always-on alerts)
+## 9. Phase 3: new tools and wiring into existing code
 
-The owner wants an always-on monitor for **crypto and US stocks**: what's trending, plus candle-move alerts, sent to **Discord and/or Telegram**. The MCP server only answers when asked, so this is a separate process. It must work with the MCP server stopped and without Claude.
+**Files:** a new `core/services/tv_data_service.py`, plus `server.py`, `backtest_service.py`, `screener_provider.py`, `futures_service.py`, `stock_screener_service.py`, `README.md` and tests.
 
-### Location and how it runs
-- `bridge/watcher.mjs` is a standalone Node process. It reuses `bridge/`'s single pinned dependency and lockfile, so nothing new gets installed.
-- Run it with `node bridge/watcher.mjs --config watcher.config.json`.
-- Intended to run around the clock on a Raspberry Pi 400 (Node 22, arm64). Include an example systemd unit, `bridge/watcher.service.example`, with restart-on-failure.
+**New tools**
+- All `readOnlyHint=True`, `openWorldHint=True`, `async def` using `acall`.
+- Each returns `data_freshness`: `{source: "tradingview_session" | "tradingview_anonymous", as_of_utc, age_seconds, stale: false, auth}`.
+- Without the helper, each returns a `NOT_CONFIGURED` envelope with setup steps.
 
-### Config
-- `watcher.config.json` is gitignored. Commit `watcher.config.example.json` instead.
-- It holds: the watchlist (symbol plus timeframes), the rules, the screener schedule, the enabled notifiers, cooldowns and quiet hours.
-- Secrets live only in environment variables, never in the config: `TRADINGVIEW_SESSION_ID` / `TRADINGVIEW_SESSION_SIGN`, `DISCORD_WEBHOOK_URL`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`.
+| Tool | Args | Output |
+|---|---|---|
+| `tv_candles` | `symbol, exchange, timeframe="1D", count=300 (≤5000)` | compact `{symbol, timeframe, columns:[time,open,high,low,close,volume], rows:[[...]], first, last, bars}`. `time` is ISO-8601 UTC, plus a summary (last close, % change over the range). |
+| `tv_quotes` | `symbols` (comma-separated `EXCHANGE:SYMBOL`, ≤50) | price, change, change %, volume, bid/ask when present, plus market status and delay information when TradingView supplies them |
+| `tv_indicator` | `symbol, exchange, indicator ("STD;RSI" or a Pine id), timeframe="1D", inputs=None, count=100 (≤500)` | the plot series (last N), plus a strategy summary if it's a strategy |
+| `tv_symbol_search` | `query, type=None` | up to 20 matches as `EXCHANGE:SYMBOL` with descriptions |
+| `tv_hotlist` | `kind ("gainers"…), market ("crypto" \| "america" \| …), limit=25` | ranked rows |
 
-### Live candle rules
-- **Data:** one shared library client streams candles with `watchCandles` for the watchlist. Cap the watchlist at about 25 symbol/timeframe pairs, to keep account traffic low.
-- **When rules run:** only on **candle close**, never mid-candle, so alerts don't flap.
-- **Indicators:** a small local indicator module (`bridge/lib/indicators.mjs`) calculates them from the streamed candles.
-- **Rule types:**
-  - % move over N bars
-  - volume spike (× SMA20 of volume)
-  - price crossing a set level
-  - RSI crossing a threshold
-  - close outside the Bollinger Bands
-  - new N-bar high or low
-- **Data-age check:** each alert records how old its data is, and the rule is skipped if the stream is stale.
+- Build symbols with `normalize_tradingview_symbol(symbol, exchange)` / `get_tv_exchange_prefix`, and check exchanges with `validate_exchange`.
+- Logic lives in `tv_data_service.py`; `server.py` only routes.
 
-### "What's trending" scan
-- Every 10 minutes (configurable), run the library's `getScreener` / `getHotlist` for crypto and US stocks. Confirm the real signatures in the v4 docs first.
-- Alert only on **new entries** to the top-N gainers or volume list, not on the whole list each time.
+**Backtests on TradingView candles**
+- Add `data_source: "yahoo" | "tradingview" = "yahoo"` and `tv_symbol: str | None` (for example `BINANCE:BTCUSDT`) to `run_backtest`, `compare_strategies`, `walk_forward_backtest` and their tools. **The default stays Yahoo**, so results don't change.
+- With `data_source="tradingview"`, `_fetch_ohlcv`:
+  - calls the helper's `candles` with `from = now − period` (no bar-count arithmetic)
+  - converts candles to the existing `{date, open, high, low, close, volume}` shape. `date` is ISO with time for intraday bars, and must be unique.
+- Allow extra periods `3y` and `5y`, and intervals `15m` and `4h`, **only** with the TradingView source. Validation errors name the allowed set for each source.
+- **Annualization by market type** (`get_market_type`):
 
-### Notifications
-- One notifier interface with two implementations:
-  - Discord: post to the webhook
-  - Telegram: the bot's `sendMessage`
-- Both use Node's built-in `fetch`, so there are **no new dependencies**. Every configured notifier receives each alert.
-- Message: symbol, timeframe, rule, values, data age and a TradingView chart link.
-- `--test-notify` sends one test message and exits.
+| Market | Bars per year |
+|---|---|
+| Crypto (24/7) | 365 × bars per day (`1d` 365, `4h` 2190, `1h` 8760, `15m` 35040) |
+| Stocks | 252 × bars per session (`1d` 252, `4h` 504, `1h` 1638, `15m` 6552) |
 
-### Avoiding alert spam
-- a cooldown per symbol and rule
-- a cap on alerts per hour
-- quiet hours
-- cooldown state saved to a small JSON state file, so a restart doesn't resend old alerts
+  Explicit `periods_per_year` still overrides.
+- Results report `data_source: "TradingView (session)"` or `"Yahoo Finance"`.
 
-### Health checks
-- Reconnect with backoff.
-- Alert if the stream is down for more than N minutes.
-- Send a daily "watcher alive" message.
-- Never log credentials or webhook URLs; reuse the bridge's redaction.
+**Logged-in screener**
+- `screener_provider.session_cookies()` returns `{"sessionid":…, "sessionid_sign":…}` when credentials exist and `TRADINGVIEW_MCP_SCANNER_USE_SESSION` isn't `0`; otherwise `None`.
+- Pass `cookies=` to:
+  - `_scan_with_retry` call sites (`screener_service.py:497`, `egx_service.py:1071`)
+  - the direct `get_scanner_data(timeout=…, cookies=…)` calls in `futures_service.py` and `stock_screener_service.py`
+- **First, with a unit test that inspects the call, check that `tradingview-screener==3.0.0` forwards `cookies` to `requests.post`.**
+- Add the auth flag to every cache key, so anonymous and logged-in results never mix.
+- Record `auth: "session"` in freshness. `tradingview_ta` calls stay anonymous.
+- **Don't change `yahoo_price` or `stock_prices`.** Their descriptions say "for current TradingView prices use `tv_quotes`".
 
-### Tests
-`node --test` with:
-- a fake candle stream (rules fire on close only; cooldown and dedupe work)
-- a mocked `fetch` (Discord and Telegram message formats)
-- a mocked screener (alerts only on new entries)
+**Docs in this phase:** update the FastMCP `instructions` string, the README tool table (37 → 42 tools) and the tool descriptions.
 
-### Out of scope
-A Claude-written summary. That can be a later scheduled Claude routine that calls the MCP tools for a morning or hourly digest. Real-time alerts stay in plain code.
+**Tests:**
+- service functions with a fake `BridgeClient`
+- candle conversion
+- period → `from` calculation
+- annualization table
+- validation per source
+- cookies passed and cache keys split by auth
+- `NOT_CONFIGURED` envelopes
+- `test_tool_annotations.py` and `test_tool_offload.py` cover the new tools
 
-## Phase 6: strategy testing gauntlet
+**Commit:** `feat: tv_candles/tv_quotes/tv_indicator/tv_symbol_search/tv_hotlist + TradingView backtest source + session scanner`
 
-Turn good strategy-testing practice into code, so an idea has to survive several checks before it's trusted. This phase doesn't depend on Phases 1–5. It works on Yahoo data alone and uses TradingView candles when the helper is available, so it can be built earlier if wanted.
+---
 
-What exists today, in `core/services/backtest_service.py`:
-- Costs default to 0.1% commission plus 0.05% slippage per side.
-- `walk_forward_backtest` exists.
-- Each strategy runner takes keyword parameters (for example `_run_rsi(candles, oversold=40, overbought=60, period=14)`), but the tools don't expose them.
-- **Fills happen at the close of the same candle that produced the signal**, which is slightly optimistic.
+## 10. Phase 4: packaging, Docker, CI, docs
 
-### 6.1 Check the market is actually tradable
-- Add a `tradability` block to backtest results:
-  - average daily traded value (price × volume)
-  - share of zero-volume bars
-  - number of bars
-  - a `thin_market: true` flag below a configurable threshold
-- With the TradingView helper available, also confirm the symbol resolves through `tv_symbol_search`.
+1. **`.gitignore`:** `bridge/node_modules/`, `watcher.config.json`, `bridge/watcher.config.json`, `*.state.json`, `paper-journal*`.
+2. **`.dockerignore`:** the same, plus `.env`.
+3. **Dockerfile:**
+   - New stage `FROM node:22-bookworm-slim AS bridge`: `COPY bridge/package*.json bridge/.npmrc`, then `npm ci --ignore-scripts --omit=dev`, then `COPY bridge/`.
+   - Runtime stage: copy `/usr/local/bin/node` from that stage and `/app/bridge` with `node_modules`.
+   - `ENV TRADINGVIEW_BRIDGE_PATH=/app/bridge/server.mjs`.
+   - The image must start and pass `/health` with no credentials.
+4. **`pyproject.toml`:**
+   - version `0.10.0`
+   - no Node packaging in the Python package; document `TRADINGVIEW_BRIDGE_PATH` for pip installs
+5. **CI** (`.github/workflows/test.yml`), new job `bridge`:
+   - matrix Node 20 and 22
+   - `actions/setup-node@v4`
+   - `npm ci --ignore-scripts`
+   - `node --test`
+   - `npm audit --omit=dev --audit-level=high`
 
-### 6.2 "Who is on the other side?"
-The gauntlet tool (6.5) requires two text inputs: `hypothesis` (why the edge should exist) and `counterparty` (who loses the trade, for example forced sellers or leveraged longs paying funding). If either is empty or generic, the verdict is `FAIL: no stated edge`. Both are stored in the report.
+   The Python jobs stay unchanged and run without Node, which proves the fallback works.
+6. **Docs:**
+   - `docs/tradingview-session.md`: cookie steps, risks (his real account; automated use can break TradingView's terms), keeping traffic low, how to revoke.
+   - `.env.example` with variable names only.
+   - `SECURITY.md`: the bridge, its single npm dependency and cookie handling.
+   - README: "Using your TradingView account" and "Running the watcher".
+   - `CHANGELOG.md`.
+
+**Commit:** `build: Docker/CI/docs for the TradingView bridge`
+
+---
+
+## 11. Phase 5: market watcher (Pi, always on)
+
+**Files:**
+- `bridge/watcher.mjs`
+- `bridge/lib/{config,stream,rules,indicators,scanner,notifiers,queue,state,health,localapi,format}.mjs`
+- `bridge/watcher.config.example.json`, `bridge/watcher.env.example`, `bridge/watcher.service.example`
+- `bridge/test/watcher/*.test.mjs`
+- `scripts/gen_indicator_fixtures.py`
+
+**Command line:**
+
+| Flag | Effect |
+|---|---|
+| `--config <path>` | required |
+| `--check-config` | validate and exit |
+| `--test-notify` | send one test message to every configured channel and exit |
+| `--dry-run` | print alerts instead of sending them |
+| `--once` | run one trending scan and exit |
+
+**Config.** Validated at startup, with every problem listed:
+```json
+{
+  "timezone": "America/New_York",
+  "watchlist": [
+    {"symbol": "BINANCE:BTCUSDT", "timeframes": ["15", "60", "240"]},
+    {"symbol": "NASDAQ:NVDA", "timeframes": ["15", "D"], "session": "regular"}
+  ],
+  "rules": [
+    {"id": "move", "type": "pct_move", "bars": 4, "threshold_pct": 3},
+    {"id": "volspike", "type": "volume_spike", "multiple": 3, "lookback": 20},
+    {"id": "rsi", "type": "rsi_cross", "period": 14, "levels": [30, 70]},
+    {"id": "bb", "type": "bollinger_break", "period": 20, "stddev": 2},
+    {"id": "breakout", "type": "new_extreme", "lookback": 50},
+    {"id": "btc100k", "type": "price_cross", "symbol": "BINANCE:BTCUSDT", "level": 100000}
+  ],
+  "trending": {"enabled": true, "every_minutes": 10, "markets": ["crypto", "america"],
+               "kinds": ["gainers", "volumeGainers"], "top_n": 15, "us_regular_hours_only": true},
+  "alerts": {"cooldown_minutes": 60, "max_per_hour": 20,
+             "quiet_hours": {"start": "23:00", "end": "07:00"}, "digest_after_quiet": true},
+  "health": {"stream_down_minutes": 10, "daily_heartbeat": "08:00"},
+  "state_dir": "~/.local/state/tradingview-watcher",
+  "local_api": {"port": 8787},
+  "limits": {"max_streams": 25}
+}
+```
+Rules apply to every watchlist entry unless a rule names its own `symbol` or `timeframes`. More than 25 symbol × timeframe streams is a config error.
+
+**Streams** (`stream.mjs`):
+- One shared `TradingViewClient` (with credentials), and one `watchCandles({symbol, timeframe, count: 300})` per pair.
+- **Closed-candle detection:** when `onData` shows a bar whose `time` is newer than the last seen, the previous bar has closed, so evaluate it. Track `lastEvaluatedTime` per stream so reconnects never evaluate a bar twice.
+- On `onError` or fatal stop: restart with backoff (5s → 10s → 30s → 60s, capped) and recreate the client after connection errors.
+
+**Indicators** (`indicators.mjs`):
+- SMA, EMA, RSI (Wilder), Bollinger, ATR, matching the formulas in `core/services/indicators_calc.py`.
+- `scripts/gen_indicator_fixtures.py` writes `bridge/test/fixtures/indicators.json` from the Python functions. A Node test checks results match within 1e-9, so both languages agree.
+
+**Rules** (`rules.mjs`, pure functions on closed bars):
+
+| Type | Fires when |
+|---|---|
+| `pct_move` | close vs close N bars ago ≥ threshold |
+| `volume_spike` | volume ≥ multiple × SMA(volume, lookback) |
+| `rsi_cross` | RSI crosses a level |
+| `bollinger_break` | close outside a band |
+| `new_extreme` | close > highest(high, lookback) of the **prior** bars (or the low equivalent) |
+| `price_cross` | close crosses a fixed level |
+
+- Each result: `{ruleId, symbol, timeframe, barTime, direction, values, dataAgeSeconds}`.
+- Skip when the stream is stale.
+
+**Trending scan** (`scanner.mjs`):
+- Every `every_minutes`, call `getHotlist({kind, market})` for each configured market and kind.
+- Skip `america` outside 09:30–16:00 New York time, Monday to Friday, when `us_regular_hours_only` is on. Holidays: skip on empty results.
+- Alert only on **new entries** to the top N that weren't seen in the last 6 hours (kept in state).
+
+**Notifications** (`notifiers.mjs` plus `queue.mjs`):
+- **Discord:**
+  - `POST $DISCORD_WEBHOOK_URL` with `{content, embeds:[{title, description, fields, color, timestamp, url}]}`
+  - limits: content 2000 chars, embed description 4096
+  - on 429, wait `retry_after`
+- **Telegram:**
+  - `POST https://api.telegram.org/bot$TOKEN/sendMessage` with `{chat_id, text, parse_mode: "HTML", disable_web_page_preview: true}`
+  - limit 4096 chars; HTML-escape text
+  - on 429, wait `parameters.retry_after`
+- Every configured channel receives each alert. Uses built-in `fetch`, so **no new dependencies**.
+- Message: emoji and type, `SYMBOL · timeframe`, rule and values, bar close time, data age, and a link `https://www.tradingview.com/chart/?symbol=<SYMBOL>`.
+- The queue never blocks streams: 3 attempts with backoff, then drop and log (redacted).
+
+**Spam control:**
+- cooldown per `(symbol, timeframe, ruleId)`
+- global `max_per_hour` (extra alerts go into a summary)
+- quiet hours hold alerts and send one digest at the end
+- dedupe by `(symbol, timeframe, ruleId, barTime)`
+
+**State** (`state.mjs`): cooldowns, last evaluated bars, recent trending entries and the alert history (last 500) in `state_dir/state.json`. Writes are atomic (temp file, then rename).
+
+**Health:**
+- A stream with no update for `stream_down_minutes` (crypto always; stocks only during their session) sends one "stream down" alert, then "recovered" when it's back.
+- Daily heartbeat with uptime, streams OK out of total, and alerts in the last 24 hours.
+- Unhandled rejection: log, exit 1, and systemd restarts it.
+
+**Local API** (`localapi.mjs`):
+- `http.createServer`, bound to `127.0.0.1:<port>` only.
+- `POST /notify` accepts `{title, body, key}` from the Phase 6 paper trader, requires header `Authorization: Bearer $WATCHER_LOCAL_TOKEN`, compared in constant time, and passes through the same spam control.
+- `GET /health` reports status.
+
+**Logs:** stderr, redacted (shared `redact.mjs`), optional JSON lines with `--log-json`.
+
+**Pi deployment** (`bridge/watcher.service.example`):
+- Steps: `git clone` into `~/code/tradingview-mcp`, then `cd bridge && npm ci --ignore-scripts`.
+- Secrets go in `/etc/tradingview-watcher.env` (`chmod 600`). Config at `~/.config/tradingview-watcher/config.json`.
+- Unit file:
+  ```ini
+  [Service]
+  User=pi
+  WorkingDirectory=/home/pi/code/tradingview-mcp
+  EnvironmentFile=/etc/tradingview-watcher.env
+  ExecStart=/usr/bin/node bridge/watcher.mjs --config /home/pi/.config/tradingview-watcher/config.json
+  Restart=on-failure
+  RestartSec=10
+  NoNewPrivileges=yes
+  ProtectSystem=strict
+  ProtectHome=read-only
+  ReadWritePaths=/home/pi/.local/state/tradingview-watcher
+  PrivateTmp=yes
+
+  [Install]
+  WantedBy=multi-user.target
+  ```
+- Then `sudo systemctl enable --now tradingview-watcher`, and read logs with `journalctl -u tradingview-watcher -f`.
+
+**Tests** (fake library, fake clock and mocked `fetch`):
+- config validation, including the >25-stream error
+- closed-candle detection, including reconnect replay
+- each rule
+- indicator fixture parity
+- trending new-entry logic and US-hours gating
+- Discord and Telegram payloads, limits, HTML escaping and 429 handling
+- cooldown, hourly cap, quiet-hours digest and dedupe
+- atomic state write and reload after restart
+- stream-down and recovered alerts
+- local API token check
+- redaction of the webhook URL and bot token
+
+**Done when:**
+- `--test-notify` reaches Discord and/or Telegram.
+- A temporary `pct_move` rule on BTCUSDT `1` with 0.1% fires, then stays quiet during its cooldown.
+- Cutting the network brings "stream down", then "recovered".
+- `kill` on the Pi is followed by a systemd restart.
+
+**Commit:** `feat(watcher): always-on candle/trending alerts to Discord and Telegram`
+
+---
+
+## 12. Phase 6: strategy testing gauntlet
+
+**Files:**
+- `core/services/backtest_service.py`
+- new `core/services/gauntlet_service.py`
+- new `core/services/paper_service.py` and `src/tradingview_mcp/paper.py` (console script)
+- `server.py` (tools and prompts)
+- `pyproject.toml` (script entry)
+- tests
+
+### 6.1 Check the market is tradable
+- Add to every backtest result: `tradability: {avg_daily_value, zero_volume_bar_pct, bars, thin_market}`.
+- `thin_market` when average daily traded value is below `TRADINGVIEW_MCP_MIN_DAILY_VALUE` (default 1 000 000), or more than 5% of bars have zero volume.
+- With the TradingView source, also confirm the symbol through the helper's `search`.
+
+### 6.2 Who is on the other side?
+- `strategy_gauntlet` requires `hypothesis` and `counterparty`, each at least 20 characters and not a generic phrase (small blocklist: "momentum", "it goes up", "trend", "it works", …).
+- Otherwise: `verdict: "FAIL: no stated edge"` and nothing else runs.
 
 ### 6.3 Realistic costs
-- Add a `cost_profile` parameter with named presets (for example `binance_spot`, `coinbase`, `us_stock_broker`, `custom`).
-  - Keep presets in one table in the code, each labelled as an assumption to verify against the owner's real fees.
-  - Explicit `commission_pct` / `slippage_pct` still override.
-- Add these metrics:
-  - `trades_per_year`
-  - `gross_return_pct` and `net_return_pct`
-  - `cost_drag_pct`
-- Warn when `trades_per_year > 200`, or when costs eat more than half the gross return.
+- `COST_PROFILES` dictionary, each value labelled an **assumption to check against your real fees**:
+
+| Profile | Commission | Slippage |
+|---|---|---|
+| `binance_spot` | 0.10% | 0.05% |
+| `coinbase_advanced` | 0.60% | 0.10% |
+| `us_stock_broker` | 0.00% | 0.05% |
+| `default` | 0.10% | 0.05% |
+
+- `cost_profile` argument on the backtest tools; explicit percentages override it.
+- New metrics: `trades_per_year`, `gross_return_pct`, `net_return_pct`, `cost_drag_pct`.
+- Warnings: `trades_per_year > 200`, or `cost_drag_pct > 0.5 × gross_return_pct`.
 
 ### 6.4 No peeking at the future
-- **Test it.** Add a test for all 9 strategies: entries and exits up to bar *k* must be identical whether the strategy runs on `candles[:k+1]` or on the full series. Any difference means it uses future data.
-- **Add a fill mode.** Add `fill: "signal_close" | "next_open"` to the backtest functions. The default stays `signal_close` for existing tools, so current results don't change. The gauntlet always uses `next_open`.
+- **Bar indexes:** each of the 9 runners records `entry_idx` and `exit_idx` in its trades (a small, mechanical edit per runner).
+- **Fill mode:** `fill: "signal_close" | "next_open"`.
+  - Default `signal_close` keeps current numbers identical.
+  - `next_open` moves fills to `candles[idx+1].open` and drops a trade whose next bar doesn't exist (open positions go through `_finalize_trades` as now).
+- **Test** (`tests/unit/services/test_no_lookahead.py`): for every strategy, and bar k sampled every 10 bars, trades fully decided by bar k must be identical when the runner sees `candles[:k+1]` vs all candles.
 
-### 6.5 New tool: `strategy_gauntlet`
-Signature: `strategy_gauntlet(symbol, strategy, hypothesis, counterparty, cost_profile=..., interval="1d", params=None)`.
+### 6.5 `strategy_gauntlet` tool
+Signature: `strategy_gauntlet(symbol, strategy, hypothesis, counterparty, cost_profile="default", interval="1d", period="2y", params=None, data_source="yahoo", tv_symbol=None)`.
 
-It runs every gate and returns per-gate results plus an overall `PASS` / `FAIL` that lists the failed gates. The output never says "profitable", only whether the strategy survived the tests.
+- **Parameters:**
+  - Check `params` against `inspect.signature(runner)` (named keyword parameters, not `candles` or `**_`).
+  - Keep constraints: fast < slow, periods ≥ 2.
+- **Thresholds** live in one dictionary, `GAUNTLET_THRESHOLDS`, documented in the README:
 
-| Gate | Check | Fails when |
+| Gate | Check | Default pass rule |
 |---|---|---|
-| 1. Honest settings | longest available history, chosen cost profile, `next_open` fills, warm-up respected | — (sets up the rest) |
-| 2. Enough evidence | number of trades, win rate together with profit factor, max drawdown | fewer than about 30 trades, profit factor ≤ 1, or drawdown above a threshold |
-| 3. Parameter sensitivity | re-run with each parameter nudged ±10–20% (a small set of neighbouring settings), report the share of neighbours still profitable and the spread | results collapse: "spike, not plateau" |
-| 4. Double costs | re-run at 2× commission and slippage | net return ≤ 0 |
-| 5. Most recent year alone | the last 12 months on their own (needs more than a year of history) | it loses money, or does much worse than the full period |
-| 6. Walk-forward | reuse `walk_forward_backtest` | verdict WEAK or OVERFITTED |
+| 1. Honest settings | `next_open` fills, chosen cost profile, longest available period, warm-up respected | sets up the run; fails only on an invalid setup |
+| 2. Enough evidence | trades, win rate together with profit factor, max drawdown | trades ≥ 30, profit factor > 1.1, max drawdown ≤ 35% |
+| 3. Parameter sensitivity | one parameter at a time × {0.8, 0.9, 1.1, 1.2} (integers rounded, deduplicated, constraints kept) | ≥ 70% of neighbours net-profitable, and median neighbour return ≥ 50% of the base |
+| 4. Double costs | 2× commission and slippage | net return > 0 |
+| 5. Most recent year alone | last 12 months (needs > 1 year of data) | return > 0, and Sharpe ≥ 0.5 × full-period Sharpe |
+| 6. Walk-forward | reuse `walk_forward_backtest` | ROBUST or MODERATE; SKIPPED for `rsi_pullback` and `triple_ema` (reported honestly) |
 
-Notes:
-- Expose the strategies' existing parameters through `params`, checked against each runner's allowed names.
-- Add a multiple-testing warning to `compare_strategies`: "the best of 9 strategies on one symbol looks better than it really is; run the winner through `strategy_gauntlet`."
+- **Output:** per-gate `{status: PASS|FAIL|SKIPPED, numbers, reason}`, plus `verdict` (`PASS`, `PASS (n/6, x skipped)` or `FAIL: <gates>`), plus `strategy_fingerprint`, `report_path` and the disclaimer. **The word "profitable" never appears in a verdict.**
+- **Multiple-testing warning:** `compare_strategies` adds `"multiple_testing_warning": "Best of 9 on one symbol is optimistic; run the winner through strategy_gauntlet."`
 
-### 6.6 Paper trading forward (uses the Phase 5 watcher)
-- Add a `paper` mode to `bridge/watcher.mjs`. It runs one strategy on live candles and writes **hypothetical** trades to a local journal (JSONL or CSV). It **never places orders**.
-- Send a weekly Discord/Telegram summary comparing paper results with the backtest's expectations.
-- The watcher refuses to start paper mode unless it finds a **passing gauntlet report whose fingerprint matches** (see 6.7).
+### 6.6 Paper trading forward (no real orders, ever)
+- **Console script** `tradingview-mcp-paper` (`paper.py`):
+  - `--report <fingerprint>` or `--latest-pass <strategy> <symbol>`
+  - Refuses to start unless the report is a PASS **and** its fingerprint matches what the current code, parameters, cost profile and data source produce.
+- **Each bar close:**
+  - Timed to the timeframe boundary plus 15 seconds.
+  - Fetch the last 500 candles through the helper.
+  - Run the same Python runner, with `next_open` fills.
+  - Record new hypothetical entries and exits in `~/.tradingview-mcp/paper/<fingerprint>.jsonl`, with prices and assumed costs.
+- **Notifications:**
+  - `POST` to the watcher's `127.0.0.1:<port>/notify` with the bearer token, one per paper trade.
+  - Weekly summary: paper vs backtest expectations (trades/week, win rate, average return); flag a gap beyond 2× expected drawdown.
+- **On the Pi:** a second systemd unit, `tradingview-paper.service.example`, with the same hardening.
 
 ### 6.7 Re-test every change; start small
-- Each gauntlet report includes a `strategy_fingerprint`: a hash of strategy name, parameters, cost profile, interval, data source and backtest code version.
-- Save reports to `~/.tradingview-mcp/gauntlet/`.
-- Any change gives a new fingerprint, so the strategy has to pass again before paper mode will run it.
-- Docs: start with one strategy, one asset and small size. This system only tests and paper trades; it never trades real money.
+- **Fingerprint:** `sha256` of canonical JSON containing:
+  - strategy and resolved parameters
+  - cost profile values
+  - fill mode
+  - interval, period, data source, symbol
+  - package version
+  - `sha256` of `backtest_service.py` and the runner source
+- **Storage:** reports in `$TRADINGVIEW_MCP_HOME` (default `~/.tradingview-mcp`) under `gauntlet/<fingerprint>.json`. Every run is appended to `gauntlet/log.jsonl`.
+- Docs: start with one strategy, one asset and small size; paper first; this system never trades.
 
 ### 6.8 Separate builder and reviewer
-- Add two MCP prompts (FastMCP `@mcp.prompt`):
-  - `strategy_builder`: scan the market first, then propose a hypothesis with a named counterparty.
-  - `strategy_reviewer`: try to kill the idea. Check the counterparty, overfitting signs, cost drag and recent-year performance, and recommend rejection unless every gate is clearly passed.
-- Keep a running log (`gauntlet_log.jsonl`) and a `gauntlet_stats` summary of pass/fail rates. Docs say to expect most ideas (around 6 of 7) to fail, and that this is normal.
+- **MCP prompts** (FastMCP `@mcp.prompt`):
+  - `strategy_builder(market, timeframe)`: scan first (`tv_hotlist` / screeners), check tradability, then propose **five** hypotheses, each naming who loses, and run only the best through `strategy_gauntlet`.
+  - `strategy_reviewer(fingerprint)`: load the report and try to kill it, covering counterparty plausibility, cost drag, recent-year weakness, sensitivity spread, trade count and survivorship. Default recommendation: **reject unless every gate passes clearly**.
+- **`gauntlet_stats` tool:** pass/fail counts, the most common failing gate, and the kill rate from `log.jsonl`. The docs say to expect most ideas (around 6 of 7) to fail.
 
-### 6.9 Tests (unit, hermetic)
-- the no-future-data test for all 9 strategies
-- `next_open` fills
-- cost-profile maths and the warnings
-- each gate's pass/fail logic, using synthetic candles built to pass or fail
-- sensitivity grid generation
-- fingerprint stability (same inputs give the same hash; any change gives a new one)
-- the watcher refusing paper mode without a matching passing report
+### 6.9 Tests (hermetic)
+- no-lookahead for all 9 strategies
+- `next_open` maths
+- default numbers unchanged: snapshot one existing backtest result before the change and compare after
+- cost profiles and warnings
+- `inspect.signature` parameter checks
+- sensitivity grid (rounding, constraints, deduplication)
+- every gate's PASS, FAIL and SKIPPED, using synthetic candles built to trend, mean-revert or be random
+- fingerprint stability and change detection
+- report and log writes in a temporary home directory
+- the paper runner refusing a mismatched fingerprint
+- the paper runner's bar-boundary timing (fake clock)
+- `/notify` payload (mocked HTTP)
 
-## Phase 7: charts (Lightweight Charts) and Pine indicators (PyneCore)
+**Commit(s):**
+- `feat(backtest): next_open fills, cost profiles, tradability, no-lookahead test`
+- `feat: strategy_gauntlet + gauntlet_stats + builder/reviewer prompts`
+- `feat: paper trader (no orders) with watcher notifications`
 
-Both parts work on TradingView's **free** plan. Build them after Phase 5 (watcher) and Phase 6 (gauntlet).
+---
 
-### 7.1 Local dashboard with TradingView Lightweight Charts
-[Lightweight Charts](https://www.tradingview.com/lightweight-charts/) is TradingView's own open-source charting library (npm `lightweight-charts`, Apache-2.0).
-- **Ask the owner before adding it.** It would be the second pinned dependency in `bridge/` (exact version, `npm ci --ignore-scripts`). Check that the package name is exactly `lightweight-charts`.
-- **Who serves it:** the watcher serves a dashboard at `http://127.0.0.1:<port>` (default localhost only). Allowing other devices on the home network must be opt-in and protected by a token from an environment variable. Never expose it to the internet.
-- **Pages:**
-  - watchlist charts with live candles, pushed from the watcher's stream (server-sent events)
-  - rule levels drawn as lines, and markers where alerts fired
-  - paper-trade entries and exits (Phase 6.6)
-  - a list of gauntlet reports with each gate's result (Phase 6.5)
-- **Attribution is required by TradingView's licence notice.** Keep the chart's `attributionLogo` option on, and add a footer crediting TradingView with a link.
-- **Data:** read-only JSON endpoints only. The dashboard can't change rules or place anything.
+## 13. Phase 7: charts (Lightweight Charts) and Pine (PyneCore)
 
-### 7.2 Chart images on alerts (optional, off by default)
-- Lightweight Charts draws in a browser, so turning a chart into an image needs headless Chromium (`playwright-core` with the system Chromium).
-  - That's a **third** dependency and heavy for a Pi 400, so ask the owner first.
-  - Keep it behind a config flag, default off.
-- **When it's on:**
-  - Render a small PNG of the last N candles, with the rule level and alert marker, using the same chart code as the dashboard.
-  - Attach it to the Discord/Telegram alert.
-  - Cap it at a few images per hour.
-  - Fall back to text-only if rendering fails or Chromium is missing.
-- **When it's off,** alerts include a link to that symbol's chart on the local dashboard instead.
+### 7.1 Local dashboard
+- **Dependency:** `lightweight-charts` **5.2.1** (exact) in `bridge/`. **Ask Adham first.** Serve it from `node_modules` (no CDN), so the dashboard works offline.
+- **Server:** in the watcher, Node `http` only (no frameworks). Binds to `127.0.0.1` by default.
+  - If `dashboard.host` isn't loopback, require `WATCHER_DASHBOARD_TOKEN`: `Authorization: Bearer`, or `?token=` once, which sets an HttpOnly SameSite=Strict cookie. Compare in constant time.
+  - Security headers: `Content-Security-Policy: default-src 'self'` (no inline script), `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`.
+- **Routes** (all read-only):
 
-### 7.3 Pine indicators in the gauntlet with PyneCore
-PyneCore (PyneSys/pynecore, Apache-2.0) runs Pine-Script-style logic in Python.
-- **Install:** add it as an **optional extra** (`pip install tradingview-mcp-server[pine]`, exact version pin), so the default install doesn't change. Ask the owner before adding it.
-- **Check first:**
-  - its licence
-  - whether turning **Pine** code into runnable Python needs PyneSys's online compiler or an API key
-  - whether only hand-written Pyne (Python) scripts run fully offline
+| Route | Purpose |
+|---|---|
+| `/` | page |
+| `/assets/*` | static files |
+| `/api/watchlist` | watchlist |
+| `/api/candles?symbol=&tf=` | from watcher memory |
+| `/api/alerts?limit=` | recent alerts |
+| `/api/paper` | paper journals |
+| `/api/gauntlet` | report summaries from `$TRADINGVIEW_MCP_HOME/gauntlet` |
+| `/events` | server-sent events: new bars, alerts |
 
-  If compiling needs their service, document that, keep it optional, and never send the owner's scripts anywhere without asking.
-- **Where scripts live:** only in a local folder the owner controls, `~/.tradingview-mcp/strategies/`. **Pyne scripts are Python code, so running one is running code:**
-  - never download and run scripts automatically
-  - treat community scripts as code to read before running
-  - document this clearly
-- **Connect it to the gauntlet:** let `strategy_gauntlet` accept a Pyne script name in place of a built-in strategy. Steps:
-  - run the script on the same candles (TradingView source when available, otherwise Yahoo)
-  - convert its trades to this repo's trade format
-  - run all six gates, plus the no-future-data test from 6.4: compare outputs on `candles[:k+1]` against the full series for sample bars, to catch repainting or lookahead in the Pine logic
-- **Check its maths:** before trusting PyneCore results, compare 3 standard indicators (RSI, EMA, Bollinger Bands) with TradingView's own values from `tv_indicator` (Phase 3) on identical candles.
-  - Commit a small fixture for a hermetic unit test.
-  - Keep the live comparison as an opt-in `stress` test.
-  - Record the tolerance used.
-- **Sources of indicators to try:** `awesome-pinescript` and everget's Pine indicator collection. Check each script's licence before reusing it.
+- **Charts** (v5 interface; check against `dist/typings.d.ts`):
+  - `createChart(el, {layout: {attributionLogo: true}})`
+  - `chart.addSeries(CandlestickSeries)` and `chart.addSeries(HistogramSeries)` for volume
+  - `createSeriesMarkers(series, markers)` for alerts and paper trades
+  - `series.createPriceLine({price})` for rule levels
+- **Attribution:** keep the logo on, and add a footer "Charts by TradingView" linking to `https://www.tradingview.com/` (required by the library's NOTICE).
+
+### 7.2 Chart images on alerts (optional, default off)
+- **Dependency:** `playwright-core` (exact). **Ask Adham first.**
+- **Browser:** system Chromium through `WATCHER_CHROMIUM_PATH` (Pi: `/usr/bin/chromium`); `playwright install` is never run.
+- **Rendering:**
+  - One browser kept open.
+  - An internal route `/render?symbol&tf&alert=<id>` draws the last 120 bars with the level and marker.
+  - Screenshot the chart element as PNG, 10-second timeout, at most `images_per_hour` (default 6).
+- **Sending:** Discord via multipart `files[0]` plus `payload_json`; Telegram via `sendPhoto` (multipart, with caption).
+- **Fallback:** if anything fails, send text plus a dashboard link.
+
+### 7.3 Pine logic through PyneCore (optional extra)
+- **Check before adding:**
+  1. the licence in the PyneSys/pynecore repo, since PyPI metadata has none
+  2. whether running **Pine** source needs PyneSys's online compiler or an API key, versus hand-written Pyne `.py` scripts running offline
+  3. the programmatic API for running a script on our candles (it may need a data-file format), and how strategy trades come out
+
+  **Ask Adham** before adding it, and before sending any script to an online service.
+- **Install:** `[project.optional-dependencies] pine = ["pynesys-pynecore==<exact>; python_version >= '3.11'"]`. On Python 3.10 the feature returns `DEPENDENCY_MISSING` with "requires Python 3.11+ and the [pine] extra".
+- **`core/services/pine_service.py`:**
+  - Runs scripts **only** from `$TRADINGVIEW_MCP_HOME/strategies/`. Names must match `^[a-z0-9_-]+$`, so no paths.
+  - Pyne scripts are Python, so **running one runs code**. Never download and run automatically; docs say to read community scripts first.
+  - Run on the same candles as the backtest, and convert trades to the repo's format with `entry_idx` and `exit_idx`.
+- **Gauntlet support:** `strategy_gauntlet(..., strategy="pine:<name>")` runs all gates, plus the 6.4 no-lookahead check on the script, to catch repainting and `lookahead_on` misuse.
+- **Check the maths:**
+  - A committed fixture (`tests/unit/fixtures/pine_parity.json`) for RSI(14), EMA(20) and BB(20,2) on fixed candles.
+  - A unit test checks PyneCore matches within the recorded tolerance.
+  - A `stress` test compares live against `tv_indicator` on identical candles.
+- **Where to find scripts:** `awesome-pinescript` and everget's indicator collection. Check each script's licence.
 
 ### 7.4 Tests
-- Dashboard JSON endpoints and server-sent events: `node --test`, with a fake candle stream.
-- The token being required when the dashboard is opened to the home network.
-- The image fallback to text-only when Chromium is missing.
-- The Pyne bridge converting trades to the repo's format.
-- The no-future-data check catching a deliberately leaky script.
-- The indicator comparison against the committed fixture.
+- dashboard routes and server-sent events (fake stream)
+- token required when not loopback
+- CSP header present
+- attribution present in the HTML
+- image fallback when Chromium is missing
+- Discord multipart / Telegram `sendPhoto` payloads (mocked)
+- Pine: name validation, refusal outside the strategies folder, trade conversion, lookahead caught on a deliberately leaky script, parity fixture
 
-## Rules
+**Commit(s):**
+- `feat(watcher): local Lightweight Charts dashboard`
+- `feat(watcher): optional alert chart images`
+- `feat: PyneCore Pine strategies in the gauntlet (optional extra)`
 
-- Never commit, print or log credentials. Grep the diff for cookie-shaped strings before every commit.
-- Don't upgrade `mcp`, `tradingview-screener` or other pinned dependencies (see the reasons in `pyproject.toml`).
-- Keep `server.py` free of business logic.
-- Commit after each phase with a clear message, and push to the session's designated branch. Don't open a PR unless the owner asks.
+---
 
-## How to check it works
+## 14. Environment variables
 
-1. Run `uv run pytest tests/unit -q`. It must pass **with and without** Node on PATH; temporarily hide Node to test the fallback.
-2. Run `cd bridge && npm ci --ignore-scripts && node --test`.
-3. Smoke test without credentials: start `uv run tradingview-mcp`, call `coin_analysis` and `backtest_strategy`. Both behave as before, plus `data_freshness`. `tv_candles` returns a "not configured" error envelope.
-4. Smoke test with credentials (owner runs this locally; the session can't):
-   - export both variables
-   - `tv_candles("BTCUSDT", "BINANCE", "60", 500)` returns 500 hourly bars
-   - `tv_indicator(..., "STD;RSI")` returns values
-   - `backtest_strategy` reports `data_source: "tradingview"`
+| Variable | Used by | Default / notes |
+|---|---|---|
+| `TRADINGVIEW_SESSION_ID`, `TRADINGVIEW_SESSION_SIGN` | bridge, scanner | secret; enables logged-in data |
+| `TRADINGVIEW_BRIDGE_NODE`, `TRADINGVIEW_BRIDGE_PATH` | Python client | `which node`; repo `bridge/server.mjs` |
+| `TRADINGVIEW_BRIDGE_MAX_INFLIGHT` | bridge | 2 |
+| `TRADINGVIEW_MCP_SCANNER_USE_SESSION` | scanner | 1 when credentials exist |
+| `TRADINGVIEW_MCP_NO_DOTENV` | `.env` loader | unset |
+| `TRADINGVIEW_MCP_HOME` | gauntlet, paper, Pine | `~/.tradingview-mcp` |
+| `TRADINGVIEW_MCP_MIN_DAILY_VALUE` | tradability | 1 000 000 |
+| `DISCORD_WEBHOOK_URL`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | watcher | secret; each channel optional |
+| `WATCHER_LOCAL_TOKEN` | watcher `/notify`, paper | secret; required for `/notify` |
+| `WATCHER_DASHBOARD_TOKEN` | dashboard | secret; required off-loopback |
+| `WATCHER_CHROMIUM_PATH` | images | none, which disables images |
+| existing `TRADINGVIEW_MCP_*` cache/retry variables | scanner | unchanged |
+
+## 15. Checks before every commit
+1. `uv run pytest tests/unit -q`, run normally **and** with Node hidden (`PATH` without node).
+2. `cd bridge && npm ci --ignore-scripts && node --test`, once Phase 1 exists.
+3. `git diff --cached | grep -nE 'sessionid|sessionid_sign|bot[0-9]+:|discord(app)?\.com/api/webhooks'` must show nothing except variable names and docs.
+4. Re-read the diff: default behaviour unchanged, no new unapproved dependencies, `server.py` routing only.
+
+## 16. Final acceptance (all phases)
+1. Unit and Node tests green; CI green (Python 3.10–3.13 without Node; bridge job on Node 20 and 22).
+2. **Without credentials:** existing tools work as before, plus `data_freshness`; `tv_*` tools return `NOT_CONFIGURED`.
+3. **With cookies in `.env`:**
+   - `tv_candles("BTCUSDT","BINANCE","1h",500)` returns 500 bars
+   - `tv_indicator(... "STD;RSI")` returns values
+   - `backtest_strategy(..., data_source="tradingview", tv_symbol="BINANCE:BTCUSDT", interval="4h")` works
    - `stock_screener` reports `auth: "session"`
-5. Kill the Node process mid-session. The next call restarts it, or falls back cleanly with no hang.
-6. Docker: `docker build .` succeeds and `/health` returns 200 without credentials.
-7. Watcher:
-   - `node bridge/watcher.mjs --test-notify` delivers a message to each configured channel (Discord and/or Telegram).
-   - A temporary rule (for example BTCUSDT 1m move > 0.1%) fires within a few minutes. After the cooldown it doesn't repeat.
-   - Cutting the network briefly brings a "stream down" alert, then the watcher recovers.
-   - On the Pi, the systemd unit restarts the watcher after `kill`.
-8. Gauntlet:
-   - `strategy_gauntlet("BTC-USD", "rsi", hypothesis=..., counterparty=...)` returns six gate results and an overall verdict.
-   - Blank `hypothesis` or `counterparty` gives `FAIL: no stated edge`.
-   - Existing `backtest_strategy` results are unchanged with the default `fill="signal_close"`.
-   - Paper mode refuses a strategy whose settings changed after it passed.
-9. Charts and Pine:
-   - The dashboard at `http://127.0.0.1:<port>` shows live candles, alert markers and the TradingView attribution.
-   - It refuses access from another device unless the token is set.
-   - With chart images on, an alert arrives with a PNG. With them off, or with no Chromium, it arrives as text with a dashboard link.
-   - A Pyne version of RSI matches `tv_indicator`'s RSI within the recorded tolerance.
-   - `strategy_gauntlet` runs a local Pyne script, and a deliberately leaky script fails the no-future-data check.
+4. **Helper process:** killing `node` mid-session leads to a restart on the next call, or a clean fallback, with no hang.
+5. **Docker:** `docker build .` succeeds and `/health` returns 200 without credentials.
+6. **Watcher:**
+   - `--test-notify` delivers
+   - a test rule fires once, then cools down
+   - stream down and recovered alerts work
+   - systemd restarts it after `kill`
+7. **Gauntlet:**
+   - returns six gates and a verdict
+   - a blank counterparty gives `FAIL: no stated edge`
+   - default `backtest_strategy` numbers are unchanged
+   - paper mode refuses a changed strategy
+8. **Charts and Pine:**
+   - the dashboard shows live candles with TradingView attribution
+   - alerts carry an image, or a link when images are off
+   - Pyne RSI matches within tolerance
+   - a leaky Pine script fails the lookahead gate
+
+## 17. Risks and how this plan handles them
+- **Account flagged by TradingView:** one connection, at most 2 in flight, at most 25 streams, trending scan ≥ 5 minutes, read-only.
+- **Unofficial interface changes:** exact pins, typed errors, fallback to existing sources, freshness labelling.
+- **Leaked secrets:** environment variables only, redaction everywhere with tests, a grep check before commits, a narrow environment allowlist for child processes, systemd `EnvironmentFile` with `chmod 600`.
+- **npm supply chain:** one pinned dependency (later two or three, each with approval), lockfile, `--ignore-scripts`, `npm audit` in CI, `package.json` only under `bridge/`.
+- **Overfitting and false confidence:** the gauntlet, verdict wording, multiple-testing warning, paper trading only, no execution.
+- **Running untrusted Pine/Pyne code:** local folder only, name allowlist, never downloaded automatically, documented.
+
+## 18. Out of scope
+Placing orders or connecting any broker or exchange account. Paid-plan-only features (TradingView webhooks, the TradingView Desktop MCP). Claude-written summaries on a schedule (a possible later addition). Exposing the dashboard to the internet.
+
+---
+
+## Hand-off prompt (give this to Adham after pushing)
+
+**Run this in Claude Code (Ubuntu)**
+- **Where:** either PC; the watcher and paper trader later run on the Pi.
+- **Start:**
+  ```bash
+  # first time only:
+  git clone https://github.com/adhfult/tradingview-mcp ~/code/tradingview-mcp
+
+  cd ~/code/tradingview-mcp && git fetch origin \
+    && git checkout -b feat/tradingview-api origin/claude/lucid-bardeen-3ou62p \
+    && claude
+  ```
+- **Settings:** `/effort xhigh` and plan mode (Shift + Tab) for planning; switch to `/effort high` to build each phase.
+- **Prompt to paste:**
+
+> Project: tradingview-mcp. Implement `docs/plans/tradingview-api-integration.md` (the master plan) one phase at a time, Phase 0 → 7. Read the whole plan, `SECURITY.md` and `pyproject.toml` first.
+>
+> - **Per phase:** plan, implement, test, run the §15 checks, commit, then stop and wait for my review. Ask before pushing.
+> - **Library versions:** §2 records versions and interfaces checked on 2026-10-10. Re-check the latest versions before pinning, and tell me if anything differs.
+> - **Dependencies:** ask me before adding any dependency (lightweight-charts, playwright-core and pynesys-pynecore included).
+> - **Secrets:** they come only from the environment or the gitignored `.env`. Never read, print, log or commit their values.
+> - **Defaults:** default behaviour and default backtest numbers must not change.
+> - **Read-only:** nothing places real trades.
+> - **Phase 6:** it is independent of Phases 1–5 and can be done right after Phase 0 if I ask.
+
+- **Done when:** everything in §16 passes; the parts needing your cookies, Discord/Telegram or the Pi are steps you run yourself.
