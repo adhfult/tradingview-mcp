@@ -467,3 +467,62 @@ def test_tv_tools_are_offloaded_to_threads():
     for name in ("tv_status", "tv_candles", "tv_quotes", "tv_indicator", "tv_symbol_search", "tv_hotlist"):
         tool = _tool(name)
         assert tool.is_async and inspect.iscoroutinefunction(tool.fn), name
+
+
+# ── Advisor fixes: futures annualization and the "1m" ambiguity ─────────────
+
+_FUTURES_FACTORS = {"15m": 23184, "1h": 5796, "4h": 1512, "1d": 252}
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    ["CME", "CME_MINI", "CBOT", "CBOT_MINI", "NYMEX", "COMEX", "ICEEUR", "ICEUS", "ICESG", "EUREX", "cme", "Nymex"],
+)
+def test_futures_venues_get_their_own_annualization_bucket(prefix):
+    got = {iv: tv.tv_periods_per_year(f"{prefix}:ES1!", iv) for iv in ("15m", "1h", "4h", "1d")}
+    assert got == _FUTURES_FACTORS
+
+
+def test_every_futures_service_exchange_is_in_the_futures_bucket():
+    from tradingview_mcp.core.services import futures_service
+
+    for exchange in futures_service.ALL_FUTURES_EXCHANGES:
+        assert tv.tv_periods_per_year(f"{exchange}:X1!", "1h") == 5796, exchange
+
+
+def test_futures_bucket_does_not_change_other_markets():
+    assert tv.tv_periods_per_year("BINANCE:BTCUSDT", "1h") == 8760
+    assert tv.tv_periods_per_year("OANDA:EURUSD", "1h") == 6240
+    assert tv.tv_periods_per_year("NASDAQ:AAPL", "1h") == 1638
+
+
+def test_candles_rejects_lowercase_1m_before_any_call(tv_stub):
+    out = tv.get_candles("BTCUSDT", "BINANCE", "1m", 10)
+    assert _code(out) == "INVALID_PARAMETER"
+    assert out["error"]["message"] == "1-minute bars are not supported; use 1M for monthly"
+    assert tv_stub.calls == []
+
+
+def test_indicator_rejects_lowercase_1m_before_any_call(tv_stub):
+    out = tv.get_indicator("BTCUSDT", "BINANCE", "STD;RSI", "1m")
+    assert _code(out) == "INVALID_PARAMETER"
+    assert out["error"]["message"] == "1-minute bars are not supported; use 1M for monthly"
+    assert tv_stub.calls == []
+
+
+def test_uppercase_1M_is_still_monthly(tv_stub):
+    tv_stub.replies["candles"] = _bars(2)
+    tv_stub.replies["indicator"] = {"values": []}
+    assert tv.get_candles("BTCUSDT", "BINANCE", "1M", 2)["timeframe"] == "1M"
+    assert tv_stub.calls[0][1]["timeframe"] == "M"
+    assert tv.get_indicator("BTCUSDT", "BINANCE", "STD;RSI", "1M")["timeframe"] == "1M"
+    assert tv_stub.calls[1][1]["timeframe"] == "M"
+
+
+def test_tv_timeframe_docstrings_list_the_supported_timeframes():
+    from tradingview_mcp import server
+
+    for fn in (server.tv_candles, server.tv_indicator):
+        doc = fn.__doc__ or getattr(getattr(fn, "fn", None), "__doc__", "") or ""
+        assert "5m, 15m, 1h, 4h, 1D, 1W, 1M" in doc
+        assert "1-minute" in doc

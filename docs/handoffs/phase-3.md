@@ -234,3 +234,18 @@ Pinned in the new `tests/unit/services/test_backtest_yahoo_parity.py` (14 tests)
 - `uv run pytest tests/unit -q`: `777 passed in 11.58s`
 - `PATH=/usr/bin:/bin /root/.local/bin/uv run pytest tests/unit -q`: `777 passed in 11.47s`
 - Parity script (old vs new on identical candles): `mismatches: 0`
+
+## Advisor fixes (Sonnet)
+
+### Changes
+1. **Python-side in-flight cap (must-fix)** - `tv_bridge_client.py`. The bridge's semaphore is an unbounded FIFO and its `timeoutMs` deadline starts only after a slot is acquired, while the client gives up (~70 s) without cancelling, so a burst produced retryable client TIMEOUTs while the bridge still ran every queued call with the account cookies (zombie work plus a retry storm). `BridgeClient` now owns a `threading.BoundedSemaphore(max_inflight + 2)`; `max_inflight` is read from `TRADINGVIEW_BRIDGE_MAX_INFLIGHT` (client's env source, same rule as the bridge: default 2, clamped 1..8, non-numeric/0 -> 2). `call()` acquires it around start + request for every method except `health` (exempt, like the cool-down). If no slot frees within `_INFLIGHT_WAIT_S` (2 s) it raises `BridgeError("RATE_LIMITED", "bridge busy, retry shortly")` before anything is written to the bridge (maps to `UPSTREAM_RATE_LIMIT`, retryable); this rejection does not count as a bridge failure or touch the cool-down. The slot is released in `finally` on success, bridge error, TIMEOUT and start failure.
+2. **Futures annualization bucket** - `tv_data_service.tv_periods_per_year`: prefixes `cme, cme_mini, cbot, cbot_mini, nymex, comex, iceeur, iceus, icesg, eurex` (superset of `futures_service.ALL_FUTURES_EXCHANGES`) use `{"15m": 23184, "1h": 5796, "4h": 1512, "1d": 252}` (~23 h x 252 days). Other buckets unchanged. This resolves the earlier follow-up "futures fall in the stock bucket".
+3. **"1m" ambiguity** - `get_candles` and `get_indicator` reject a timeframe that is exactly lowercase `"1m"` with `INVALID_PARAMETER` "1-minute bars are not supported; use 1M for monthly", before `validate_timeframe` and before any bridge call. `1M` still works as monthly. The shared `validate_timeframe` alias is untouched (other tools keep their behaviour). `server.py` docstrings of `tv_candles` / `tv_indicator` now read "5m, 15m, 1h, 4h, 1D, 1W, 1M (1M is monthly; 1-minute bars are not supported)".
+
+### Tests added
+- `test_tv_bridge_client.py` (+15, 134 total): max-inflight parsing rule; default cap = max_inflight + 2; with `max_inflight=1` and three slow calls running, the 4th concurrent call fails fast (<1.5 s) with `RATE_LIMITED` / `UPSTREAM_RATE_LIMIT` retryable, and a request-logging fake bridge confirms it never received it (and `_fail_count` stays 0); slots are released after TIMEOUTs, bridge error replies and a failed bridge start; `health` still works while saturated and takes no slot.
+- `test_tv_data_service.py` (+~20, 123 total): every futures prefix (any case) and every `ALL_FUTURES_EXCHANGES` entry -> futures factors, other markets unchanged; lowercase `1m` rejected for candles and indicator with the exact message and zero bridge calls; `1M` still monthly; `tv_candles`/`tv_indicator` docstrings list the timeframes.
+
+### Verification (real output)
+- `uv run --frozen pytest tests/unit/services/test_tv_bridge_client.py tests/unit/services/test_tv_data_service.py -q`: `257 passed in 7.62s`
+- `uv run --frozen pytest tests/unit -q`: `810 passed in 14.14s` (no failures, including the other agent's in-progress files at the time of the run)

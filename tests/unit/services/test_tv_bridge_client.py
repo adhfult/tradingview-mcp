@@ -954,3 +954,152 @@ def test_importing_the_client_module_spawns_nothing():
     )
 
     assert done.returncode == 0, done.stderr
+
+
+# ---------------------------------------------------------------------------
+# Python-side in-flight cap
+# ---------------------------------------------------------------------------
+
+# Records every request line it receives to argv[1], then answers sleep/echo.
+_LOGGING_BRIDGE = r"""
+import json, sys, threading, time
+log_path = sys.argv[1]
+out_lock = threading.Lock()
+log_lock = threading.Lock()
+
+def handle(req_id, method, params):
+    if method == "sleep":
+        time.sleep(float(params.get("s", 0)))
+        result = {"slept": params.get("s", 0)}
+    elif method == "health":
+        result = {"ok": True}
+    else:
+        result = params
+    with out_lock:
+        sys.stdout.write(json.dumps({"id": req_id, "result": result}) + "\n")
+        sys.stdout.flush()
+
+for raw in sys.stdin:
+    raw = raw.strip()
+    if not raw:
+        continue
+    req = json.loads(raw)
+    with log_lock:
+        with open(log_path, "a") as fh:
+            fh.write((req.get("params") or {}).get("tag", req["method"]) + "\n")
+    threading.Thread(target=handle, args=(req["id"], req["method"], req.get("params") or {})).start()
+"""
+
+
+@pytest.fixture
+def logging_client(tmp_path, monkeypatch):
+    script = tmp_path / "logging_bridge.py"
+    script.write_text(_LOGGING_BRIDGE)
+    log = tmp_path / "received.log"
+    log.write_text("")
+    monkeypatch.setattr(tvb, "_INFLIGHT_WAIT_S", 0.2)
+    made: list[BridgeClient] = []
+
+    def _make(max_inflight: str | None = "1") -> tuple[BridgeClient, Path]:
+        env = {} if max_inflight is None else {"TRADINGVIEW_BRIDGE_MAX_INFLIGHT": max_inflight}
+        c = BridgeClient(command=[sys.executable, str(script), str(log)], env=env)
+        made.append(c)
+        return c, log
+
+    yield _make
+    for c in made:
+        c.close()
+
+
+def _received(log: Path) -> list[str]:
+    return [line for line in log.read_text().splitlines() if line]
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [(None, 2), ("", 2), ("0", 2), ("abc", 2), ("1", 1), ("3", 3), ("3.9", 3), ("8", 8), ("99", 8), ("-4", 1)],
+)
+def test_max_inflight_follows_the_bridge_rule(raw, expected):
+    source = {} if raw is None else {"TRADINGVIEW_BRIDGE_MAX_INFLIGHT": raw}
+    assert tvb._read_max_inflight(source) == expected
+
+
+def test_default_cap_is_max_inflight_plus_two(make_client, monkeypatch):
+    monkeypatch.setenv("TRADINGVIEW_BRIDGE_MAX_INFLIGHT", "3")
+    client = make_client()
+    assert client._max_inflight == 3
+    held = [client._inflight.acquire(blocking=False) for _ in range(6)]
+    assert held == [True] * 5 + [False]
+
+
+def test_extra_concurrent_calls_fail_fast_and_never_reach_the_bridge(logging_client):
+    client, log = logging_client("1")  # cap = 1 + 2 = 3
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        running = [pool.submit(client.call, "sleep", {"s": 1.0, "tag": f"slow{i}"}, 30) for i in range(3)]
+        assert _wait_until(lambda: len(_received(log)) == 3)
+
+        started = time.monotonic()
+        with pytest.raises(BridgeError) as exc:
+            client.call("echo", {"tag": "fourth"})
+        elapsed = time.monotonic() - started
+
+        assert exc.value.code == "RATE_LIMITED"
+        assert "busy" in exc.value.message
+        assert elapsed < 1.5
+        assert exc.value.to_envelope()["error"]["code"] == "UPSTREAM_RATE_LIMIT"
+        assert exc.value.to_envelope()["error"]["retryable"] is True
+
+        for fut in running:
+            assert fut.result(timeout=10) == {"slept": 1.0}
+
+    assert "fourth" not in _received(log)
+    assert sorted(_received(log)) == ["slow0", "slow1", "slow2"]
+    # Rejection is not a bridge failure.
+    assert client._fail_count == 0
+    # Slots are free again once the slow calls finish.
+    assert client.call("echo", {"tag": "after"}) == {"tag": "after"}
+
+
+def test_slots_are_released_after_bridge_errors_and_timeouts(logging_client, make_client):
+    client, log = logging_client("1")
+    for _ in range(10):  # more rounds than slots
+        with pytest.raises(BridgeError) as exc:
+            client.call("sleep", {"s": 0.5, "tag": "t"}, timeout_s=0.05)
+        assert exc.value.code == "TIMEOUT"
+    # No leaked slots: three calls can run at once again.
+    assert [client._inflight.acquire(blocking=False) for _ in range(3)] == [True] * 3
+
+    other = make_client()
+    for _ in range(10):
+        with pytest.raises(BridgeError) as exc:
+            other.call("fail", {"code": "NO_DATA", "message": "none"})
+        assert exc.value.code == "NO_DATA"
+    assert [other._inflight.acquire(blocking=False) for _ in range(4)] == [True] * 4  # default cap 2 + 2
+
+
+def test_slot_is_released_when_the_bridge_cannot_start():
+    bad = BridgeClient(command=["/nonexistent/definitely-not-a-binary"], env={"TRADINGVIEW_BRIDGE_MAX_INFLIGHT": "1"})
+    for _ in range(8):
+        with pytest.raises(BridgeError) as exc:
+            bad.call("echo")
+        assert exc.value.code == "UPSTREAM_UNAVAILABLE"
+        bad._fail_count = 0  # keep the cool-down out of this test
+    assert [bad._inflight.acquire(blocking=False) for _ in range(3)] == [True] * 3
+
+
+def test_health_still_works_while_saturated(logging_client):
+    client, log = logging_client("1")
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        running = [pool.submit(client.call, "sleep", {"s": 1.0, "tag": f"slow{i}"}, 30) for i in range(3)]
+        assert _wait_until(lambda: len(_received(log)) == 3)
+
+        with pytest.raises(BridgeError) as exc:
+            client.call("echo", {"tag": "blocked"})
+        assert exc.value.code == "RATE_LIMITED"
+
+        assert client.call("health") == {"ok": True}
+        for fut in running:
+            fut.result(timeout=10)
+    # health took no slot and returned none.
+    assert [client._inflight.acquire(blocking=False) for _ in range(3)] == [True] * 3
+    assert client._inflight.acquire(blocking=False) is False

@@ -1232,7 +1232,7 @@ def tv_candles(symbol: str, exchange: str, timeframe: str = "1D", count: int = 3
     Args:
         symbol: Bare ticker, e.g. "BTCUSDT" or "COMI"
         exchange: Exchange, e.g. BINANCE, KUCOIN, EGX, NASDAQ
-        timeframe: 5m, 15m, 1h, 4h, 1D, 1W or 1M
+        timeframe: 5m, 15m, 1h, 4h, 1D, 1W, 1M (1M is monthly; 1-minute bars are not supported)
         count: Number of bars, 1 to 1000 (default 300)
     """
     return tv_data_service.get_candles(symbol, exchange, timeframe, count)
@@ -1264,7 +1264,7 @@ def tv_indicator(
         symbol: Bare ticker, e.g. "BTCUSDT"
         exchange: Exchange, e.g. BINANCE
         indicator: Script ID such as "STD;RSI" or a built-in study name
-        timeframe: 5m, 15m, 1h, 4h, 1D, 1W or 1M
+        timeframe: 5m, 15m, 1h, 4h, 1D, 1W, 1M (1M is monthly; 1-minute bars are not supported)
         inputs: Optional indicator inputs as an object
         count: Number of values, 1 to 500 (default 100)
     """
