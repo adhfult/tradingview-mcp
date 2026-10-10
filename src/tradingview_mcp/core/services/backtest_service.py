@@ -281,6 +281,7 @@ def _finalize_trades(trades: list, position, candles: list) -> list:
             "exit_date": candles[-1]["date"],
             "exit_price": candles[-1]["close"],
             "forced_exit": True,
+            "exit_idx": len(candles) - 1,
         })
     return trades
 
@@ -294,9 +295,9 @@ def _run_rsi(candles, oversold=40, overbought=60, period=14, **_):
             continue
         price, date = candles[i]["close"], candles[i]["date"]
         if position is None and rsi[i] < oversold:
-            position = {"entry_date": date, "entry_price": price, "strategy": "rsi"}
+            position = {"entry_date": date, "entry_price": price, "entry_idx": i, "strategy": "rsi"}
         elif position is not None and rsi[i] > overbought:
-            trades.append({**position, "exit_date": date, "exit_price": price})
+            trades.append({**position, "exit_date": date, "exit_price": price, "exit_idx": i})
             position = None
     return _finalize_trades(trades, position, candles)
 
@@ -310,9 +311,9 @@ def _run_bollinger(candles, period=20, std_mult=2.0, **_):
             continue
         price, date = candles[i]["close"], candles[i]["date"]
         if position is None and price < bb["lower"][i]:
-            position = {"entry_date": date, "entry_price": price, "strategy": "bollinger"}
+            position = {"entry_date": date, "entry_price": price, "entry_idx": i, "strategy": "bollinger"}
         elif position is not None and price > bb["middle"][i]:
-            trades.append({**position, "exit_date": date, "exit_price": price})
+            trades.append({**position, "exit_date": date, "exit_price": price, "exit_idx": i})
             position = None
     return _finalize_trades(trades, position, candles)
 
@@ -327,9 +328,9 @@ def _run_macd(candles, fast=12, slow=26, signal=9, **_):
             continue
         price, date = candles[i]["close"], candles[i]["date"]
         if position is None and mp < sp and m >= s:
-            position = {"entry_date": date, "entry_price": price, "strategy": "macd"}
+            position = {"entry_date": date, "entry_price": price, "entry_idx": i, "strategy": "macd"}
         elif position is not None and mp > sp and m <= s:
-            trades.append({**position, "exit_date": date, "exit_price": price})
+            trades.append({**position, "exit_date": date, "exit_price": price, "exit_idx": i})
             position = None
     return _finalize_trades(trades, position, candles)
 
@@ -345,9 +346,9 @@ def _run_ema_cross(candles, fast_period=20, slow_period=50, **_):
             continue
         price, date = candles[i]["close"], candles[i]["date"]
         if position is None and fp < sp and f >= s:
-            position = {"entry_date": date, "entry_price": price, "strategy": "ema_cross"}
+            position = {"entry_date": date, "entry_price": price, "entry_idx": i, "strategy": "ema_cross"}
         elif position is not None and fp > sp and f <= s:
-            trades.append({**position, "exit_date": date, "exit_price": price})
+            trades.append({**position, "exit_date": date, "exit_price": price, "exit_idx": i})
             position = None
     return _finalize_trades(trades, position, candles)
 
@@ -364,9 +365,9 @@ def _run_supertrend(candles, atr_period=10, multiplier=3.0, **_):
             continue
         price, date = candles[i]["close"], candles[i]["date"]
         if position is None and dp == -1 and d == 1:
-            position = {"entry_date": date, "entry_price": price, "strategy": "supertrend"}
+            position = {"entry_date": date, "entry_price": price, "entry_idx": i, "strategy": "supertrend"}
         elif position is not None and dp == 1 and d == -1:
-            trades.append({**position, "exit_date": date, "exit_price": price})
+            trades.append({**position, "exit_date": date, "exit_price": price, "exit_idx": i})
             position = None
     return _finalize_trades(trades, position, candles)
 
@@ -384,9 +385,9 @@ def _run_donchian(candles, period=20, **_):
             continue
         price, date = candles[i]["close"], candles[i]["date"]
         if position is None and highs[i] > dc["upper"][i - 1]:
-            position = {"entry_date": date, "entry_price": price, "strategy": "donchian"}
+            position = {"entry_date": date, "entry_price": price, "entry_idx": i, "strategy": "donchian"}
         elif position is not None and lows[i] < dc["lower"][i - 1]:
-            trades.append({**position, "exit_date": date, "exit_price": price})
+            trades.append({**position, "exit_date": date, "exit_price": price, "exit_idx": i})
             position = None
     return _finalize_trades(trades, position, candles)
 
@@ -409,9 +410,9 @@ def _run_rsi_pullback(candles, rsi_period=14, oversold=40, overbought=70,
         price, date = candles[i]["close"], candles[i]["date"]
         in_uptrend  = sma_fast[i] > sma_slow[i]
         if position is None and in_uptrend and rsi[i] < oversold:
-            position = {"entry_date": date, "entry_price": price, "strategy": "rsi_pullback"}
+            position = {"entry_date": date, "entry_price": price, "entry_idx": i, "strategy": "rsi_pullback"}
         elif position is not None and (rsi[i] > overbought or price < sma_fast[i]):
-            trades.append({**position, "exit_date": date, "exit_price": price})
+            trades.append({**position, "exit_date": date, "exit_price": price, "exit_idx": i})
             position = None
     return _finalize_trades(trades, position, candles)
 
@@ -435,9 +436,9 @@ def _run_keltner_breakout(candles, ema_period=20, atr_period=14, multiplier=2.0,
         price, date = candles[i]["close"], candles[i]["date"]
         upper       = ema[i] + multiplier * atr[i]
         if position is None and price > upper:
-            position = {"entry_date": date, "entry_price": price, "strategy": "keltner_breakout"}
+            position = {"entry_date": date, "entry_price": price, "entry_idx": i, "strategy": "keltner_breakout"}
         elif position is not None and price < ema[i]:
-            trades.append({**position, "exit_date": date, "exit_price": price})
+            trades.append({**position, "exit_date": date, "exit_price": price, "exit_idx": i})
             position = None
     return _finalize_trades(trades, position, candles)
 
@@ -461,9 +462,9 @@ def _run_triple_ema(candles, fast_period=20, slow_period=50, trend_period=200, *
         bull_cross  = fp < sp and f >= s
         bear_cross  = fp > sp and f <= s
         if position is None and bull_cross and price > t:
-            position = {"entry_date": date, "entry_price": price, "strategy": "triple_ema"}
+            position = {"entry_date": date, "entry_price": price, "entry_idx": i, "strategy": "triple_ema"}
         elif position is not None and bear_cross:
-            trades.append({**position, "exit_date": date, "exit_price": price})
+            trades.append({**position, "exit_date": date, "exit_price": price, "exit_idx": i})
             position = None
     return _finalize_trades(trades, position, candles)
 
@@ -495,6 +496,15 @@ _STRATEGY_WARMUP_BARS = {
     "keltner_breakout": 20,   # EMA20 / ATR14
     "triple_ema":       200,  # trend EMA (excluded from walk-forward anyway)
 }
+
+
+# Bar indexes (entry_idx / exit_idx) are internal: the gauntlet's next-open fill and
+# no-lookahead checks use them. They are stripped from every result a caller sees.
+_INTERNAL_TRADE_KEYS = ("entry_idx", "exit_idx")
+
+
+def _public_trade(trade: dict) -> dict:
+    return {k: v for k, v in trade.items() if k not in _INTERNAL_TRADE_KEYS}
 
 
 # ─── Transaction Costs ────────────────────────────────────────────────────────
@@ -824,7 +834,7 @@ def run_backtest(
         **metrics,
         "buy_and_hold_return_pct": bnh,
         "vs_buy_and_hold_pct":     round(metrics["total_return_pct"] - bnh, 2),
-        "recent_trades":           trades[-5:],
+        "recent_trades":           [_public_trade(t) for t in trades[-5:]],
         "data_source":             source_meta.get("data_source", "Yahoo Finance"),
         "disclaimer":              "Past performance does not guarantee future results. For educational use only.",
         "timestamp":               datetime.now(timezone.utc).isoformat(),
