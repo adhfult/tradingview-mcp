@@ -45,6 +45,9 @@ export function createStreams({
 }) {
   let stopping = false;
   let lastIssued = null;
+  // Shared connections lost. One drop can fail every stream on it, so each client counts once.
+  const droppedConnections = new WeakSet();
+  let connectionDrops = 0;
 
   const list = streams.map((entry) => ({
     key: entry.key,
@@ -120,7 +123,14 @@ export function createStreams({
     const old = s.watcher;
     s.watcher = null;
     if (old !== null) void stopQuietly(old);
-    if (client) clients.reportFailure(err, client);
+    if (client) {
+      if (clients.mustDrop(err, client) && !droppedConnections.has(client)) {
+        droppedConnections.add(client);
+        connectionDrops += 1;
+        logger.warn(`shared connection lost at ${iso()} (${code})`);
+      }
+      clients.reportFailure(err, client);
+    }
 
     const delay = nextDelay(s);
     s.status = 'restarting';
@@ -222,10 +232,14 @@ export function createStreams({
 
     total: list.length,
 
-    /** Total disconnects across streams, and how many shared connections were opened. */
+    /**
+     * `disconnects`: stream failures, summed over streams. `connection_drops`: shared
+     * connections lost (a single drop counts once, however many streams it failed).
+     */
     counters() {
       return {
         disconnects: list.reduce((sum, s) => sum + s.disconnects, 0),
+        connection_drops: connectionDrops,
       };
     },
   };

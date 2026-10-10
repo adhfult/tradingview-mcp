@@ -182,6 +182,7 @@ export function createWatcher({
         streams: health.summary(),
         uptime_s: Math.floor((clock.now() - startedAtMs) / 1000),
         disconnects: streams.counters().disconnects,
+        connection_drops: streams.counters().connection_drops,
       }),
     })
     : null;
@@ -244,6 +245,8 @@ export function createWatcher({
       ticker = null;
       await streams.stop();
       await drain(queue, clock, QUEUE_DRAIN_MS);
+      const undelivered = queue.pending();
+      if (undelivered > 0) logger.warn(`shutdown: ${undelivered} alert(s) not yet delivered were dropped`);
       queue.close();
       await store.close();
       if (localApi !== null) await localApi.close();

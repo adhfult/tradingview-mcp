@@ -131,7 +131,7 @@ function pctMove(rule, c) {
   return {
     direction,
     values: { pct: round(pct, 3), close: last.close, ref_close: ref.close, bars },
-    message: `${direction === 'up' ? 'Up' : 'Down'} ${Math.abs(pct).toFixed(2)}% over ${bars} bars`,
+    message: `${direction === 'up' ? 'Up' : 'Down'} ${Math.abs(pct).toFixed(2)}% over ${bars} bar${bars === 1 ? '' : 's'}`,
   };
 }
 

@@ -253,6 +253,35 @@ test('a failed start (watchCandles rejects) is retried with backoff', async () =
   assert.equal(lib.watchers.length, 1);
 });
 
+test('one shared connection drop that fails several streams counts once as a connection drop', async () => {
+  const clock = createFakeClock();
+  const lib = createFakeLib();
+  const log = logger();
+  const clients = createClientManager({ lib, now: clock.now, log: (m) => log.info(m) });
+  const evaluatedMap = {};
+  const streams = createStreams({
+    streams: [
+      { key: 'A|1', symbol: 'A', timeframe: '1', market: 'crypto' },
+      { key: 'B|1', symbol: 'B', timeframe: '1', market: 'crypto' },
+      { key: 'C|1', symbol: 'C', timeframe: '1', market: 'crypto' },
+    ],
+    lib,
+    clients,
+    clock,
+    logger: log,
+    evaluated: { get: (k) => evaluatedMap[k], set: (k, t) => { evaluatedMap[k] = t; } },
+    onClosedBar: () => {},
+    random: () => 0,
+  });
+  streams.start();
+  await settle();
+  // the library reports the same dead connection on all three watchers
+  for (const w of lib.watchers) w.fail('CONNECTION_ERROR');
+  await settle();
+  assert.deepEqual(streams.counters(), { disconnects: 3, connection_drops: 1 });
+  assert.ok(log.lines.some((line) => line.includes('shared connection lost at')));
+});
+
 test('a disconnect is logged with its time, and the counters record it', async () => {
   const { lib, streams, log, clock } = setup();
   streams.start();

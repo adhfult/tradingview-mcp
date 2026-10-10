@@ -33,19 +33,27 @@ export function timeframeSeconds(timeframe) {
  * Calendar parts of an instant in a time zone, from Intl.DateTimeFormat parts
  * (no libraries). `weekday` is 1 (Monday) to 7 (Sunday).
  */
+const formatters = new Map();
+
+function formatterFor(timeZone) {
+  if (!formatters.has(timeZone)) {
+    formatters.set(timeZone, new Intl.DateTimeFormat('en-US', {
+      timeZone,
+      hourCycle: 'h23',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      weekday: 'short',
+      timeZoneName: 'short',
+    }));
+  }
+  return formatters.get(timeZone);
+}
+
 export function zonedParts(ms, timeZone) {
-  const fmt = new Intl.DateTimeFormat('en-US', {
-    timeZone,
-    hourCycle: 'h23',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    weekday: 'short',
-    timeZoneName: 'short',
-  });
-  const parts = Object.fromEntries(fmt.formatToParts(new Date(ms)).map((p) => [p.type, p.value]));
+  const parts = Object.fromEntries(formatterFor(timeZone).formatToParts(new Date(ms)).map((p) => [p.type, p.value]));
   return {
     year: Number(parts.year),
     month: Number(parts.month),

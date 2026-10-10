@@ -71,6 +71,112 @@ The other secret names known to the redactor (`DISCORD_WEBHOOK_URL`, `TELEGRAM_B
 - Read-only. There are no methods for orders, watchlist changes or account changes.
 - Tests use fake values and a fake library. They make no network calls.
 
+## Watcher
+
+`watcher.mjs` is a standalone process for a Raspberry Pi that is always on. It streams live candles for a watchlist with your TradingView account, checks rules when each candle **closes**, runs a "what's trending" scan, and sends alerts to Discord and/or Telegram. It does not need the MCP server or Claude, and **it never places trades**.
+
+### Raspberry Pi setup
+
+1. Use Raspberry Pi OS (64-bit) with Node 22. Check with `node -v`.
+2. Clone the repo and install the bridge dependencies. `--ignore-scripts` is required:
+   ```sh
+   git clone <repo> ~/code/tradingview-mcp
+   cd ~/code/tradingview-mcp/bridge && npm ci --ignore-scripts
+   ```
+3. Create the secrets file from the names-only template. Make it readable only by `pi`. systemd reads `EnvironmentFile` as root before it drops privileges, so this works for the service too:
+   ```sh
+   sudo cp watcher.env.example /etc/tradingview-watcher.env
+   sudo nano /etc/tradingview-watcher.env      # fill in the values
+   sudo chown pi:pi /etc/tradingview-watcher.env
+   sudo chmod 600 /etc/tradingview-watcher.env
+   ```
+4. Create the config and check it. `--check-config` prints `OK`, or every problem:
+   ```sh
+   mkdir -p ~/.config/tradingview-watcher
+   cp watcher.config.example.json ~/.config/tradingview-watcher/config.json
+   node watcher.mjs --config ~/.config/tradingview-watcher/config.json --check-config
+   ```
+5. Load the secrets into this shell only, then test the channels. `--test-notify` sends one message to each configured channel:
+   ```sh
+   set -a; . /etc/tradingview-watcher.env; set +a
+   node watcher.mjs --config ~/.config/tradingview-watcher/config.json --test-notify
+   ```
+   To see alerts without sending them, run the same command with `--dry-run` in place of `--test-notify`.
+6. Install and start the service. The unit is in `watcher.service.example`:
+   ```sh
+   sudo cp watcher.service.example /etc/systemd/system/tradingview-watcher.service
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now tradingview-watcher
+   journalctl -u tradingview-watcher -f
+   ```
+
+The unit runs as `pi`, reads the env file through `EnvironmentFile=`, restarts on failure after 10 seconds, and uses `NoNewPrivileges`, `ProtectSystem=strict`, `ProtectHome=read-only` and `PrivateTmp`. Its only writable path is the state directory.
+
+### Discord webhook
+
+1. In Discord, open the channel's settings, then **Integrations**, then **Webhooks**, and choose **New Webhook**.
+2. Copy the webhook URL into `DISCORD_WEBHOOK_URL` in the env file.
+
+### Telegram bot
+
+1. In Telegram, open a chat with **@BotFather**, send `/newbot`, and follow the prompts. Copy the token into `TELEGRAM_BOT_TOKEN`.
+2. Send any message to your new bot from your own account.
+3. Open this URL in your own browser (it is a secret, so do not paste it anywhere else):
+   `https://api.telegram.org/bot<TOKEN>/getUpdates`
+   Find `"chat":{"id": ...}` in the reply and copy that number into `TELEGRAM_CHAT_ID`.
+
+### Command line
+
+```
+node bridge/watcher.mjs --config <path> [--check-config] [--test-notify] [--dry-run] [--once] [--log-json]
+```
+
+| Flag | Effect |
+|---|---|
+| `--config <path>` | Required. The JSON config file. `~` expands to your home directory. |
+| `--check-config` | Validates the config and the env names, then prints `OK` (exit 0) or every problem (exit 1). |
+| `--test-notify` | Sends "✅ tradingview watcher test" to each configured channel and prints `ok` or `failed` for each (exit 0 only if all succeed). |
+| `--dry-run` | Runs the whole watcher, but prints alerts to stdout instead of sending them. Saves no state. |
+| `--once` | Runs one trending scan, prints the rows of every market and kind, and exits. No streams, no alerts, no state. |
+| `--log-json` | Writes log lines as JSON, one object per line. |
+
+Logs go to stderr. Every line is redacted. A disconnect is logged with its time, and the count is in `GET /health`.
+
+### Config
+
+`watcher.config.example.json` is the reference. Validation reports every problem with its JSON path, for example `watchlist[1].timeframes[0]: "7" is not an allowed timeframe`.
+
+- `timezone`: an IANA name. Quiet hours, the heartbeat and bar times use it. Default `UTC`.
+- `watchlist`: each entry has a `symbol` (`EXCHANGE:SYMBOL`), `timeframes` (from `1, 3, 5, 15, 30, 45, 60, 120, 180, 240, D, W, M`) and an optional `market` (`crypto` or `stock`). Crypto exchanges (BINANCE, BYBIT, COINBASE, KUCOIN, OKX, BITGET, MEXC, GATEIO, HUOBI, BITFINEX, KRAKEN, BITSTAMP) default to `crypto`, and everything else to `stock`.
+- `rules`: each rule has an `id` and a `type`. It applies to every stream unless it names a `symbol` and/or `timeframes`.
+
+| Type | Fires when (on a closed bar) |
+|---|---|
+| `pct_move` | the close is `threshold_pct` or more away from the close `bars` bars earlier |
+| `volume_spike` | volume is at least `multiple` times the average of the prior `lookback` bars |
+| `rsi_cross` | RSI (Wilder, `period`) rises through or falls through one of `levels` |
+| `bollinger_break` | the close is above the upper band or below the lower band (`period`, `stddev`) |
+| `new_extreme` | the close is above the highest high, or below the lowest low, of the prior `lookback` bars |
+| `price_cross` | the close crosses `level` (up when it goes from below to at or above, down the reverse) |
+
+- `trending`: `enabled`, `every_minutes` (at least 5), `markets`, `kinds` (`gainers`, `losers`, `mostActive`, `volumeGainers`), `top_n` (up to 200), `us_regular_hours_only` (skip `america` outside 09:30 to 16:00 New York time, Monday to Friday) and `remember_hours`. An alert fires only for a symbol that was not in that market and kind's list within `remember_hours`.
+- `alerts`: `cooldown_minutes` (per symbol, timeframe and rule), `max_per_hour` (the rest go into a summary), `quiet_hours` (`start` and `end`, `HH:MM`, may cross midnight), `digest_after_quiet` (send one summary when quiet hours end, or drop the held alerts).
+- `health`: `stream_down_minutes` and `daily_heartbeat` (`HH:MM`, or `null` to turn it off).
+- `state_dir`: where `state.json` lives. Writes are atomic.
+- `local_api`: `enabled` and `port` (1024 to 65535). The API listens on `127.0.0.1` only.
+- `limits.max_streams`: the number of symbol x timeframe streams (at most 25, the hard cap).
+
+### Local API
+
+Enabled when `local_api.enabled` is on **and** `WATCHER_LOCAL_TOKEN` is set. It listens on `127.0.0.1` only.
+
+- `POST /notify` with `Authorization: Bearer <WATCHER_LOCAL_TOKEN>` and a JSON body `{"title", "body", "key", "level": "info"|"up"|"down"}` (body up to 8 KB). Returns `202`, `400` for a bad body, or `401` for a bad token. The message goes through the same alert rules.
+- `GET /health` needs no token. It returns `{ok, streams: {healthy, total}, uptime_s, disconnects}` and no secrets.
+
+### Open question for live testing
+
+It is not known whether TradingView drops one of two websockets that use the same cookie (for example, the watcher on the Pi and the desktop MCP at the same time). Watch `disconnects` in `/health` and the `disconnected at` log lines, and record what you see.
+
 ## Development
 
 ```sh
