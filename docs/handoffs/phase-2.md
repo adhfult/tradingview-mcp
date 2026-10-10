@@ -196,3 +196,56 @@ With Node hidden (`PATH=/usr/bin:/bin /root/.local/bin/uv run pytest tests/unit 
 ...................................................                      [100%]
 483 passed in 7.67s
 ```
+
+## Review report (Sonnet)
+
+Reviewed commit 0e3430e against the brief and the current bridge (`bridge/server.mjs`, `bridge/lib/redact.mjs`, `errors.mjs`, `validate.mjs`). `bridge/` was not edited. Nothing committed or pushed by this review (a coordinator WIP snapshot, 1f94a3b, picked up my in-progress edits).
+
+### Defects found and fixed
+1. `tv_bridge_client.py` `_redact` (was lines 74-104): weaker than the bridge redactor. Missing the JSON/colon cookie pattern, the JWT pattern, and the URL-encoded / JSON-escaped secret variants. Fixed: same 7 env vars, same 5 patterns, and variants (raw, `encodeURIComponent`-equivalent `urllib.parse.quote(safe="!~*'()")`, `json.dumps` escaped, plus the non-ASCII-preserving JSON form).
+2. `BridgeError.__init__`: stored the message unredacted, so `str(err)` / `err.message` could leak (only `to_envelope()` redacted). Now redacted at construction. Non-string bridge error messages (e.g. `null`) no longer become the text `"None"`.
+3. Timeout race: the client default of 20 s equals the bridge's default deadline (15 s `timeoutMs` + 5 s grace), and a larger `timeoutMs` made the client give up first. New `_effective_timeout_s(method, params, timeout_s)`: for a numeric `timeoutMs` (clamped to the bridge's 1..60 s) or for any bridge data method without one (bridge default 15 s), the wait is `max(timeout_s, bridge_ms/1000 + 5 s grace + 5 s margin)`. Non-numeric/bool/NaN `timeoutMs` is ignored (the bridge rejects it immediately). `health` and non-bridge methods are unchanged. Note: a data call with no `timeoutMs` now waits at least 25 s instead of 20 s.
+4. Cool-down trip from a single crash: each in-flight request orphaned by one process death called `_note_failure()`, so 3 concurrent calls tripped the 3-failure cool-down on the first crash. Now a process death counts once (`_Process.failure_counted`; errors carry `.process`). An intentional `close()` fails pending calls with `counts_as_failure=False`, so it never feeds the cool-down.
+5. Default script path: `check_configured()` now says, when the default location is missing, that this is not a source checkout (for example a pip install) and to set `TRADINGVIEW_BRIDGE_PATH`; if the override is set but wrong it names the variable and the path.
+6. Node version probe: a failed probe (timeout, odd output) was cached forever, disabling the bridge for the life of the process. A failed probe is now retried after `_AVAIL_TTL_S`.
+7. Resource hygiene: dead child's stdin/stdout/stderr pipes are now closed (no fd/ResourceWarning leak across restarts). `reset_client_for_tests` unregisters the old client's atexit hook.
+8. `env_file.py`: a UTF-8 BOM (Windows editors) made the first variable's name invalid and silently skipped it (now `utf-8-sig`). A value containing a NUL byte made `os.environ[...] = ...` raise `ValueError`, which would crash the import of `tv_bridge_client`; such a line is now skipped.
+9. `tests/unit/fixtures/fake_bridge.py`: `crash` used `sys.exit`, which waits for non-daemon worker threads, so a crash with sleeping calls in flight was delayed. Now `os._exit(1)`. Added a `flood` method (many stderr lines).
+
+### Verified OK, no change needed
+- `call()` under concurrency: ids from `itertools.count` (atomic), pending map guarded by the client lock, stdin writes serialized per process; 16 threads x 200 calls tested.
+- stderr is drained continuously on its own thread (2 MB flood test passes; no deadlock).
+- Process death: stdout EOF fails pending futures; next call restarts; a dead-but-not-yet-reaped process is detected by `poll()` in `_ensure_started`; a stale reader cannot touch a newer process.
+- Child env is an allowlist: only the two TradingView cookies among secrets (tested for Telegram/Discord/Watcher/random vars).
+- `.env` loader never overrides existing variables, returns names only, logs nothing (tested).
+- `to_tv_timeframe` table and alias normalisation are correct.
+- Importing `tv_bridge_client` only runs `load_env_file_once()`; no process is spawned (tested in a subprocess with `Popen`/`run` stubbed).
+
+### Tests added (58 new; 483 -> 541)
+- Redaction parity: the env var list and the regex sources are compared against `bridge/lib/redact.mjs` text (no Node needed), so drift fails the suite; raw / URL-encoded / JSON-escaped / non-ASCII secrets; JSON and colon cookie forms (both quote styles, case-insensitive); JWT; bot token; Discord webhooks (ptb/canary/discordapp, upper case); every secret var; short values untouched; `BridgeError` never carries a secret; secret in a bridge error reply.
+- Timeout alignment: 15 parametrized cases of `_effective_timeout_s`, plus a real call where `timeoutMs` outlasts `timeout_s`, and a short `timeout_s` still timing out when no `timeoutMs` applies.
+- Config: missing default script mentions `TRADINGVIEW_BRIDGE_PATH`; wrong override names it; `call()` gives `NOT_CONFIGURED`; failed node probe is retried.
+- Process: stderr flood; 200 concurrent calls; one crash with 3 sleepers in flight fails all four and counts once; kill while idle then restart; death mid-call fails the pending call; `close()` mid-call is not a failure; garbage and id-less lines ignored; child env excludes all other secrets; import has no side effects.
+- `.env`: BOM, NUL value, directory in place of file, binary garbage, no logging of values.
+
+### Follow-ups (not done, out of scope)
+- `docs/tradingview-session.md` (named in `SETUP_HINT`) still does not exist; add the doc or change the hint text.
+- A stdin write blocks while holding the per-process write lock and has no timeout; only a bridge that stops reading stdin with a full pipe (>64 KiB pending) could trigger it. Bounding it would need a writer thread.
+- `.env` default path is `parents[4]/.env`; for a non-editable install that points somewhere unrelated to the project (harmless: usually missing). Consider also honouring the current directory or an explicit `TRADINGVIEW_ENV_FILE`.
+- Duplicate keys in `.env`: first one wins (a later line sees the variable already set); most dotenv tools let the last win. Not specified in the brief.
+- `has_credentials()` and `_redact` read `os.environ`, not an injected `env=` mapping.
+- Keep `_redact` in sync with `redact.mjs`; the two parity tests will fail on drift.
+
+### Real tail of the pytest runs (final tree)
+`uv run pytest tests/unit -q`:
+```
+........................................................................ [ 93%]
+.....................................                                    [100%]
+541 passed in 9.98s
+```
+`PATH=/usr/bin:/bin /root/.local/bin/uv run pytest tests/unit -q`:
+```
+........................................................................ [ 93%]
+.....................................                                    [100%]
+541 passed in 9.81s
+```

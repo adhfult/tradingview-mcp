@@ -510,8 +510,7 @@ def test_secret_shaped_text_is_redacted_without_any_env(text, leaked):
 def test_redaction_keeps_the_surrounding_text_readable():
     out = tvb._redact('{"sessionid":"fake-cookie-3","other":1}')
 
-    assert out == '{"sessionid":[REDACTED],"other":1}' or '"other":1' in out
-    assert "sessionid" in out
+    assert out == '{"sessionid":"[REDACTED]","other":1}'
 
 
 def test_every_configured_secret_variable_is_redacted(monkeypatch):
@@ -582,7 +581,7 @@ def test_non_string_error_message_from_the_bridge_is_handled(make_client):
         ("health", None, 20.0, 20.0),
         ("health", {}, 3.0, 3.0),
         ("sleep", {"s": 1}, 0.3, 0.3),
-        ("sleep", {"s": 1, "timeoutMs": 2000}, 0.3, 10.3 + 1.7),
+        ("sleep", {"s": 1, "timeoutMs": 2000}, 0.3, 12.0),
     ],
 )
 def test_effective_timeout_outwaits_the_bridge_deadline(method, params, timeout_s, expected):
