@@ -148,3 +148,51 @@ Use `tmp_path` and `monkeypatch.setenv` / `delenv`.
 - files changed
 - any mismatches with `bridge/server.mjs`
 - the real last 3 lines of both pytest runs (with and without Node)
+
+## Implementation report (Haiku)
+
+**Status:** complete. 483 of 483 unit tests pass (422 existing + 61 new). Nothing committed or pushed. No `bridge/` file was edited.
+
+### Files changed
+- `src/tradingview_mcp/core/errors.py`: edited. Added `NOT_CONFIGURED`, `AUTH_FAILED`, `PERMISSION_DENIED` under `# Configuration / auth`.
+- `src/tradingview_mcp/core/utils/validators.py`: edited. Added `_TV_INTERVAL_CODES` and `to_tv_timeframe()`. Re-checked after the stash incident: both edits are intact.
+- `src/tradingview_mcp/core/utils/env_file.py`: new. `load_env_file`, `load_env_file_once`, `DEFAULT_ENV_PATH`.
+- `src/tradingview_mcp/core/services/tv_bridge_client.py`: new. `BridgeError`, `BridgeClient`, `SETUP_HINT`, `get_client`, `reset_client_for_tests`, `_redact`.
+- `tests/unit/fixtures/fake_bridge.py`: new. Threaded fake bridge with modes `default` and `env`.
+- `tests/unit/services/test_tv_bridge_client.py`: new. 52 tests, including the `to_tv_timeframe` tests.
+- `tests/unit/test_env_file.py`: new. 9 tests.
+- `docs/handoffs/phase-2.md`: this report appended.
+
+### Protocol check against `bridge/server.mjs` (current on-disk version)
+- Reply shapes match: `{id, result}` and `{id, error:{code,message}}`. Methods match: `health`, `candles`, `quotes`, `indicator`, `search`, `symbol_info`, `screener`, `hotlist`, `technical`.
+- Protocol update from the coordinator, handled: `indicator.strategy` is `null` for plain indicators. The client passes results through unchanged, so no code change is needed. After shutdown, new requests get `UPSTREAM_UNAVAILABLE`. The table maps that to `UPSTREAM_ERROR` with `retryable=True`, which is the intended catch-all.
+- The bridge can send `id: null` replies (invalid JSON, oversize line). The client logs and drops them, since no request waits on a null id.
+
+### Mismatches and gaps to resolve
+1. `SETUP_HINT` (brief text) points to `docs/tradingview-session.md`, which does not exist. I kept the brief's text unchanged. Either the doc or the hint needs fixing.
+2. The bridge's `redact.mjs` has changed since Phase 1. It now adds two patterns (JSON or colon `sessionid` forms, and JWT shapes) and URL-encoded and JSON-escaped secret variants. The brief says the Python twin uses "the same patterns", so I ported the brief's list exactly and did not guess at the new ones. The Python `_redact` is therefore weaker than the bridge's. The bridge already redacts its own output, so the risk is limited, but the twin should be synced once the bridge redactor settles.
+3. Bridge timing: the bridge's default `timeoutMs` is 15 s, its maximum is 60 s, and it adds a 5 s grace before its hard deadline. The client's default `timeout_s` is 20 s. Callers that send a `timeoutMs` above about 15 s must also pass `timeout_s` explicitly, or the client will time out first.
+4. The default script path is `parents[4]/bridge/server.mjs`. That is correct for a source checkout (editable install). A non-editable install (e.g. the Dockerfile's `uv pip install --system .`) needs `TRADINGVIEW_BRIDGE_PATH`.
+
+### Deviations from the brief (deliberate, small)
+- Pending requests are stored per child process (`_Process.pending`, `int -> Future`), not in one client-wide dict. A stale reader from a closed process then cannot fail requests that belong to a newer process.
+- The `env=` argument is the source mapping for the allowlist, not a replacement child env. The allowlist therefore applies in tests too.
+- The node path uses `shutil.which(TRADINGVIEW_BRIDGE_NODE or "node")`, so a bare name is searched on PATH.
+- Any bridge reply, including an error reply, resets the failure counter. Timeouts do not count toward cool-down, as the brief specifies.
+- `Popen` also gets `encoding="utf-8", errors="replace"`.
+- The `to_tv_timeframe` tests live in `test_tv_bridge_client.py`, because `test_validators.py` is not in the brief's file list.
+- The test autouse fixture clears the credential variables with monkeypatch, so a developer's real `.env` (loaded at import, per the brief) cannot change results.
+
+### Real tail of the pytest runs (final tree)
+With Node visible (`uv run pytest tests/unit -q`):
+```
+........................................................................ [ 89%]
+...................................................                      [100%]
+483 passed in 7.31s
+```
+With Node hidden (`PATH=/usr/bin:/bin /root/.local/bin/uv run pytest tests/unit -q`; `node` is not on that PATH):
+```
+........................................................................ [ 89%]
+...................................................                      [100%]
+483 passed in 7.67s
+```

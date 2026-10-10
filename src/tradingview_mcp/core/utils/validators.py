@@ -339,6 +339,27 @@ def validate_exchange(ex: str, default: str = "kucoin") -> str:
     )
 
 
+# Our canonical timeframes -> TradingView's interval codes (used by the Node bridge).
+_TV_INTERVAL_CODES: dict = {
+    "5m": "5",
+    "15m": "15",
+    "1h": "60",
+    "4h": "240",
+    "1D": "D",
+    "1W": "W",
+    "1M": "M",
+}
+
+
+def to_tv_timeframe(tf: str) -> str:
+    """Return TradingView's interval code for *tf* (e.g. ``1h`` -> ``60``).
+
+    Input is normalised with :func:`validate_timeframe` first, so bad input
+    raises ``ScreenerServiceError(INVALID_TIMEFRAME)``.
+    """
+    return _TV_INTERVAL_CODES[validate_timeframe(tf)]
+
+
 def is_stock_exchange(exchange: str) -> bool:
     """Return True if the exchange is a stock market (not crypto)."""
     return exchange.strip().lower() in STOCK_EXCHANGES
