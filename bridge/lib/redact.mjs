@@ -11,10 +11,22 @@ export const SECRET_ENV_VARS = Object.freeze([
 
 const MIN_SECRET_LENGTH = 4;
 
+function safeEncode(value) {
+  try {
+    return encodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
 const PATTERNS = [
   [/sessionid(_sign)?=[^;\s]+/gi, 'sessionid$1=[REDACTED]'],
   [/bot\d+:[A-Za-z0-9_-]+/g, 'bot[REDACTED]'],
   [/https:\/\/(?:ptb\.|canary\.)?discord(?:app)?\.com\/api\/webhooks\/\S+/gi, '[REDACTED_WEBHOOK]'],
+  // JSON or colon forms of the cookie names, e.g. "sessionid":"abc" or sessionid: abc.
+  [/(["']?sessionid(?:_sign)?["']?\s*:\s*["']?)[^"'\s;,}&]+/gi, '$1[REDACTED]'],
+  // Websocket auth tokens are JWTs; they are never an env secret, so match the shape.
+  [/\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]*/g, '[REDACTED_JWT]'],
 ];
 
 /**
@@ -26,6 +38,11 @@ export function makeRedactor(env = process.env) {
   const secrets = SECRET_ENV_VARS
     .map((name) => env[name])
     .filter((value) => typeof value === 'string' && value.length >= MIN_SECRET_LENGTH)
+    .flatMap((value) => {
+      // Messages may carry the URL-encoded or JSON-escaped form of a secret.
+      const variants = new Set([value, safeEncode(value), JSON.stringify(value).slice(1, -1)]);
+      return [...variants].filter((variant) => variant.length >= MIN_SECRET_LENGTH);
+    })
     .sort((a, b) => b.length - a.length);
 
   return (text) => {

@@ -50,7 +50,7 @@ function fakeLib(overrides = {}) {
   return { lib, calls, clients, callsTo: (name) => calls.filter((c) => c.name === name) };
 }
 
-function harness(t, { lib, env = {} } = {}) {
+function harness(t, { lib, env = {}, deadlineGraceMs } = {}) {
   const written = [];
   const logs = [];
   const input = new PassThrough();
@@ -60,6 +60,7 @@ function harness(t, { lib, env = {} } = {}) {
     input,
     output: { write: (chunk) => { written.push(chunk); return true; } },
     log: (message) => logs.push(message),
+    ...(deadlineGraceMs === undefined ? {} : { deadlineGraceMs }),
   });
   t.after(async () => {
     input.end();
@@ -482,4 +483,264 @@ test('reads newline-delimited requests from input and resolves done after stdin 
 
   assert.equal(written.length, 2);
   assert.deepEqual(written.map((line) => JSON.parse(line).id).sort(), [1, 2]);
+});
+
+// ---- Review additions -------------------------------------------------------
+
+test('a client that closed while idle is replaced before the next call', async (t) => {
+  const fake = fakeLib();
+  const h = harness(t, { lib: fake.lib });
+  await h.request({ id: 1, method: 'quotes', params: { symbols: ['BTCUSD'] } });
+  assert.equal(fake.clients.length, 1);
+
+  fake.clients[0].isClosed = true; // e.g. server hang-up or inactivity timeout while idle
+  const res = await h.request({ id: 2, method: 'quotes', params: { symbols: ['BTCUSD'] } });
+  assert.ok(res.result);
+  assert.equal(fake.clients.length, 2, 'a fresh client was constructed');
+  assert.equal(fake.callsTo('getQuotes')[1].args.client, fake.clients[1]);
+});
+
+test('a call that fails because its client closed under it drops that client', async (t) => {
+  let first = true;
+  const fake = fakeLib({
+    getQuotes: (q) => {
+      if (first) {
+        first = false;
+        fake.clients[0].isClosed = true;
+        throw Object.assign(new Error('The provided client is closed'), { code: 'INVALID_STATE' });
+      }
+      return Object.fromEntries(q.symbols.map((s) => [s, {}]));
+    },
+  });
+  const h = harness(t, { lib: fake.lib });
+  const a = await h.request({ id: 1, method: 'quotes', params: { symbols: ['BTCUSD'] } });
+  assert.equal(a.error.code, 'UPSTREAM_ERROR');
+  const b = await h.request({ id: 2, method: 'quotes', params: { symbols: ['BTCUSD'] } });
+  assert.ok(b.result);
+  assert.equal(fake.clients.length, 2);
+});
+
+test('AUTH_ERROR and a timeout before the connection was ready both drop the client', async (t) => {
+  const codes = ['AUTH_ERROR', 'TIMEOUT'];
+  const fake = fakeLib({
+    getCandles: () => {
+      const code = codes.shift();
+      if (code) {
+        fake.clients.at(-1).isAuthenticated = false;
+        throw Object.assign(new Error('nope'), { code });
+      }
+      return [];
+    },
+  });
+  const h = harness(t, { lib: fake.lib });
+  for (const id of [1, 2, 3]) await h.request({ id, method: 'candles', params: { symbol: 'BTCUSD' } });
+  assert.equal(fake.clients.length, 3, 'each failed client was replaced');
+  assert.equal(fake.clients[0].closeCount, 1);
+  assert.equal(fake.clients[1].closeCount, 1);
+});
+
+test('a timeout on an authenticated client keeps the shared client', async (t) => {
+  let first = true;
+  const fake = fakeLib({
+    getCandles: () => {
+      if (first) {
+        first = false;
+        fake.clients[0].isAuthenticated = true;
+        throw Object.assign(new Error('slow symbol'), { code: 'TIMEOUT' });
+      }
+      return [];
+    },
+  });
+  const h = harness(t, { lib: fake.lib });
+  await h.request({ id: 1, method: 'candles', params: { symbol: 'BTCUSD' } });
+  await h.request({ id: 2, method: 'candles', params: { symbol: 'BTCUSD' } });
+  assert.equal(fake.clients.length, 1);
+});
+
+test('a library call that ignores its timeout is cut off at the deadline, frees its slot and drops the client', async (t) => {
+  let hangs = true;
+  const fake = fakeLib({
+    getCandles: () => (hangs ? new Promise(() => {}) : []),
+  });
+  const h = harness(t, { lib: fake.lib, env: { TRADINGVIEW_BRIDGE_MAX_INFLIGHT: '1' }, deadlineGraceMs: 30 });
+
+  const started = Date.now();
+  const res = await h.request({ id: 1, method: 'candles', params: { symbol: 'BTCUSD', timeoutMs: 1000 } });
+  assert.equal(res.error.code, 'TIMEOUT');
+  assert.ok(Date.now() - started >= 1000, 'the library keeps its full timeoutMs before the backstop fires');
+  assert.equal(fake.clients[0].closeCount, 1, 'stuck client closed');
+
+  hangs = false;
+  const next = await h.request({ id: 2, method: 'candles', params: { symbol: 'BTCUSD' } });
+  assert.deepEqual(next.result, [], 'the single slot was released');
+  assert.equal(fake.clients.length, 2);
+});
+
+test('an HTTP call aborted by the bridge timer is reported as TIMEOUT and releases its slot', async (t) => {
+  const fake = fakeLib({
+    searchMarkets: (_query, opts) => new Promise((_, reject) => {
+      // what the library does when fetch is aborted: a generic HTTP_ERROR
+      opts.signal.addEventListener('abort', () => {
+        reject(Object.assign(new Error('The operation was aborted due to timeout'), { code: 'HTTP_ERROR' }));
+      });
+    }),
+  });
+  const h = harness(t, { lib: fake.lib, env: { TRADINGVIEW_BRIDGE_MAX_INFLIGHT: '1' } });
+  const res = await h.request({ id: 1, method: 'search', params: { query: 'btc', timeoutMs: 1000 } });
+  assert.equal(res.error.code, 'TIMEOUT');
+
+  const again = await h.request({ id: 2, method: 'health' });
+  assert.equal(again.result.ok, true);
+  const sem = await h.request({ id: 3, method: 'technical', params: { symbol: 'BTCUSD' } });
+  assert.equal(sem.result, null, 'the slot is free again');
+});
+
+test('HTTP calls each get their own abort signal; technical and hotlist never get credentials', async (t) => {
+  const fake = fakeLib();
+  const h = harness(t, {
+    lib: fake.lib,
+    env: { TRADINGVIEW_SESSION_ID: 'fake-session', TRADINGVIEW_SESSION_SIGN: 'fake-signature' },
+  });
+  await h.request({ id: 1, method: 'technical', params: { symbol: 'btcusd' } });
+  await h.request({ id: 2, method: 'hotlist', params: { kind: 'losers' } });
+  await h.request({ id: 3, method: 'screener', params: { columns: ['close'] } });
+  const tech = fake.callsTo('getTechnicalAnalysis')[0];
+  assert.equal(tech.args, 'BTCUSD');
+  assert.ok(tech.opts.signal instanceof AbortSignal);
+  assert.equal('credentials' in tech.opts, false);
+  assert.ok(fake.callsTo('getHotlist')[0].opts.signal instanceof AbortSignal);
+  assert.ok(fake.callsTo('getScreener')[0].opts.signal instanceof AbortSignal);
+});
+
+test('after close() requests fail cleanly and no new client is created', async (t) => {
+  const fake = fakeLib();
+  const h = harness(t, { lib: fake.lib });
+  await h.request({ id: 1, method: 'quotes', params: { symbols: ['BTCUSD'] } });
+  await h.server.close();
+  const res = await h.request({ id: 2, method: 'quotes', params: { symbols: ['BTCUSD'] } });
+  assert.equal(res.error.code, 'UPSTREAM_UNAVAILABLE');
+  assert.equal(fake.clients.length, 1);
+});
+
+test('invalid input never reaches the library', async (t) => {
+  const fake = fakeLib();
+  const h = harness(t, { lib: fake.lib });
+  const inputs = JSON.parse('{"__proto__": {"polluted": true}}');
+  const deep = { a: { b: { c: { d: { e: 1 } } } } };
+  const cases = [
+    ['candles', { symbol: '\u00df' }], // sharp s upper-cases to SS
+    ['candles', { symbol: 'BTC USD' }],
+    ['candles', { symbol: 'BTC/USD' }],
+    ['candles', { symbol: 'A'.repeat(41) }],
+    ['candles', { symbol: 'BTCUSD', timeframe: 'D ' }],
+    ['candles', { symbol: 'BTCUSD', count: 1.5 }],
+    ['candles', { symbol: 'BTCUSD', count: '5' }],
+    ['candles', { symbol: 'BTCUSD', from: 1700000000000 }], // milliseconds
+    ['candles', { symbol: 'BTCUSD', from: 1700000000, maxCount: 20001 }],
+    ['candles', { symbol: 'BTCUSD', timeoutMs: '1000' }],
+    ['quotes', { symbols: [] }],
+    ['quotes', { symbols: ['BTCUSD', 5] }],
+    ['indicator', { symbol: 'BTCUSD', indicator: '   ' }],
+    ['indicator', { symbol: 'BTCUSD', indicator: 'x'.repeat(201) }],
+    ['indicator', { symbol: 'BTCUSD', indicator: 'STD;RSI', count: 501 }],
+    ['indicator', { symbol: 'BTCUSD', indicator: 'STD;RSI', inputs: [1] }],
+    ['indicator', { symbol: 'BTCUSD', indicator: 'STD;RSI', inputs }],
+    ['indicator', { symbol: 'BTCUSD', indicator: 'STD;RSI', inputs: deep }],
+    ['search', { query: '   ' }],
+    ['search', { query: 'x'.repeat(61) }],
+    ['search', { query: 'btc', type: 5 }],
+    ['symbol_info', { symbol: '' }],
+    ['screener', { columns: ['close'], market: '../admin' }],
+    ['screener', { columns: ['close'], market: 'a/b' }],
+    ['screener', { columns: ['close', 'close'] }],
+    ['screener', { columns: ['  '] }],
+    ['screener', { columns: ['close'], filter: [{ left: 'x', operation: 'eq', right: { a: 1 } }] }],
+    ['hotlist', { kind: 'gainers', market: 'q?x=1' }],
+    ['hotlist', { kind: '__proto__' }],
+    ['technical', { symbol: 'x y' }],
+    ['technical', {}],
+  ];
+  for (const [method, params] of cases) {
+    const r = await h.request({ id: 1, method, params });
+    assert.equal(r.error?.code, 'INVALID_PARAMETER', `${method} ${JSON.stringify(params)}`);
+  }
+  // 1e999 parses to Infinity, which JSON.stringify cannot carry further.
+  const inf = await h.request('{"id":4,"method":"indicator","params":{"symbol":"BTCUSD","indicator":"STD;RSI","inputs":{"n":1e999}}}');
+  assert.equal(inf.error.code, 'INVALID_PARAMETER');
+  // params must be an object; oversize lines are refused before parsing.
+  assert.equal((await h.request({ id: 2, method: 'candles', params: ['BTCUSD'] })).error.code, 'INVALID_PARAMETER');
+  const big = await h.request(`{"id":3,"method":"health","params":{"pad":"${'x'.repeat(1_000_001)}"}}`);
+  assert.equal(big.error.code, 'INVALID_PARAMETER');
+  assert.equal(fake.clients.length, 0);
+  assert.equal(fake.callsTo('getCandles').length + fake.callsTo('searchMarkets').length
+    + fake.callsTo('getScreener').length + fake.callsTo('getHotlist').length
+    + fake.callsTo('getTechnicalAnalysis').length + fake.callsTo('getQuotes').length
+    + fake.callsTo('getIndicatorData').length + fake.callsTo('getSymbolInfo').length, 0);
+});
+
+test('quotes drops duplicate symbols', async (t) => {
+  const fake = fakeLib();
+  const h = harness(t, { lib: fake.lib });
+  await h.request({ id: 1, method: 'quotes', params: { symbols: ['btcusd', 'BTCUSD', 'ETHUSD'] } });
+  assert.deepEqual(fake.callsTo('getQuotes')[0].args.symbols, ['BTCUSD', 'ETHUSD']);
+});
+
+test('indicator gives strategy null for a plain study with an empty report', async (t) => {
+  const fake = fakeLib({
+    getIndicatorData: () => ({
+      indicator: {}, values: [], strategyReport: { trades: [], history: {}, performance: {} },
+    }),
+  });
+  const h = harness(t, { lib: fake.lib });
+  const r = await h.request({ id: 1, method: 'indicator', params: { symbol: 'BTCUSD', indicator: 'STD;RSI' } });
+  assert.equal(r.result.strategy, null);
+});
+
+test('screener accepts valid market, filter lists and passes only validated fields', async (t) => {
+  const fake = fakeLib();
+  const h = harness(t, { lib: fake.lib });
+  const r = await h.request({
+    id: 1,
+    method: 'screener',
+    params: {
+      market: 'america',
+      columns: ['close|60', 'Recommend.All'],
+      filter: [{ left: 'type', operation: 'in_range', right: ['stock', 'dr'], extra: 'dropped' }],
+      unknown: 'dropped',
+    },
+  });
+  assert.ok(r.result);
+  const q = fake.callsTo('getScreener')[0].args;
+  assert.deepEqual(q, {
+    market: 'america',
+    columns: ['close|60', 'Recommend.All'],
+    filter: [{ left: 'type', operation: 'in_range', right: ['stock', 'dr'] }],
+  });
+});
+
+test('logs from failed client closes are redacted too', async (t) => {
+  const env = { TRADINGVIEW_SESSION_ID: 'fake-session-value' };
+  const fake = fakeLib();
+  const h = harness(t, { lib: fake.lib, env });
+  await h.request({ id: 1, method: 'quotes', params: { symbols: ['BTCUSD'] } });
+  fake.clients[0].close = async () => { throw new Error('close failed for fake-session-value'); };
+  await h.server.close();
+  const text = h.logs.join('\n');
+  assert.ok(text.includes('client close failed'));
+  assert.equal(text.includes('fake-session-value'), false);
+});
+
+test('a log sink that throws never breaks a request', async (t) => {
+  const fake = fakeLib({ getCandles: () => { throw new Error('boom'); } });
+  const written = [];
+  const server = createServer({
+    lib: fake.lib,
+    env: {},
+    input: null,
+    output: { write: (chunk) => { written.push(chunk); return true; } },
+    log: () => { throw new Error('sink down'); },
+  });
+  t.after(() => server.close());
+  await server.handleLine('{"id":1,"method":"candles","params":{"symbol":"BTCUSD"}}');
+  assert.equal(JSON.parse(written[0]).error.code, 'UPSTREAM_ERROR');
 });

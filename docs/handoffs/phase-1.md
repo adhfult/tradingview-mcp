@@ -227,3 +227,71 @@ Exit 0, stderr empty.
 - `cd bridge && npm ci --ignore-scripts && npm test`: passes.
 - `uv run pytest tests/unit -q`: 422 passed.
 - `git status`: only `bridge/**` and this file are changed or new. Nothing staged or committed.
+
+## Review report (Sonnet)
+
+Reviewed commit db46a6f against the brief and the real 4.0.0 `.d.ts` and `.js`. Nothing committed or pushed. No protocol change (method names, params, result shapes, error codes are untouched). Only `bridge/**` and this file were edited. Haiku's `.d.ts` mismatch findings were checked and are correct (see item 6).
+
+### Defects found and fixed
+1. **Entry point silently did nothing when started through a symlink or non-canonical path** (`server.mjs`, old `isMain` check). Node resolves symlinks in `import.meta.url` but not in `argv[1]`, so `node link.mjs` exited 0 with no output. Reproduced on the old code. Fixed with `realpathSync` (`isEntryPoint()`, server.mjs ~L501).
+2. **Stdout discipline was incomplete.** Only `console.log/info/debug` were rerouted. The library itself calls `console.error` (`events.js` L54/67/72, unredacted, and an `error` event with no listener lands there), and `console.dir/table` plus any raw `process.stdout.write` still hit stdout. Added `lib/stdio.mjs` `guardStdio()`: all console methods and `process.stdout.write` go to redacted stderr, `process.stderr.write` is wrapped to redact, and the real stdout is reachable only through the returned protocol writer. It runs first in `main()`, before the dynamic library import. Also added `uncaughtException` handling (redacted, exit 1), an `EPIPE`/stdout `error` handler (parent closed the pipe), and a hard 5 s cap on shutdown.
+3. **Dead client was never replaced** (`server.mjs` getClient). The library does not reconnect: a client that closes while idle (server hang-up, 60 s inactivity, failed login) has `isClosed === true`, and every later call fails with `INVALID_STATE` ("The provided client is closed") forever, because that code is not a "connection error". `getClient()` now replaces a closed client, and `wsCall` also drops the client on `AUTH_ERROR`, on a closed client after any error, on a timeout before the connection was ready (`isAuthenticated === false`), and when the hard deadline fires.
+4. **No hard deadline, so a hung library call held a semaphore slot forever.** Added `lib/deadline.mjs` `withDeadline()` (late settle is absorbed, so no unhandled rejection) and a `timeoutMs + 5 s` backstop (`deadlineGraceMs` option, default 5000) on every websocket and HTTP call. Slot release was already correct on throw; it is now also guaranteed on hang.
+5. **HTTP timeouts were reported as `UPSTREAM_ERROR`.** `AbortSignal.timeout` makes fetch reject with a `TimeoutError`, which the library wraps as `HTTP_ERROR`. `httpCall()` now reports an abort caused by our timer as `TIMEOUT`. Still the same signal per call, created when the slot is acquired (not while queued).
+6. **Requests after `close()` could create a new, never-closed client** (leak). `close()` now sets a shutting-down flag; later ws calls fail with `UPSTREAM_UNAVAILABLE` ("bridge is shutting down").
+7. **Redactor gaps** (`lib/redact.mjs`): URL-encoded and JSON-escaped forms of the env secrets, JSON/colon forms of the cookie names (`"sessionid":"..."`), and JWT-shaped tokens (the websocket auth token is never an env secret) were not covered. Added. `createServer` now redacts every log line itself (`emit`), whatever sink is passed in, and a throwing sink cannot break a request.
+8. **Validation holes** (`lib/validate.mjs`, `server.mjs`):
+   - `symbol` upper-cased before the regex check, so non-ASCII letters mapped to ASCII passed (the German sharp s became `SS`). Now checked first.
+   - `market` (screener, hotlist) is a URL path segment (`scanner.tradingview.com/${market}/scan`) but was only length-checked. Now `/^[A-Za-z][A-Za-z0-9_-]{0,39}$/`.
+   - `inputs` accepted arbitrary nested values, including `__proto__` keys and huge payloads. Now JSON-only, depth 4, at most 100 keys, strings at most 1000 characters, finite numbers.
+   - `from`/`to` had no upper bound (millisecond timestamps would pass). Now at most 4102444800.
+   - Blank strings passed for `query`, `type`, `indicator`, columns, filter fields. Now rejected. Columns must be unique (the library rejects duplicates anyway).
+   - `quotes` duplicates are removed. Request lines over 1,000,000 characters are refused before parsing.
+9. **`indicator.strategy` for non-strategy studies** was `{tradeRecordCount: 0}`, because the library's empty report (`{trades: [], history: {}, performance: {}}`) is truthy. It is now `null` unless the report has trades or performance data (`hasStrategyReport`). Same shape, so no protocol change in type terms, but see "Protocol notes".
+
+### Checked and fine
+- **Shared client** is reused and `close()` runs on shutdown (stdin close, SIGTERM, SIGINT). A call that times out while the client is still connecting just returns `TIMEOUT`; the queued packets are harmless, and the client now gets dropped if it never became ready (fix 3). `ready` rejections are pre-handled by the library.
+- **Package**: `bridge/package.json` has the exact pin `4.0.0`. The lockfile has two packages (library and `ws@8.22.0`), both `https://registry.npmjs.org/`, no `hasInstallScript`, and neither package.json has an install/preinstall/postinstall script. `.npmrc` sets `ignore-scripts=true`. The root `.gitignore` rule that hides `lib/`, `package.json` and the lockfile is handled by `bridge/.gitignore` (verified with `git check-ignore` on the new files).
+- The library's `debug` option is never set, so no packet logging exists.
+
+### 6. Credentials for `getHotlist` / `getTechnicalAnalysis` (finding, no change)
+- `getTechnicalAnalysis`: `request()` is called without `credentials` in its init, so even passing them would do nothing at runtime. Correct as is.
+- `searchMarkets`: also never reads credentials. Correct as is.
+- `getHotlist`: types say `HttpOptions` only, but at runtime it forwards `options` to `getScreener`, which reads `options.credentials`. So credentials would work there, against the `.d.ts`. Kept without credentials per the types and the brief's "where their type accepts it". If logged-in scanner data (e.g. realtime vs delayed scanner fields) is wanted later, a one-line change in `hotlist` would do it, but it relies on undocumented behaviour; decide in a later phase.
+- Related quirk: `getTechnicalAnalysis` returns `null` for any response without data, including HTTP 429/403, so rate limiting there looks like "no data". The bridge cannot tell the difference. (For `search` and `screener`, a 429 does surface as `HTTP_ERROR` mentioning 429 and maps to `RATE_LIMITED`.)
+
+### Tests added (40 -> 65, all hermetic, fake library)
+- `test/server.test.mjs` (14 new): closed idle client replaced; client dropped after closed-under-call, `AUTH_ERROR`, and pre-ready `TIMEOUT` (kept after a normal `TIMEOUT`); hung library call cut off at the deadline with slot released and client dropped; HTTP abort mapped to `TIMEOUT` with slot released; abort signal on every HTTP call and no credentials for technical/hotlist; behaviour after `close()`; a 31-case "invalid input never reaches the library" matrix (plus `1e999`, array params, oversize line); quotes dedupe; empty strategy report gives `null`; screener passes only validated fields; redacted logs on a failing client close; throwing log sink.
+- `test/stdio.test.mjs`: `guardStdio` with fake process/console, and `withDeadline` (including a late rejection after the deadline).
+- `test/entrypoint.test.mjs`: spawns the real `server.mjs` (health only, no network): exactly one stdout line and empty stderr; starts via a symlink; with `fixtures/leak-after-guard.mjs` preloaded (simulated chatty library after the guard is installed), no `LEAK` text on stdout, everything on stderr, session secret and cookie redacted.
+- `test/validate.test.mjs` (4) and `test/redact.test.mjs` (2): sharp-s/dotless-i symbols, market, nonBlankString, jsonData, encoded/JSON/colon/JWT redaction.
+- New non-test file `bridge/fixtures/leak-after-guard.mjs` (kept outside `test/` because `node --test` runs every file under `test/`).
+
+### Protocol notes (nothing applied)
+- `indicator.strategy` is now `null` for plain indicators; it used to be `{tradeRecordCount: 0}`. Python should treat `null` as "not a strategy". If the Python client relied on a dict there, revert fix 9 (one function).
+- Not a change, but worth knowing for the Python client: after `close()` (shutdown) new requests get `UPSTREAM_UNAVAILABLE`; a request over 1,000,000 characters gets `INVALID_PARAMETER` ("request too large") with `id: null`.
+- Proposed (optional, not applied): a `retryable` flag on `error` objects so Python could retry `UPSTREAM_UNAVAILABLE` and `TIMEOUT` automatically. Not needed for Phase 2.
+
+### Follow-ups
+- Repeated `AUTH_ERROR` (bad cookies) now creates a new client, and so a new account lookup, on every call. A short cooldown after an auth failure would avoid hammering TradingView; not done to keep behaviour simple.
+- The root `.gitignore` still hides `lib/`, `package.json` and `package-lock.json` repo-wide; the per-directory re-includes work but a root fix would be cleaner.
+- `TRADINGVIEW_BRIDGE_MAX_INFLIGHT` applies to HTTP and websocket calls together; HTTP calls could use a separate pool if latency matters.
+
+### Real last lines of `cd bridge && npm test`
+```
+1..65
+# tests 65
+# suites 0
+# pass 65
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 2344.329657
+```
+
+### Health echo (`echo '{"id":1,"method":"health"}' | node bridge/server.mjs`, from repo root)
+```
+{"id":1,"result":{"ok":true,"libVersion":"4.0.0","node":"v22.22.0","hasCredentials":false}}
+```
+Exit 0, stderr empty.

@@ -74,3 +74,33 @@ test('timeoutMs defaults to 15000 and clamps to 1000..60000', () => {
   rejects(() => v.timeoutMs('2000'));
   rejects(() => v.timeoutMs(Number.NaN));
 });
+
+test('symbol is checked before upper-casing, so non-ASCII letters cannot slip through', () => {
+  assert.equal(v.symbol('binance:btcusdt'), 'BINANCE:BTCUSDT');
+  rejects(() => v.symbol('ß')); // upper-cases to "SS"
+  rejects(() => v.symbol('ı')); // dotless i upper-cases to "I"
+  rejects(() => v.symbol('BTC\n'));
+});
+
+test('market allows only scanner universe names', () => {
+  assert.equal(v.market('america'), 'america');
+  assert.equal(v.market('Hong-Kong_1'), 'Hong-Kong_1');
+  for (const bad of ['', '1abc', '../x', 'a/b', 'a b', 'x?y', 'a'.repeat(41), 5]) rejects(() => v.market(bad));
+});
+
+test('nonBlankString rejects whitespace-only text', () => {
+  assert.equal(v.nonBlankString(' a ', 's', { max: 5 }), ' a ');
+  rejects(() => v.nonBlankString('   ', 's', { max: 5 }));
+  rejects(() => v.nonBlankString('toolong', 's', { max: 5 }));
+});
+
+test('jsonData accepts bounded JSON and rejects the rest', () => {
+  assert.deepEqual(v.jsonData({ a: [1, 'x', null, true], b: { c: 2 } }, 'i'), { a: [1, 'x', null, true], b: { c: 2 } });
+  rejects(() => v.jsonData(JSON.parse('{"__proto__":{"x":1}}'), 'i'));
+  rejects(() => v.jsonData({ a: { b: { c: { d: { e: 1 } } } } }, 'i'));
+  rejects(() => v.jsonData({ a: Infinity }, 'i'));
+  rejects(() => v.jsonData({ a: 'x'.repeat(1001) }, 'i'));
+  rejects(() => v.jsonData({ a: new Date() }, 'i'));
+  rejects(() => v.jsonData({ a: undefined }, 'i'));
+  rejects(() => v.jsonData(Object.fromEntries(Array.from({ length: 101 }, (_, i) => [`k${i}`, i])), 'i'));
+});

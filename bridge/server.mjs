@@ -1,10 +1,12 @@
+import { realpathSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { createInterface } from 'node:readline';
 import { pathToFileURL } from 'node:url';
-import { format } from 'node:util';
 import { BridgeValidationError, errorMessage, isConnectionError, toBridgeError } from './lib/errors.mjs';
+import { withDeadline } from './lib/deadline.mjs';
 import { makeRedactor } from './lib/redact.mjs';
 import { createSemaphore } from './lib/semaphore.mjs';
+import { guardStdio } from './lib/stdio.mjs';
 import * as v from './lib/validate.mjs';
 
 const requireFromHere = createRequire(import.meta.url);
@@ -15,6 +17,13 @@ const SYMBOL_INFO_KEY_LIMIT = 40;
 const HOTLIST_KINDS = ['gainers', 'losers', 'mostActive', 'volumeGainers'];
 const MAX_BAR_COUNT = 5000;
 const MAX_HISTORY_BARS = 20000;
+// Unix seconds; the year 2100. Rejects millisecond timestamps passed by mistake.
+const MAX_UNIX_SECONDS = 4102444800;
+// A request line larger than this is refused before it is parsed.
+const MAX_LINE_LENGTH = 1_000_000;
+// How long past the library's own timeout a call may run before the bridge gives up on it.
+const DEFAULT_DEADLINE_GRACE_MS = 5000;
+const SHUTDOWN_GRACE_MS = 5000;
 
 function readLibVersion() {
   try {
@@ -72,6 +81,16 @@ const safe = (fn) => {
   }
 };
 
+// A study that is not a strategy still carries an empty report ({trades: [], performance: {}}).
+function hasStrategyReport(report) {
+  if (report === null || typeof report !== 'object') return false;
+  const trades = Array.isArray(report.trades) ? report.trades.length : 0;
+  const performance = report.performance !== null && typeof report.performance === 'object'
+    ? Object.keys(report.performance).length
+    : 0;
+  return trades > 0 || performance > 0;
+}
+
 const toCandle = ({ time, open, high, low, close, volume }) => ({ time, open, high, low, close, volume });
 
 function parseCandles(params) {
@@ -83,8 +102,8 @@ function parseCandles(params) {
 
   if (!v.isAbsent(params.from)) {
     if (!v.isAbsent(params.count)) throw new BridgeValidationError('use either count or from, not both');
-    const from = v.integer(params.from, 'from', { min: 0, max: Number.MAX_SAFE_INTEGER });
-    const to = optional(params.to, (value) => v.integer(value, 'to', { min: 0, max: Number.MAX_SAFE_INTEGER }));
+    const from = v.integer(params.from, 'from', { min: 0, max: MAX_UNIX_SECONDS });
+    const to = optional(params.to, (value) => v.integer(value, 'to', { min: 0, max: MAX_UNIX_SECONDS }));
     if (to !== undefined && to < from) throw new BridgeValidationError('to must not be before from');
     const maxCount = optional(params.maxCount, (value) => v.integer(value, 'maxCount', { min: 1, max: MAX_HISTORY_BARS }));
     return { ...base, from, to, maxCount };
@@ -109,11 +128,18 @@ function parseFilter(value) {
   return v.array(value, 'filter', { min: 0, max: 50 }).map((item) => {
     v.plainObject(item, 'filter item');
     return pickDefined({
-      left: v.string(item.left, 'filter.left', { min: 1, max: 200 }),
-      operation: v.string(item.operation, 'filter.operation', { min: 1, max: 50 }),
+      left: v.nonBlankString(item.left, 'filter.left', { max: 200 }),
+      operation: v.nonBlankString(item.operation, 'filter.operation', { max: 50 }),
       right: item.right === undefined ? undefined : parseScalarOrList(item.right, 'filter.right'),
     });
   });
+}
+
+function parseColumns(value) {
+  const columns = v.array(value, 'columns', { min: 1, max: 20 })
+    .map((item) => v.nonBlankString(item, 'columns', { max: 100 }));
+  if (new Set(columns).size !== columns.length) throw new BridgeValidationError('columns must be unique');
+  return columns;
 }
 
 function parseSort(value) {
@@ -122,7 +148,7 @@ function parseSort(value) {
     throw new BridgeValidationError('sort.sortOrder must be asc or desc');
   }
   return {
-    sortBy: v.string(value.sortBy, 'sort.sortBy', { min: 1, max: 100 }),
+    sortBy: v.nonBlankString(value.sortBy, 'sort.sortBy', { max: 100 }),
     sortOrder: value.sortOrder,
   };
 }
@@ -139,6 +165,7 @@ export function createServer({
   input = process.stdin,
   output = process.stdout,
   log = (message) => process.stderr.write(`${message}\n`),
+  deadlineGraceMs = DEFAULT_DEADLINE_GRACE_MS,
 } = {}) {
   if (!lib) throw new TypeError('createServer requires lib');
 
@@ -146,10 +173,38 @@ export function createServer({
   const credentials = readCredentials(env);
   const semaphore = createSemaphore(readMaxInflight(env));
   let client = null;
+  let shuttingDown = false;
 
-  const logError = (prefix, err) => log(`[bridge] ${prefix}: ${redact(errorMessage(err))}`);
+  // Every log line is redacted here, whatever the caller passes in, and a failing
+  // log sink can never break a request.
+  const emit = (message) => {
+    try {
+      log(redact(message));
+    } catch {
+      // ignore
+    }
+  };
+  const logError = (prefix, err) => emit(`[bridge] ${prefix}: ${errorMessage(err)}`);
+
+  const closeQuietly = async (target) => {
+    try {
+      await target.close();
+    } catch (err) {
+      logError('client close failed', err);
+    }
+  };
 
   const getClient = () => {
+    if (shuttingDown) {
+      throw Object.assign(new Error('bridge is shutting down'), { code: 'DISCONNECTED' });
+    }
+    // The library never reconnects: a client that closed while idle (server hang-up,
+    // inactivity timeout, failed login) stays closed, so replace it.
+    if (client !== null && client.isClosed === true) {
+      const stale = client;
+      client = null;
+      void closeQuietly(stale);
+    }
     if (client === null) {
       client = new lib.TradingViewClient(credentials ? { credentials } : {});
     }
@@ -158,23 +213,50 @@ export function createServer({
 
   const dropClient = async (used) => {
     if (client === used) client = null;
+    await closeQuietly(used);
+  };
+
+  const timeoutError = (timeoutMs) =>
+    Object.assign(new Error(`request timed out after ${timeoutMs} ms`), { code: 'TIMEOUT', deadline: true });
+
+  const mustDropClient = (err, used) =>
+    isConnectionError(err?.code)
+    || err?.code === 'AUTH_ERROR'
+    || err?.deadline === true // the library ignored its own timeout: the connection is suspect
+    || used.isClosed === true
+    // timed out before the connection ever became ready: do not keep waiting on it
+    || (err?.code === 'TIMEOUT' && used.isAuthenticated === false);
+
+  // Runs a websocket-based library call on the shared client, bounded by a hard
+  // deadline (the library's timeoutMs plus a grace period). A broken or stuck
+  // client is dropped so the next call opens a new one.
+  const wsCall = (timeoutMs, fn) => async () => {
+    const used = getClient();
     try {
-      await used.close();
+      return await withDeadline(() => fn(used), timeoutMs + deadlineGraceMs, () => timeoutError(timeoutMs));
     } catch (err) {
-      logError('client close failed', err);
+      if (mustDropClient(err, used)) void dropClient(used);
+      throw err;
     }
   };
 
-  // Runs a websocket-based library call on the shared client. A connection
-  // error drops that client, so the next call opens a new one.
-  const wsCall = (fn) => async () => {
-    const used = getClient();
-    try {
-      return await fn(used);
-    } catch (err) {
-      if (isConnectionError(err?.code)) void dropClient(used);
-      throw err;
-    }
+  // Runs an HTTP library call with an AbortSignal that fires after timeoutMs, plus
+  // the same hard deadline. fetch reports the abort as a generic HTTP_ERROR, so an
+  // abort caused by our timer is turned into TIMEOUT here.
+  const httpCall = (timeoutMs, fn) => () => {
+    const signal = AbortSignal.timeout(timeoutMs);
+    return withDeadline(
+      async () => {
+        try {
+          return await fn(signal);
+        } catch (err) {
+          if (signal.aborted) throw timeoutError(timeoutMs);
+          throw err;
+        }
+      },
+      timeoutMs + deadlineGraceMs,
+      () => timeoutError(timeoutMs),
+    );
   };
 
   const send = (id, body) => {
@@ -203,45 +285,48 @@ export function createServer({
 
     async candles(params) {
       const q = parseCandles(params);
-      const bars = await semaphore.run(wsCall((conn) => lib.getCandles(pickDefined({ ...q, client: conn }))));
+      const bars = await semaphore.run(wsCall(q.timeoutMs, (conn) => lib.getCandles(pickDefined({ ...q, client: conn }))));
       return (Array.isArray(bars) ? bars : []).map(toCandle);
     },
 
     async quotes(params) {
-      const symbols = v.array(params.symbols, 'symbols', { min: 1, max: 50 }).map((item) => v.symbol(item));
+      const symbols = [...new Set(v.array(params.symbols, 'symbols', { min: 1, max: 50 })
+        .map((item) => v.symbol(item, 'symbols')))];
       const timeoutMs = v.timeoutMs(params.timeoutMs);
-      return semaphore.run(wsCall((conn) => lib.getQuotes({ symbols, timeoutMs, client: conn })));
+      return semaphore.run(wsCall(timeoutMs, (conn) => lib.getQuotes({ symbols, timeoutMs, client: conn })));
     },
 
     async indicator(params) {
       const symbol = v.symbol(params.symbol);
       const timeframe = optional(params.timeframe, v.timeframe) ?? 'D';
-      const indicator = v.string(params.indicator, 'indicator', { min: 1, max: 200 });
-      const inputs = optional(params.inputs, (value) => v.plainObject(value, 'inputs'));
+      const indicator = v.nonBlankString(params.indicator, 'indicator', { max: 200 });
+      const inputs = optional(params.inputs, (value) => v.jsonData(v.plainObject(value, 'inputs'), 'inputs'));
       const count = optional(params.count, (value) => v.integer(value, 'count', { min: 1, max: 500 }))
         ?? DEFAULT_INDICATOR_COUNT;
       const timeoutMs = v.timeoutMs(params.timeoutMs);
 
-      const data = await semaphore.run(wsCall((conn) => lib.getIndicatorData(pickDefined({
+      const data = await semaphore.run(wsCall(timeoutMs, (conn) => lib.getIndicatorData(pickDefined({
         symbol, timeframe, indicator, inputs, count, timeoutMs, client: conn,
       }))));
 
-      const rows = Array.isArray(data.values) ? data.values : [];
+      const rows = Array.isArray(data?.values) ? data.values : [];
       return {
-        name: indicatorName(data.indicator),
+        name: indicatorName(data?.indicator),
         values: rows.slice(-count).map(({ $time, ...plots }) => ({ time: $time, ...plots })),
-        strategy: data.strategyReport ? safe(() => lib.summarizeStrategyReport(data.strategyReport)) : null,
+        strategy: hasStrategyReport(data?.strategyReport)
+          ? safe(() => lib.summarizeStrategyReport(data.strategyReport))
+          : null,
       };
     },
 
     async search(params) {
-      const query = v.string(params.query, 'query', { min: 1, max: 60 });
-      const type = optional(params.type, (value) => v.string(value, 'type', { min: 1, max: 60 }));
+      const query = v.nonBlankString(params.query, 'query', { max: 60 });
+      const type = optional(params.type, (value) => v.nonBlankString(value, 'type', { max: 60 }));
       const timeoutMs = v.timeoutMs(params.timeoutMs);
       // searchMarkets takes HttpOptions only: no credentials are passed.
-      const results = await semaphore.run(() => lib.searchMarkets(query, pickDefined({
-        type, signal: AbortSignal.timeout(timeoutMs),
-      })));
+      const results = await semaphore.run(httpCall(timeoutMs, (signal) => lib.searchMarkets(query, pickDefined({
+        type, signal,
+      }))));
       return (Array.isArray(results) ? results : []).slice(0, SEARCH_LIMIT).map((r) => ({
         id: r.id,
         symbol: r.symbol,
@@ -255,14 +340,13 @@ export function createServer({
     async symbol_info(params) {
       const symbol = v.symbol(params.symbol);
       const timeoutMs = v.timeoutMs(params.timeoutMs);
-      const info = await semaphore.run(wsCall((conn) => lib.getSymbolInfo({ symbol, timeoutMs, client: conn })));
+      const info = await semaphore.run(wsCall(timeoutMs, (conn) => lib.getSymbolInfo({ symbol, timeoutMs, client: conn })));
       return pickPrimitives(info, SYMBOL_INFO_KEY_LIMIT);
     },
 
     async screener(params) {
-      const market = optional(params.market, (value) => v.string(value, 'market', { min: 1, max: 40 }));
-      const columns = v.array(params.columns, 'columns', { min: 1, max: 20 })
-        .map((item) => v.string(item, 'columns', { min: 1, max: 100 }));
+      const market = optional(params.market, (value) => v.market(value));
+      const columns = parseColumns(params.columns);
       const filter = optional(params.filter, parseFilter);
       const sort = optional(params.sort, parseSort);
       const range = optional(params.range, (value) => v.range(value, 'range'));
@@ -270,41 +354,43 @@ export function createServer({
       const query = pickDefined({ market, columns, filter, sort, range });
 
       // getScreener is the only HTTP call whose options type accepts credentials.
-      const result = await semaphore.run(() => lib.getScreener(query, pickDefined({
+      const result = await semaphore.run(httpCall(timeoutMs, (signal) => lib.getScreener(query, pickDefined({
         credentials: credentials ?? undefined,
-        signal: AbortSignal.timeout(timeoutMs),
-      })));
-      return { totalCount: result.totalCount, rows: result.rows };
+        signal,
+      }))));
+      return { totalCount: result?.totalCount, rows: result?.rows };
     },
 
     async hotlist(params) {
       if (!HOTLIST_KINDS.includes(params.kind)) {
         throw new BridgeValidationError(`kind must be one of ${HOTLIST_KINDS.join(', ')}`);
       }
-      const market = optional(params.market, (value) => v.string(value, 'market', { min: 1, max: 40 }));
+      const market = optional(params.market, (value) => v.market(value));
       const range = optional(params.range, (value) => v.range(value, 'range'));
       const timeoutMs = v.timeoutMs(params.timeoutMs);
       // getHotlist takes HttpOptions only: no credentials are passed.
-      const result = await semaphore.run(() => lib.getHotlist(
+      const result = await semaphore.run(httpCall(timeoutMs, (signal) => lib.getHotlist(
         pickDefined({ kind: params.kind, market, range }),
-        { signal: AbortSignal.timeout(timeoutMs) },
-      ));
-      return { totalCount: result.totalCount, rows: result.rows };
+        { signal },
+      )));
+      return { totalCount: result?.totalCount, rows: result?.rows };
     },
 
     async technical(params) {
       const symbol = v.symbol(params.symbol);
       const timeoutMs = v.timeoutMs(params.timeoutMs);
       // getTechnicalAnalysis takes HttpOptions only: no credentials are passed.
-      const analysis = await semaphore.run(() => lib.getTechnicalAnalysis(symbol, {
-        signal: AbortSignal.timeout(timeoutMs),
-      }));
+      const analysis = await semaphore.run(httpCall(timeoutMs, (signal) => lib.getTechnicalAnalysis(symbol, { signal })));
       return analysis ?? null;
     },
   };
 
   async function handleLine(line) {
     if (typeof line !== 'string' || line.trim() === '') return;
+    if (line.length > MAX_LINE_LENGTH) {
+      send(null, { error: { code: 'INVALID_PARAMETER', message: 'request too large' } });
+      return;
+    }
 
     let request;
     try {
@@ -328,20 +414,17 @@ export function createServer({
       send(id, { result: result ?? null });
     } catch (err) {
       const bridge = toBridgeError(err, redact);
-      log(`[bridge] request ${redact(JSON.stringify(id))} failed: ${bridge.code}: ${bridge.message}`);
+      emit(`[bridge] request ${JSON.stringify(id)} failed: ${bridge.code}: ${bridge.message}`);
       send(id, { error: bridge });
     }
   }
 
   async function close() {
+    shuttingDown = true;
     const current = client;
     client = null;
     if (current === null) return;
-    try {
-      await current.close();
-    } catch (err) {
-      logError('client close failed', err);
-    }
+    await closeQuietly(current);
   }
 
   const pending = new Set();
@@ -364,18 +447,24 @@ export function createServer({
 }
 
 async function main() {
-  const writeStderr = (text) => process.stderr.write(`${text}\n`);
-  for (const level of ['log', 'info', 'debug']) {
-    console[level] = (...args) => writeStderr(format(...args));
-  }
-
   const redact = makeRedactor(process.env);
-  const log = (message) => writeStderr(redact(message));
+
+  // Before anything else (and before the library is imported): stdout must carry
+  // protocol lines only. Console output, stray stdout writes and stderr text from
+  // the library are redirected to redacted stderr.
+  const protocolOut = guardStdio({ redact });
+  const log = (message) => process.stderr.write(`${message}\n`);
 
   process.on('unhandledRejection', (reason) => {
     log(`[bridge] unhandled rejection: ${errorMessage(reason)}`);
     process.exit(1);
   });
+  process.on('uncaughtException', (err) => {
+    log(`[bridge] uncaught exception: ${errorMessage(err)}`);
+    process.exit(1);
+  });
+  // The parent closing the pipe must end the bridge quietly, not crash it.
+  process.stdout.on('error', () => process.exit(0));
 
   const [root, data] = await Promise.all([
     import('@mathieuc/tradingview'),
@@ -387,7 +476,7 @@ async function main() {
     lib,
     env: process.env,
     input: process.stdin,
-    output: process.stdout,
+    output: protocolOut,
     log,
   });
 
@@ -395,8 +484,10 @@ async function main() {
   const stop = async () => {
     if (stopping) return;
     stopping = true;
+    const hardStop = setTimeout(() => process.exit(0), SHUTDOWN_GRACE_MS);
+    hardStop.unref();
     await server.close();
-    await new Promise((resolve) => process.stdout.write('', resolve));
+    await new Promise((resolve) => protocolOut.write('', resolve));
     process.exit(0);
   };
 
@@ -406,8 +497,17 @@ async function main() {
   await stop();
 }
 
-const isMain = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
-if (isMain) {
+// Compare real paths: Node resolves symlinks in import.meta.url but not in argv[1].
+function isEntryPoint() {
+  if (process.argv[1] === undefined) return false;
+  try {
+    return import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href;
+  } catch {
+    return import.meta.url === pathToFileURL(process.argv[1]).href;
+  }
+}
+
+if (isEntryPoint()) {
   main().catch((err) => {
     process.stderr.write(`${makeRedactor(process.env)(`[bridge] fatal: ${errorMessage(err)}`)}\n`);
     process.exit(1);

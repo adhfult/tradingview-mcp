@@ -43,3 +43,22 @@ test('coerces non-string input with String()', () => {
   assert.equal(redact(42), '42');
   assert.equal(redact(null), 'null');
 });
+
+test('also redacts URL-encoded and JSON-escaped secret values', () => {
+  const secret = 'ab+/c"d=';
+  const redact = makeRedactor({ TRADINGVIEW_SESSION_ID: secret });
+  assert.equal(redact(`plain ${secret}`), 'plain [REDACTED]');
+  assert.equal(redact(`url ${encodeURIComponent(secret)}`), 'url [REDACTED]');
+  assert.equal(redact(`json ${JSON.stringify(secret)}`), 'json "[REDACTED]"');
+});
+
+test('redacts JSON and colon forms of the cookie names, and JWT-shaped tokens', () => {
+  const redact = makeRedactor({});
+  assert.equal(redact('{"sessionid":"abc123","x":1}'), '{"sessionid":"[REDACTED]","x":1}');
+  assert.equal(redact('{"sessionid_sign":"v1:xyz"}'), '{"sessionid_sign":"[REDACTED]"}');
+  assert.equal(redact('sessionid: abc123, next'), 'sessionid: [REDACTED], next');
+  assert.equal(
+    redact('token eyJhbGciOiJIUzI1NiJ9.eyJ1c2VyIjoiMSJ9.c2lnbmF0dXJl end'),
+    'token [REDACTED_JWT] end',
+  );
+});

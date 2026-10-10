@@ -6,7 +6,14 @@ export const TIMEFRAMES = new Set([
   'D', 'W', 'M', '1D', '1W', '1M',
 ]);
 
-const SYMBOL_PATTERN = /^[A-Z0-9_.!:-]{1,40}$/;
+// Checked before upper-casing: toUpperCase() maps some non-ASCII letters (e.g. the
+// German sharp s) to ASCII ones, which would let them through.
+const SYMBOL_PATTERN = /^[A-Za-z0-9_.!:-]{1,40}$/;
+// Same shape the library enforces for the scanner market, which becomes a URL path segment.
+const MARKET_PATTERN = /^[A-Za-z][A-Za-z0-9_-]{0,39}$/;
+const MAX_INPUT_DEPTH = 4;
+const MAX_INPUT_KEYS = 100;
+const MAX_INPUT_STRING = 1000;
 const DEFAULT_TIMEOUT_MS = 15000;
 const MIN_TIMEOUT_MS = 1000;
 const MAX_TIMEOUT_MS = 60000;
@@ -23,9 +30,8 @@ export function isAbsent(value) {
 /** Upper-cases and checks an exchange-qualified or bare symbol. */
 export function symbol(value, name = 'symbol') {
   if (typeof value !== 'string') throw invalid(`${name} must be a string`);
-  const upper = value.toUpperCase();
-  if (!SYMBOL_PATTERN.test(upper)) throw invalid(`${name} is not a valid symbol`);
-  return upper;
+  if (!SYMBOL_PATTERN.test(value)) throw invalid(`${name} is not a valid symbol`);
+  return value.toUpperCase();
 }
 
 export function timeframe(value, name = 'timeframe') {
@@ -54,6 +60,52 @@ export function array(value, name, { min, max }) {
   if (!Array.isArray(value)) throw invalid(`${name} must be an array`);
   if (value.length < min || value.length > max) {
     throw invalid(`${name} must have ${min} to ${max} items`);
+  }
+  return value;
+}
+
+/** A string that holds something other than whitespace. */
+export function nonBlankString(value, name, { min = 1, max }) {
+  string(value, name, { min, max });
+  if (value.trim() === '') throw invalid(`${name} must not be blank`);
+  return value;
+}
+
+/** A scanner market name such as `america` or `crypto`. */
+export function market(value, name = 'market') {
+  if (typeof value !== 'string' || !MARKET_PATTERN.test(value)) {
+    throw invalid(`${name} is not a valid market name`);
+  }
+  return value;
+}
+
+/**
+ * JSON-only data for the library (indicator inputs): plain objects and arrays,
+ * strings, finite numbers, booleans and null, with bounded depth, size and no
+ * `__proto__` keys.
+ */
+export function jsonData(value, name, depth = 0) {
+  if (value === null || typeof value === 'boolean') return value;
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) throw invalid(`${name} must hold finite numbers`);
+    return value;
+  }
+  if (typeof value === 'string') {
+    if (value.length > MAX_INPUT_STRING) throw invalid(`${name} holds a string that is too long`);
+    return value;
+  }
+  if (depth >= MAX_INPUT_DEPTH) throw invalid(`${name} is nested too deeply`);
+  if (Array.isArray(value)) {
+    if (value.length > MAX_INPUT_KEYS) throw invalid(`${name} holds a list that is too long`);
+    value.forEach((item) => jsonData(item, name, depth + 1));
+    return value;
+  }
+  plainObject(value, name);
+  const keys = Object.keys(value);
+  if (keys.length > MAX_INPUT_KEYS) throw invalid(`${name} has too many keys`);
+  for (const key of keys) {
+    if (key === '__proto__') throw invalid(`${name} has a forbidden key`);
+    jsonData(value[key], name, depth + 1);
   }
   return value;
 }
