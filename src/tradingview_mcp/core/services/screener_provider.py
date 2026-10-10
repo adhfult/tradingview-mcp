@@ -1,6 +1,7 @@
 from __future__ import annotations
 from typing import List, Dict, Any, Optional, Tuple
 from ..utils.validators import get_market_type
+from ..utils.env_file import load_env_file_once
 from . import freshness
 import json as _json
 import os as _os
@@ -346,16 +347,63 @@ def humanize_upstream_error(exc: BaseException) -> str:
     return msg
 
 
+# --- Logged-in scanner (Phase 3) -------------------------------------------
+# With TRADINGVIEW_SESSION_ID and TRADINGVIEW_SESSION_SIGN set, scanner calls
+# send the account's cookies, so the scanner answers for the logged-in plan.
+# TRADINGVIEW_MCP_SCANNER_USE_SESSION=0 turns this off without removing the
+# cookies. The values are never logged or returned by anything here.
+def session_cookies() -> Optional[dict]:
+    """Cookies for scanner calls, or None to stay anonymous.
+
+    Returns ``{"sessionid": ..., "sessionid_sign": ...}`` only when both
+    variables are non-empty and the opt-out is not set. The repo ``.env`` is
+    loaded first (once per process; real environment variables win).
+    """
+    load_env_file_once()
+    if _os.environ.get("TRADINGVIEW_MCP_SCANNER_USE_SESSION", "1") == "0":
+        return None
+    session_id = _os.environ.get("TRADINGVIEW_SESSION_ID", "")
+    session_sign = _os.environ.get("TRADINGVIEW_SESSION_SIGN", "")
+    if not session_id or not session_sign:
+        return None
+    return {"sessionid": session_id, "sessionid_sign": session_sign}
+
+
+def scanner_get_data(q, **kwargs):
+    """One direct (non-retrying) ``q.get_scanner_data`` call.
+
+    Adds the session cookies when they are configured, and records the fetch
+    for ``data_freshness`` after success only. Keyword arguments (for example
+    ``timeout``) go to ``get_scanner_data`` unchanged.
+    """
+    cookies = session_cookies()
+    if cookies:
+        kwargs["cookies"] = cookies
+    result = q.get_scanner_data(**kwargs)
+    freshness.record(
+        "tradingview_scanner", _time.time(), auth="session" if cookies else "anonymous"
+    )
+    return result
+
+
 def _scan_with_retry(q, cookies=None, cache_key: Optional[Tuple] = None):
     """Wrap Query.get_scanner_data with retries on transient TV outages.
     Returns (total, df). Re-raises on non-transient errors or on final failure.
 
+    If ``cookies`` is None, the session cookies from :func:`session_cookies`
+    are used (anonymous when none are configured). An explicit ``cookies`` is
+    used as given.
+
     If ``cache_key`` is provided and all retries fail, attempts to return a
     stale-but-usable cached payload before raising — callers that pass a key
-    get stale-while-error behavior automatically."""
+    get stale-while-error behavior automatically. The auth label is part of
+    the key, so anonymous and logged-in results are cached apart."""
     _wait_for_failure_cooldown()
-    # Phase 3 adds cookie-authenticated calls; until then this is always anonymous.
+    if cookies is None:
+        cookies = session_cookies()
     auth = "session" if cookies else "anonymous"
+    if cache_key is not None:
+        cache_key = cache_key + (("auth", auth),)
     delays = (0.0,) + _retry_delays()  # immediate try, then back off
     last_exc: Optional[BaseException] = None
     total_wait = 0.0
@@ -430,7 +478,7 @@ def resilient_get_multiple_analysis(screener, interval, symbols):
         entry_ts = _cache_entry_ts(cache_key) if cached is not None else None
     if cached is not None:
         freshness.record(
-            "tradingview_scanner",
+            "tradingview_ta",
             entry_ts if entry_ts is not None else _time.time(),
             cache_hit=True,
             auth="anonymous",
@@ -461,7 +509,7 @@ def resilient_get_multiple_analysis(screener, interval, symbols):
             finally:
                 _ta_throttle_release()
             _cache_set(cache_key, result)
-            freshness.record("tradingview_scanner", _time.time(), auth="anonymous")
+            freshness.record("tradingview_ta", _time.time(), auth="anonymous")
             return result
         except Exception as e:  # noqa: BLE001
             if not _is_transient_screener_error(e):
@@ -483,7 +531,7 @@ def resilient_get_multiple_analysis(screener, interval, symbols):
     if stale is not None:
         age, payload = stale
         freshness.record(
-            "tradingview_scanner", _time.time() - age, cache_hit=True, stale=True, auth="anonymous"
+            "tradingview_ta", _time.time() - age, cache_hit=True, stale=True, auth="anonymous"
         )
         try:
             print(

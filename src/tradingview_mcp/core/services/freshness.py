@@ -73,20 +73,36 @@ def stop_collection(token: contextvars.Token) -> None:
         _COLLECTOR.set(None)
 
 
+def _roll_up_auth(auths: set) -> str:
+    """One auth label for a set of per-record labels. Empty means anonymous."""
+    if auths == {"session"}:
+        return "session"
+    if not auths or auths == {"anonymous"}:
+        return "anonymous"
+    return "mixed"
+
+
+def _is_tradingview(source: str) -> bool:
+    return str(source).startswith("tradingview")
+
+
 def summarize(records: list[dict], now: Optional[float] = None) -> Optional[dict]:
-    """Collapse fetch records into one ``data_freshness`` dict, or None if empty."""
+    """Collapse fetch records into one ``data_freshness`` dict, or None if empty.
+
+    ``auth`` covers TradingView sources only: Yahoo is always anonymous, and
+    counting it would make every mixed result read "mixed". With no TradingView
+    source, ``auth`` is ``"anonymous"``. ``auth_by_source`` covers every source.
+    """
     if not records:
         return None
     now = time.time() if now is None else now
     oldest = min(r["fetched_at"] for r in records)
     age_seconds = max(0, int(now - oldest))
-    auths = {r["auth"] for r in records}
-    if auths == {"session"}:
-        auth = "session"
-    elif auths == {"anonymous"}:
-        auth = "anonymous"
-    else:
-        auth = "mixed"
+    auth = _roll_up_auth({r["auth"] for r in records if _is_tradingview(r["source"])})
+    auth_by_source = {
+        source: _roll_up_auth({r["auth"] for r in records if r["source"] == source})
+        for source in sorted({r["source"] for r in records})
+    }
     stale = any(r["stale"] for r in records)
     summary: dict[str, Any] = {
         "sources": sorted({r["source"] for r in records}),
@@ -95,6 +111,7 @@ def summarize(records: list[dict], now: Optional[float] = None) -> Optional[dict
         "stale": stale,
         "cache_hit": any(r["cache_hit"] for r in records),
         "auth": auth,
+        "auth_by_source": auth_by_source,
     }
     if stale:
         summary["note"] = f"Upstream failed; serving cached data up to {age_seconds}s old."

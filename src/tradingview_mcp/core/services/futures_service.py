@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from tradingview_mcp.core.services.screener_provider import scanner_get_data
+
 try:
     from tradingview_screener import Query
     _AVAILABLE = True
