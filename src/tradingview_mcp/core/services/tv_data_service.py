@@ -110,6 +110,12 @@ def _full_symbol(symbol: Any, exchange: Any) -> str:
     return full
 
 
+def _reject_ambiguous_1m(timeframe: Any) -> None:
+    """``1m`` (lowercase) is monthly in the shared timeframe aliases, not one minute."""
+    if isinstance(timeframe, str) and timeframe == "1m":
+        raise _invalid("1-minute bars are not supported; use 1M for monthly")
+
+
 def _iso_utc(ts: Any) -> str:
     return datetime.fromtimestamp(int(ts), tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -149,6 +155,7 @@ def get_candles(symbol: str, exchange: str, timeframe: str = "1D", count: int = 
     try:
         count = _check_int(count, "count", 1, 1000)
         full = _full_symbol(symbol, exchange)
+        _reject_ambiguous_1m(timeframe)
         tf = validate_timeframe(timeframe, "1D")
         code = to_tv_timeframe(tf)
         client = _client()
@@ -244,6 +251,7 @@ def get_indicator(
     try:
         count = _check_int(count, "count", 1, 500)
         full = _full_symbol(symbol, exchange)
+        _reject_ambiguous_1m(timeframe)
         tf = validate_timeframe(timeframe, "1D")
         code = to_tv_timeframe(tf)
         name = _nonblank(indicator, "indicator", 200)
@@ -315,6 +323,8 @@ _TV_ANNUALIZATION_CRYPTO = {"15m": 35040, "1h": 8760, "4h": 2190, "1d": 365}    
 _TV_ANNUALIZATION_FX = {"15m": 24960, "1h": 6240, "4h": 1560, "1d": 260}          # 24h x 260 weekdays
 _TV_ANNUALIZATION_STOCK = {"15m": 6552, "1h": 1638, "4h": 504, "1d": 252}         # 252 days x 6.5h session
 
+_TV_ANNUALIZATION_FUTURES = {"15m": 23184, "1h": 5796, "4h": 1512, "1d": 252}      # ~23h x 252 trading days
+
 # Venues that trade 24/7. The screener map's crypto entries are the base ("all" is a
 # placeholder, not a venue); the rest are TradingView crypto prefixes the screener
 # tools do not cover.
@@ -329,6 +339,11 @@ _FX_CFD_PREFIXES = frozenset(
     set(_TA_ONLY_SCREENERS)
     | {"forexcom", "pepperstone", "icmarkets", "eightcap", "saxo", "skilling", "blackbull"}
 )
+# Futures venues (futures_service.ALL_FUTURES_EXCHANGES plus TradingView's mini-contract
+# prefixes): about 23 hours a day, 252 trading days a year.
+_FUTURES_PREFIXES = frozenset(
+    {"cme", "cme_mini", "cbot", "cbot_mini", "nymex", "comex", "iceeur", "iceus", "icesg", "eurex"}
+)
 
 
 def tv_periods_per_year(tv_symbol: str, interval: str) -> int:
@@ -336,6 +351,7 @@ def tv_periods_per_year(tv_symbol: str, interval: str) -> int:
 
     * known crypto venue: 24/7, 365 days
     * forex / CFD venue (OANDA, FX_IDC, TVC, CAPITALCOM ...): 24h x 260 weekdays
+    * futures venue (CME, CBOT, NYMEX, COMEX, ICE, EUREX ...): ~23h x 252 days
     * anything else, including an unknown prefix: stock sessions (252 days x 6.5h)
 
     ``get_market_type`` is not used: it defaults unknown prefixes to crypto, which
@@ -346,4 +362,6 @@ def tv_periods_per_year(tv_symbol: str, interval: str) -> int:
         return _TV_ANNUALIZATION_CRYPTO[interval]
     if prefix in _FX_CFD_PREFIXES:
         return _TV_ANNUALIZATION_FX[interval]
+    if prefix in _FUTURES_PREFIXES:
+        return _TV_ANNUALIZATION_FUTURES[interval]
     return _TV_ANNUALIZATION_STOCK[interval]

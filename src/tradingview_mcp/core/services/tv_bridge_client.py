@@ -55,6 +55,17 @@ _BRIDGE_MIN_TIMEOUT_MS = 1_000
 _BRIDGE_MAX_TIMEOUT_MS = 60_000
 _BRIDGE_DEADLINE_GRACE_S = 5.0
 _CLIENT_MARGIN_S = 5.0
+
+# In-flight cap. The bridge runs at most TRADINGVIEW_BRIDGE_MAX_INFLIGHT (default 2, clamped
+# 1..8) calls at once and queues the rest in an unbounded FIFO, and its timeoutMs deadline
+# starts only once a call has a slot. A burst would therefore make this client give up (a
+# retryable TIMEOUT) while the bridge still ran every queued call with the account cookies.
+# So the client admits at most max_inflight + _QUEUE_SLACK calls and fails the rest fast.
+_DEFAULT_MAX_INFLIGHT = 2
+_MIN_MAX_INFLIGHT = 1
+_MAX_MAX_INFLIGHT = 8
+_QUEUE_SLACK = 2
+_INFLIGHT_WAIT_S = 2.0
 _BRIDGE_DATA_METHODS = frozenset(
     {"candles", "quotes", "indicator", "search", "symbol_info", "screener", "hotlist", "technical"}
 )
@@ -217,6 +228,18 @@ def _probe_node_major(node: str, env: Mapping[str, str]) -> Optional[int]:
     return int(match.group(1)) if match else None
 
 
+def _read_max_inflight(source: Mapping[str, str]) -> int:
+    """Same rule as ``readMaxInflight`` in bridge/server.mjs: default 2, clamped to 1..8."""
+    try:
+        n = float(source.get("TRADINGVIEW_BRIDGE_MAX_INFLIGHT") or 0)
+    except (TypeError, ValueError):
+        n = 0.0
+    if n != n or n in (float("inf"), float("-inf")):
+        n = 0.0
+    n = int(n) if n else _DEFAULT_MAX_INFLIGHT
+    return min(_MAX_MAX_INFLIGHT, max(_MIN_MAX_INFLIGHT, n))
+
+
 def _effective_timeout_s(method: str, params: Optional[dict], timeout_s: float) -> float:
     """Wait at least as long as the bridge may legitimately take to answer.
 
@@ -266,6 +289,10 @@ class BridgeClient:
         self._last_fail = 0.0
         self._avail: Optional[tuple[float, bool]] = None
         self._node_majors: dict[str, tuple[Optional[int], float]] = {}
+        # Child env is read from the same source the bridge will see.
+        source = os.environ if env is None else env
+        self._max_inflight = _read_max_inflight(source)
+        self._inflight = threading.BoundedSemaphore(self._max_inflight + _QUEUE_SLACK)
 
     # ------------------------------------------------------------------
     # configuration
@@ -367,8 +394,11 @@ class BridgeClient:
     ) -> Any:
         """Send one request and return its ``result``. Raises :class:`BridgeError`.
 
-        ``health`` is exempt from the cool-down so a status check can still probe
-        the bridge. A successful reply resets the failure count.
+        ``health`` is exempt from the cool-down and from the in-flight cap so a status
+        check can still probe the bridge. A successful reply resets the failure count.
+        At most ``max_inflight + 2`` other calls are admitted at once; one that cannot
+        get a slot within a couple of seconds fails with ``RATE_LIMITED`` and is never
+        written to the bridge.
         """
         if method != "health":
             self._check_cooldown()
@@ -377,19 +407,27 @@ class BridgeClient:
             raise BridgeError("NOT_CONFIGURED", reason)
         timeout_s = _effective_timeout_s(method, params, timeout_s)
 
+        gated = method != "health"
+        if gated and not self._inflight.acquire(timeout=_INFLIGHT_WAIT_S):
+            # Not counted as a bridge failure and nothing was sent to the bridge.
+            raise BridgeError("RATE_LIMITED", "bridge busy, retry shortly")
         try:
-            proc = self._ensure_started()
-            result = self._request(proc, method, params, timeout_s)
-        except BridgeError as err:
-            if err.code == "UPSTREAM_UNAVAILABLE":
-                if err.counts_as_failure:
-                    self._note_failure(err.process)
-            elif err.code != "TIMEOUT":
-                # The bridge answered with an error, so the process is healthy.
-                self._note_healthy()
-            raise
-        self._note_healthy()
-        return result
+            try:
+                proc = self._ensure_started()
+                result = self._request(proc, method, params, timeout_s)
+            except BridgeError as err:
+                if err.code == "UPSTREAM_UNAVAILABLE":
+                    if err.counts_as_failure:
+                        self._note_failure(err.process)
+                elif err.code != "TIMEOUT":
+                    # The bridge answered with an error, so the process is healthy.
+                    self._note_healthy()
+                raise
+            self._note_healthy()
+            return result
+        finally:
+            if gated:
+                self._inflight.release()
 
     async def acall(
         self,
