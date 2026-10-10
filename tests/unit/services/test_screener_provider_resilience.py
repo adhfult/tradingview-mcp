@@ -29,10 +29,12 @@ def _reset_state():
 
 @pytest.fixture
 def fast_retry(monkeypatch):
-    """Shrink retry delays to keep tests fast."""
+    """Shrink retry delays to keep tests fast, and keep scanner calls anonymous."""
     monkeypatch.setenv("TRADINGVIEW_MCP_RETRY_DELAYS", "0.01,0.02,0.03")
     monkeypatch.setenv("TRADINGVIEW_MCP_RETRY_JITTER", "0")
     monkeypatch.setenv("TRADINGVIEW_MCP_FAILURE_COOLDOWN_S", "0")
+    monkeypatch.setenv("TRADINGVIEW_SESSION_ID", "")
+    monkeypatch.setenv("TRADINGVIEW_SESSION_SIGN", "")
 
 
 def _empty_body_error() -> json.JSONDecodeError:
@@ -100,7 +102,10 @@ def test_persistent_failure_raises_runtime_error(fast_retry):
 
 def test_stale_while_error_returns_cached_payload(fast_retry):
     """When upstream is dead, stale cached data should serve as fallback."""
-    cache_key = ("indicators_v1", "EGX", ("EGX:ASCM",), "1D", None)
+    # The cache key carries the auth label (anonymous here, since no cookies are set).
+    base_key = ("indicators_v1", "EGX", ("EGX:ASCM",), "1D", None)
+    # _scan_with_retry stores and looks up under base_key + the auth label.
+    cache_key = base_key + (("auth", "anonymous"),)
     sp._cache_set(cache_key, (1, "stale_df"))
 
     # Force the freshness window to be already expired so _cache_get misses,
@@ -113,7 +118,7 @@ def test_stale_while_error_returns_cached_payload(fast_retry):
         def get_scanner_data(self, cookies=None):
             raise _empty_body_error()
 
-    total, df = sp._scan_with_retry(FakeQuery(), cache_key=cache_key)
+    total, df = sp._scan_with_retry(FakeQuery(), cache_key=base_key)
     assert (total, df) == (1, "stale_df")
 
 

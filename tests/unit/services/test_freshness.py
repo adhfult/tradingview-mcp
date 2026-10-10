@@ -40,6 +40,7 @@ def test_summarize_single_fresh_record():
         "stale": False,
         "cache_hit": False,
         "auth": "anonymous",
+        "auth_by_source": {"tradingview_scanner": "anonymous"},
     }
     assert "note" not in out
 
@@ -146,6 +147,9 @@ def ta_env(monkeypatch):
     monkeypatch.setenv("TRADINGVIEW_MCP_FAILURE_COOLDOWN_S", "0")
     monkeypatch.setenv("TRADINGVIEW_MCP_MIN_INTERVAL_S", "0")
     monkeypatch.setenv("TRADINGVIEW_MCP_CACHE_TTL", "60")
+    # Anonymous by default, whatever the developer's shell exports.
+    monkeypatch.setenv("TRADINGVIEW_SESSION_ID", "")
+    monkeypatch.setenv("TRADINGVIEW_SESSION_SIGN", "")
     yield
     with sp._SCREENER_CACHE_LOCK:
         sp._SCREENER_CACHE.clear()
@@ -174,7 +178,7 @@ def test_ta_fresh_fetch_records_one_non_stale_entry(ta_env, monkeypatch):
     _fake_ta(monkeypatch, lambda screener, interval, symbols, **kw: {"EGX:ASCM": "ok"})
     _, recs = _collect(sp.resilient_get_multiple_analysis, "egypt", "1D", ["EGX:ASCM"])
     assert len(recs) == 1
-    assert recs[0]["source"] == "tradingview_scanner"
+    assert recs[0]["source"] == "tradingview_ta"
     assert recs[0]["stale"] is False
     assert recs[0]["cache_hit"] is False
     assert recs[0]["auth"] == "anonymous"
@@ -241,11 +245,14 @@ def test_scan_with_retry_records_fresh_and_session_auth(ta_env):
 
 def test_scan_with_retry_stale_fallback_records_stale(ta_env, monkeypatch):
     monkeypatch.setenv("TRADINGVIEW_MCP_CACHE_TTL", "0")
+    # The cache key carries the auth label (anonymous here, since no cookies are set).
     key = ("indicators_v1", "EGX", ("EGX:ASCM",), "1D", None)
-    sp._cache_set(key, (1, "stale_df"))
+    # _scan_with_retry stores and looks up under key + the auth label.
+    stored = key + (("auth", "anonymous"),)
+    sp._cache_set(stored, (1, "stale_df"))
     with sp._SCREENER_CACHE_LOCK:
-        ts, payload = sp._SCREENER_CACHE[key]
-        sp._SCREENER_CACHE[key] = (ts - 120.0, payload)
+        ts, payload = sp._SCREENER_CACHE[stored]
+        sp._SCREENER_CACHE[stored] = (ts - 120.0, payload)
 
     class FakeQuery:
         def get_scanner_data(self, cookies=None):

@@ -22,10 +22,14 @@ import urllib.request
 from datetime import datetime, timezone
 from typing import Optional
 
-from tradingview_mcp.core.services import freshness
+from tradingview_mcp.core.services import freshness, tv_bridge_client
 from tradingview_mcp.core.services.indicators_calc import (
     calc_rsi, calc_bollinger, calc_macd, calc_ema, calc_sma, calc_atr,
     calc_supertrend, calc_donchian,
+)
+from tradingview_mcp.core.services.tv_bridge_client import BridgeError
+from tradingview_mcp.core.services.tv_data_service import (
+    bridge_error_message, is_tv_symbol, tv_periods_per_year,
 )
 
 _UA       = "tradingview-mcp/0.7.0 backtest-bot"
@@ -57,6 +61,152 @@ _STRATEGY_LABELS = {
 # Strategies that require SMA200 warmup → need ≥220 bars to produce signals
 _SMA200_STRATEGIES = {"rsi_pullback", "triple_ema"}
 _SMA200_MIN_BARS  = 220
+
+
+# ─── TradingView candle source ────────────────────────────────────────────────
+# Opt-in with data_source="tradingview". Yahoo (the default) is untouched.
+
+_DATA_SOURCES = ("yahoo", "tradingview")
+_TV_PERIOD_DAYS = {"1mo": 30, "3mo": 91, "6mo": 182, "1y": 365, "2y": 730, "3y": 1095, "5y": 1826}
+_TV_INTERVAL_CODES = {"15m": "15", "1h": "60", "4h": "240", "1d": "D"}
+_TIMEFRAME_LABELS = {
+    "15m": "15-minute (15m)", "1h": "Hourly (1h)", "4h": "4-hour (4h)", "1d": "Daily (1d)",
+}
+# The library caps a `from` fetch at maxCount bars (default and bridge max 20,000), so
+# each interval only allows the periods that fit under that cap.
+_TV_MAX_BARS = 20000
+_TV_PERIODS_BY_INTERVAL = {
+    "15m": ("1mo", "3mo", "6mo"),
+    "1h": ("1mo", "3mo", "6mo", "1y", "2y"),
+    "4h": tuple(_TV_PERIOD_DAYS),
+    "1d": tuple(_TV_PERIOD_DAYS),
+}
+_TV_TIMEOUT_MS = 60000        # bridge-side deadline; the bridge default is 15 s
+_TV_CALL_TIMEOUT_S = 60       # client wait; the client adds its own margin on top
+_TV_TRUNCATION_FRACTION = 0.10
+
+
+def _normalize_source(data_source: Optional[str], tv_symbol: Optional[str]) -> tuple[str, Optional[str]]:
+    ds = (data_source or "yahoo").strip().lower()
+    tvs = tv_symbol.strip().upper() if isinstance(tv_symbol, str) else tv_symbol
+    return ds, tvs
+
+
+def _check_period_interval(
+    period: str, interval: str, data_source: str, tv_symbol: Optional[str],
+) -> Optional[str]:
+    """Error message for a bad period/interval/source combination, or None.
+
+    The Yahoo messages are the ones the tools have always returned.
+    """
+    if data_source == "tradingview":
+        if not tv_symbol:
+            return "tv_symbol is required when data_source is 'tradingview', e.g. BINANCE:BTCUSDT"
+        if not is_tv_symbol(tv_symbol):
+            return f"tv_symbol must look like EXCHANGE:SYMBOL, e.g. BINANCE:BTCUSDT; got {tv_symbol!r}"
+        if interval not in _TV_INTERVAL_CODES:
+            return f"Invalid interval '{interval}' for TradingView. Choose: {', '.join(_TV_INTERVAL_CODES)}"
+        if period not in _TV_PERIOD_DAYS:
+            return f"Invalid period '{period}' for TradingView. Choose: {', '.join(_TV_PERIOD_DAYS)}"
+        allowed = _TV_PERIODS_BY_INTERVAL[interval]
+        if period not in allowed:
+            return (f"Period '{period}' is too long for interval '{interval}' on TradingView "
+                    f"(the bridge returns at most {_TV_MAX_BARS:,} bars). Choose: {', '.join(allowed)}")
+        return None
+    if period not in _VALID_PERIODS:
+        return f"Invalid period '{period}'. Choose: {', '.join(_VALID_PERIODS)}"
+    if interval not in _VALID_INTERVALS:
+        return f"Invalid interval '{interval}'. Choose: 1d or 1h"
+    return None
+
+
+def _check_data_source(data_source: str) -> Optional[str]:
+    if data_source not in _DATA_SOURCES:
+        return f"Invalid data_source '{data_source}'. Choose: yahoo or tradingview"
+    return None
+
+
+def _truncation_note(period: str, meta: dict) -> str:
+    return (f"TradingView history starts {meta['first_date']}, later than the requested {period} "
+            f"window. The symbol's history may be shorter than requested, or the "
+            f"{_TV_MAX_BARS:,}-bar plan limit applied.")
+
+
+def _fetch_tv_candles(tv_symbol: str, period: str, interval: str) -> tuple[list[dict], dict]:
+    """Bridge candles as backtest bars, plus metadata (source label, truncation).
+
+    Raises RuntimeError with the bridge's message on failure, which run_backtest turns
+    into its normal error dict.
+    """
+    client = tv_bridge_client.get_client()
+    now = time.time()
+    from_ts = int(now) - _TV_PERIOD_DAYS[period] * 86400
+    try:
+        bars = client.call(
+            "candles",
+            {
+                "symbol": tv_symbol,
+                "timeframe": _TV_INTERVAL_CODES[interval],
+                "from": from_ts,
+                "maxCount": _TV_MAX_BARS,
+                "timeoutMs": _TV_TIMEOUT_MS,
+            },
+            timeout_s=_TV_CALL_TIMEOUT_S,
+        )
+    except BridgeError as err:
+        raise RuntimeError(bridge_error_message(err)) from err
+
+    auth = "session" if client.has_credentials() else "anonymous"
+    freshness.record("tradingview_bridge", time.time(), auth=auth)
+    if not isinstance(bars, list):
+        raise RuntimeError("TradingView returned an unexpected candles reply")
+
+    fmt = "%Y-%m-%d" if interval == "1d" else "%Y-%m-%d %H:%M"
+    dated: list[tuple[int, dict]] = []
+    for bar in bars:
+        if not isinstance(bar, dict) or bar.get("time") is None:
+            continue
+        o, h, l, c = bar.get("open"), bar.get("high"), bar.get("low"), bar.get("close")
+        if None in (o, h, l, c):
+            continue
+        ts = int(bar["time"])
+        dated.append((ts, {
+            "date":   datetime.fromtimestamp(ts, tz=timezone.utc).strftime(fmt),
+            "open":   round(o, 4),
+            "high":   round(h, 4),
+            "low":    round(l, 4),
+            "close":  round(c, 4),
+            "volume": bar.get("volume") or 0,
+        }))
+    dated.sort(key=lambda item: item[0])
+
+    # Dates must be unique: a duplicate keeps the last bar seen.
+    by_date: dict[str, dict] = {}
+    for _, candle in dated:
+        by_date[candle["date"]] = candle
+
+    span = now - from_ts
+    truncated = bool(dated) and (dated[0][0] - from_ts) > _TV_TRUNCATION_FRACTION * span
+    meta = {
+        "data_source": f"TradingView ({'session' if auth == 'session' else 'anonymous'})",
+        "truncated": truncated,
+        "first_date": dated[0][1]["date"] if dated else None,
+    }
+    return list(by_date.values()), meta
+
+
+def _fetch_ohlcv_tv(tv_symbol: str, period: str, interval: str) -> list[dict]:
+    """TradingView candles as backtest bars (see _fetch_tv_candles)."""
+    return _fetch_tv_candles(tv_symbol, period, interval)[0]
+
+
+def _load_candles(
+    symbol: str, period: str, interval: str, data_source: str, tv_symbol: Optional[str],
+) -> tuple[list[dict], dict]:
+    """Candles for the chosen source, plus source metadata (empty for Yahoo)."""
+    if data_source == "tradingview":
+        return _fetch_tv_candles(tv_symbol, period, interval)
+    return _fetch_ohlcv(symbol, period, interval), {}
 
 
 # ─── Data Fetching ────────────────────────────────────────────────────────────
@@ -613,24 +763,29 @@ def run_backtest(
     include_equity_curve: bool = False,
     risk_free_rate: Optional[float] = None,
     periods_per_year: Optional[int] = None,
+    data_source: str = "yahoo",
+    tv_symbol: Optional[str] = None,
 ) -> dict:
     strategy = strategy.lower().strip()
     period   = period.lower().strip()
     interval = interval.lower().strip()
+    data_source, tv_symbol = _normalize_source(data_source, tv_symbol)
 
     if strategy not in _STRATEGY_MAP:
         return {"error": f"Unknown strategy '{strategy}'. Choose: {', '.join(_STRATEGY_MAP)}"}
-    if period not in _VALID_PERIODS:
-        return {"error": f"Invalid period '{period}'. Choose: {', '.join(_VALID_PERIODS)}"}
-    if interval not in _VALID_INTERVALS:
-        return {"error": f"Invalid interval '{interval}'. Choose: 1d or 1h"}
+    src_err = _check_data_source(data_source)
+    if src_err:
+        return {"error": src_err}
+    pi_err = _check_period_interval(period, interval, data_source, tv_symbol)
+    if pi_err:
+        return {"error": pi_err}
 
     num_err = _validate_numeric_inputs(initial_capital, commission_pct, slippage_pct)
     if num_err:
         return {"error": num_err}
 
     try:
-        candles = _fetch_ohlcv(symbol, period, interval)
+        candles, source_meta = _load_candles(symbol, period, interval, data_source, tv_symbol)
     except Exception as e:
         return {"error": f"Failed to fetch data for '{symbol}': {e}"}
 
@@ -643,10 +798,14 @@ def run_backtest(
                           f"(SMA200 warmup); got {len(candles)}. "
                           f"Use period='1y' or '2y'.")}
 
+    ppy = periods_per_year
+    if data_source == "tradingview" and periods_per_year is None:
+        ppy = tv_periods_per_year(tv_symbol, interval)
+
     raw_trades = _STRATEGY_MAP[strategy](candles)
     trades     = _apply_costs(raw_trades, commission_pct, slippage_pct)
     metrics    = _calc_metrics(trades, initial_capital, interval, candles=candles,
-                               risk_free_rate=risk_free_rate, periods_per_year=periods_per_year)
+                               risk_free_rate=risk_free_rate, periods_per_year=ppy)
     bnh        = _buy_and_hold_return(candles, commission_pct, slippage_pct)
 
     result = {
@@ -655,7 +814,7 @@ def run_backtest(
         "strategy_label":          _STRATEGY_LABELS[strategy],
         "period":                  period,
         "interval":                interval,
-        "timeframe":               "Hourly (1h)" if interval == "1h" else "Daily (1d)",
+        "timeframe":               _TIMEFRAME_LABELS[interval],
         "candles_analyzed":        len(candles),
         "date_from":               candles[0]["date"],
         "date_to":                 candles[-1]["date"],
@@ -666,10 +825,16 @@ def run_backtest(
         "buy_and_hold_return_pct": bnh,
         "vs_buy_and_hold_pct":     round(metrics["total_return_pct"] - bnh, 2),
         "recent_trades":           trades[-5:],
-        "data_source":             "Yahoo Finance",
+        "data_source":             source_meta.get("data_source", "Yahoo Finance"),
         "disclaimer":              "Past performance does not guarantee future results. For educational use only.",
         "timestamp":               datetime.now(timezone.utc).isoformat(),
     }
+
+    if data_source == "tradingview":
+        result["tv_symbol"] = tv_symbol
+        if source_meta["truncated"]:
+            result["truncated"] = True
+            result["note"] = _truncation_note(period, source_meta)
 
     if include_trade_log:
         result["trade_log"] = _build_trade_log(trades, initial_capital)
@@ -691,21 +856,27 @@ def compare_strategies(
     interval: str = "1d",
     risk_free_rate: Optional[float] = None,
     periods_per_year: Optional[int] = None,
+    data_source: str = "yahoo",
+    tv_symbol: Optional[str] = None,
 ) -> dict:
-    """Run all 9 strategies on one symbol. Supports 1d and 1h intervals."""
+    """Run all 9 strategies on one symbol. Supports 1d and 1h intervals (and 15m and 4h
+    with data_source="tradingview")."""
     period   = period.lower().strip()
     interval = interval.lower().strip()
-    if period not in _VALID_PERIODS:
-        return {"error": f"Invalid period '{period}'. Choose: {', '.join(_VALID_PERIODS)}"}
-    if interval not in _VALID_INTERVALS:
-        return {"error": f"Invalid interval '{interval}'. Choose: 1d or 1h"}
+    data_source, tv_symbol = _normalize_source(data_source, tv_symbol)
+    src_err = _check_data_source(data_source)
+    if src_err:
+        return {"error": src_err}
+    pi_err = _check_period_interval(period, interval, data_source, tv_symbol)
+    if pi_err:
+        return {"error": pi_err}
 
     num_err = _validate_numeric_inputs(initial_capital, commission_pct, slippage_pct)
     if num_err:
         return {"error": num_err}
 
     try:
-        candles = _fetch_ohlcv(symbol, period, interval)
+        candles, source_meta = _load_candles(symbol, period, interval, data_source, tv_symbol)
     except Exception as e:
         return {"error": f"Failed to fetch data for '{symbol}': {e}"}
 
@@ -715,12 +886,16 @@ def compare_strategies(
 
     sma200_ok = len(candles) >= _SMA200_MIN_BARS
 
+    ppy = periods_per_year
+    if data_source == "tradingview" and periods_per_year is None:
+        ppy = tv_periods_per_year(tv_symbol, interval)
+
     results = []
     for strat, fn in _STRATEGY_MAP.items():
         raw    = fn(candles)
         trades = _apply_costs(raw, commission_pct, slippage_pct)
         m      = _calc_metrics(trades, initial_capital, interval, candles=candles,
-                               risk_free_rate=risk_free_rate, periods_per_year=periods_per_year)
+                               risk_free_rate=risk_free_rate, periods_per_year=ppy)
         results.append({
             "strategy":         strat,
             "strategy_label":   _STRATEGY_LABELS[strat],
@@ -746,11 +921,11 @@ def compare_strategies(
                     f"bars (use period='1y' or '2y') to produce signals; "
                     f"their zero-trade results below are not meaningful.")
 
-    return {
+    out = {
         "symbol":                  symbol.upper(),
         "period":                  period,
         "interval":                interval,
-        "timeframe":               "Hourly (1h)" if interval == "1h" else "Daily (1d)",
+        "timeframe":               _TIMEFRAME_LABELS[interval],
         "candles_analyzed":        len(candles),
         "date_from":               candles[0]["date"],
         "date_to":                 candles[-1]["date"],
@@ -764,6 +939,14 @@ def compare_strategies(
         "disclaimer":              "Past performance does not guarantee future results.",
         "timestamp":               datetime.now(timezone.utc).isoformat(),
     }
+    # Yahoo output keeps its existing keys; the source is added only for TradingView.
+    if data_source == "tradingview":
+        out["data_source"] = source_meta["data_source"]
+        out["tv_symbol"] = tv_symbol
+        if source_meta["truncated"]:
+            out["truncated"] = True
+            out["note"] = _truncation_note(period, source_meta)
+    return out
 
 
 # ─── Public API: walk_forward_backtest ────────────────────────────────────────
@@ -780,6 +963,8 @@ def walk_forward_backtest(
     interval: str = "1d",
     risk_free_rate: Optional[float] = None,
     periods_per_year: Optional[int] = None,
+    data_source: str = "yahoo",
+    tv_symbol: Optional[str] = None,
 ) -> dict:
     """
     Walk-forward backtesting — detect overfitting via train/test splits.
@@ -802,13 +987,16 @@ def walk_forward_backtest(
     strategy = strategy.lower().strip()
     period   = period.lower().strip()
     interval = interval.lower().strip()
+    data_source, tv_symbol = _normalize_source(data_source, tv_symbol)
 
     if strategy not in _STRATEGY_MAP:
         return {"error": f"Unknown strategy '{strategy}'. Choose: {', '.join(_STRATEGY_MAP)}"}
-    if period not in _VALID_PERIODS:
-        return {"error": f"Invalid period '{period}'. Choose: {', '.join(_VALID_PERIODS)}"}
-    if interval not in _VALID_INTERVALS:
-        return {"error": f"Invalid interval '{interval}'. Choose: 1d or 1h"}
+    src_err = _check_data_source(data_source)
+    if src_err:
+        return {"error": src_err}
+    pi_err = _check_period_interval(period, interval, data_source, tv_symbol)
+    if pi_err:
+        return {"error": pi_err}
     if not (2 <= n_splits <= 10):
         return {"error": "n_splits must be between 2 and 10"}
     if not (0.5 <= train_ratio <= 0.9):
@@ -824,13 +1012,17 @@ def walk_forward_backtest(
         return {"error": num_err}
 
     try:
-        candles = _fetch_ohlcv(symbol, period, interval)
+        candles, source_meta = _load_candles(symbol, period, interval, data_source, tv_symbol)
     except Exception as e:
         return {"error": f"Failed to fetch data for '{symbol}': {e}"}
 
     min_bars = max(60, n_splits * 20)
     if len(candles) < min_bars:
         return {"error": f"Not enough data ({len(candles)} bars) for {n_splits} splits. Try longer period."}
+
+    ppy = periods_per_year
+    if data_source == "tradingview" and periods_per_year is None:
+        ppy = tv_periods_per_year(tv_symbol, interval)
 
     fn          = _STRATEGY_MAP[strategy]
     fold_size   = len(candles) // n_splits
@@ -860,9 +1052,9 @@ def walk_forward_backtest(
         train_t = _apply_costs(fn(train_c), commission_pct, slippage_pct)
         test_t  = _apply_costs(fn(test_c),  commission_pct, slippage_pct)
         train_m = _calc_metrics(train_t, initial_capital, interval, candles=train_c,
-                                risk_free_rate=risk_free_rate, periods_per_year=periods_per_year)
+                                risk_free_rate=risk_free_rate, periods_per_year=ppy)
         test_m  = _calc_metrics(test_t,  initial_capital, interval, candles=test_c,
-                                risk_free_rate=risk_free_rate, periods_per_year=periods_per_year)
+                                risk_free_rate=risk_free_rate, periods_per_year=ppy)
 
         all_test_trades.extend(test_t)
 
@@ -914,7 +1106,7 @@ def walk_forward_backtest(
     avg_test   = round(statistics.mean(f["test_return_pct"]  for f in scored_folds), 2)
     avg_robust = round(statistics.mean(f["fold_robustness_score"] for f in scored_folds), 2)
     oos_m      = _calc_metrics(all_test_trades, initial_capital, interval,
-                               risk_free_rate=risk_free_rate, periods_per_year=periods_per_year)
+                               risk_free_rate=risk_free_rate, periods_per_year=ppy)
 
     if avg_robust >= 0.8:
         verdict = "ROBUST — strategy performs consistently in-sample and out-of-sample"

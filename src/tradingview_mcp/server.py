@@ -90,7 +90,7 @@ from tradingview_mcp.core.services.backtest_service import (
     compare_strategies as _compare_strategies,
     walk_forward_backtest,
 )
-from tradingview_mcp.core.services import freshness
+from tradingview_mcp.core.services import freshness, tv_data_service
 from tradingview_mcp.core.utils.validators import (
     validate_timeframe,
     validate_exchange,
@@ -126,7 +126,11 @@ mcp = FastMCP(
         "Results may include `data_freshness`: `as_of_utc` / `age_seconds` say when the data "
         "was fetched from upstream (not market time); `stale: true` means upstream failed and "
         "a cached copy was served. This is separate from Yahoo's `quote_stale`, which means "
-        "Yahoo's quote block lags its own candle data."
+        "Yahoo's quote block lags its own candle data. "
+        "TradingView tools (`tv_status`, `tv_candles`, `tv_quotes`, `tv_indicator`, "
+        "`tv_symbol_search`, `tv_hotlist`) need the Node bridge and use the user's TradingView "
+        "account when session cookies are configured; call `tv_status` to check. Backtests "
+        "accept `data_source='tradingview'` with `tv_symbol` to use TradingView candles."
     ),
 )
 
@@ -804,6 +808,8 @@ def backtest_strategy(
     interval: str = "1d",
     include_trade_log: bool = False,
     include_equity_curve: bool = False,
+    data_source: str = "yahoo",
+    tv_symbol: Optional[str] = None,
 ) -> dict:
     """Backtest a trading strategy on historical data with institutional-grade metrics.
 
@@ -812,18 +818,24 @@ def backtest_strategy(
         strategy: rsi | bollinger | macd | ema_cross | supertrend | donchian
                   | rsi_pullback | keltner_breakout | triple_ema
                   (rsi_pullback and triple_ema need period >= '1y' for SMA200 warmup)
-        period: '1mo', '3mo', '6mo', '1y', '2y'
+        period: '1mo', '3mo', '6mo', '1y', '2y' (Yahoo). With data_source='tradingview'
+                also '3y', '5y', limited per interval: 15m up to 6mo, 1h up to 2y,
+                4h and 1d up to 5y.
         initial_capital: Starting capital in USD (default $10,000)
         commission_pct: Per-trade commission % (default 0.1%)
         slippage_pct: Per-trade slippage % (default 0.05%)
-        interval: '1d' (daily) or '1h' (hourly)
+        interval: '1d' or '1h' (Yahoo). With data_source='tradingview' also '15m' and '4h'.
         include_trade_log: Include full per-trade log (default False)
         include_equity_curve: Include equity curve data points (default False)
+        data_source: 'yahoo' (default) or 'tradingview' (uses the TradingView account
+                     when session cookies are configured; needs the Node bridge, see tv_status)
+        tv_symbol: EXCHANGE:SYMBOL for data_source='tradingview', e.g. 'BINANCE:BTCUSDT'
     """
     return run_backtest(
         symbol, strategy, period, initial_capital,
         commission_pct, slippage_pct, interval,
         include_trade_log, include_equity_curve,
+        data_source=data_source, tv_symbol=tv_symbol,
     )
 
 
@@ -833,18 +845,27 @@ def compare_strategies(
     period: str = "1y",
     initial_capital: float = 10000.0,
     interval: str = "1d",
+    data_source: str = "yahoo",
+    tv_symbol: Optional[str] = None,
 ) -> dict:
     """Run all 9 strategies (RSI, Bollinger, MACD, EMA Cross, Supertrend, Donchian, RSI Pullback, Keltner Breakout, Triple EMA) and return a ranked leaderboard.
 
     Args:
         symbol: Yahoo Finance symbol (AAPL, BTC-USD, SPY…)
-        period: '1mo', '3mo', '6mo', '1y', '2y'
+        period: '1mo', '3mo', '6mo', '1y', '2y' (Yahoo). With data_source='tradingview'
+                also '3y', '5y', limited per interval (15m up to 6mo, 1h up to 2y,
+                4h and 1d up to 5y).
                 (period >= '1y' recommended so rsi_pullback and triple_ema can
                  complete SMA200 warmup; otherwise they contribute zero trades)
         initial_capital: Starting capital in USD (default $10,000)
-        interval: '1d' (daily) or '1h' (hourly)
+        interval: '1d' or '1h' (Yahoo). With data_source='tradingview' also '15m' and '4h'.
+        data_source: 'yahoo' (default) or 'tradingview'
+        tv_symbol: EXCHANGE:SYMBOL for data_source='tradingview', e.g. 'BINANCE:BTCUSDT'
     """
-    return _compare_strategies(symbol, period, initial_capital, interval=interval)
+    return _compare_strategies(
+        symbol, period, initial_capital, interval=interval,
+        data_source=data_source, tv_symbol=tv_symbol,
+    )
 
 
 @mcp.tool(annotations=ToolAnnotations(title="Walk-Forward Backtest", readOnlyHint=True, destructiveHint=False, openWorldHint=True))
@@ -858,6 +879,8 @@ def walk_forward_backtest_strategy(
     n_splits: int = 3,
     train_ratio: float = 0.7,
     interval: str = "1d",
+    data_source: str = "yahoo",
+    tv_symbol: Optional[str] = None,
 ) -> dict:
     """Walk-forward backtest to detect overfitting — validates strategy on unseen data.
 
@@ -867,17 +890,22 @@ def walk_forward_backtest_strategy(
                   | keltner_breakout
                   (rsi_pullback and triple_ema not supported here — SMA200 warmup
                    exceeds typical fold size; use run_backtest with period='2y')
-        period: '1mo', '3mo', '6mo', '1y', '2y' (recommend '2y')
+        period: '1mo', '3mo', '6mo', '1y', '2y' (recommend '2y'). With
+                data_source='tradingview' also '3y', '5y', limited per interval
+                (15m up to 6mo, 1h up to 2y, 4h and 1d up to 5y).
         initial_capital: Starting capital per fold in USD (default $10,000)
         commission_pct: Per-trade commission % (default 0.1%)
         slippage_pct: Per-trade slippage % (default 0.05%)
         n_splits: Number of walk-forward folds (default 3, max 10)
         train_ratio: Fraction of each fold used for training (default 0.7)
-        interval: '1d' (daily) or '1h' (hourly)
+        interval: '1d' or '1h' (Yahoo). With data_source='tradingview' also '15m' and '4h'.
+        data_source: 'yahoo' (default) or 'tradingview'
+        tv_symbol: EXCHANGE:SYMBOL for data_source='tradingview', e.g. 'BINANCE:BTCUSDT'
     """
     return walk_forward_backtest(
         symbol, strategy, period, initial_capital,
         commission_pct, slippage_pct, n_splits, train_ratio, interval,
+        data_source=data_source, tv_symbol=tv_symbol,
     )
 
 
@@ -886,6 +914,7 @@ def walk_forward_backtest_strategy(
 @mcp.tool(annotations=ToolAnnotations(title="Real-Time Price Quote", readOnlyHint=True, destructiveHint=False, openWorldHint=True))
 async def yahoo_price(symbol: str) -> dict:
     """Real-time price quote from Yahoo Finance for any stock, crypto, ETF or index.
+    For TradingView prices use tv_quotes.
 
     Args:
         symbol: Yahoo Finance symbol — e.g. AAPL, BTC-USD, SPY, ^GSPC, EURUSD=X, THYAO.IS
@@ -1160,6 +1189,7 @@ async def stock_screener(
 @mcp.tool(annotations=ToolAnnotations(title="Multi-Symbol Stock Prices", readOnlyHint=True, destructiveHint=False, openWorldHint=True))
 async def stock_prices(tickers: str) -> dict:
     """Current price + daily % change for specific stock symbols.
+    For TradingView prices use tv_quotes.
 
     Args:
         tickers: comma-separated EXCHANGE:SYMBOL list (max 2000 — one
@@ -1178,6 +1208,90 @@ async def stock_prices(tickers: str) -> dict:
         return make_error(ErrorCode.INVALID_PARAMETER, str(e))
     except Exception as e:
         return make_error(ErrorCode.UPSTREAM_ERROR, f"price lookup failed: {e}")
+
+
+# ── TradingView (bridge) tools ─────────────────────────────────────────────────
+# Each tool needs the Node bridge (see tv_status) and uses the account's session
+# cookies when they are configured. Logic lives in tv_data_service.
+
+@mcp.tool(annotations=ToolAnnotations(title="TradingView Status", readOnlyHint=True, destructiveHint=False, openWorldHint=True))
+def tv_status() -> dict:
+    """Report whether the TradingView Node bridge is set up and whether session cookies are present.
+
+    Credentials present is shown as yes or no; the cookies are not verified here.
+    If a TradingView call returns AUTH_FAILED, update TRADINGVIEW_SESSION_ID and
+    TRADINGVIEW_SESSION_SIGN in .env, then restart the MCP server. Never shows values.
+    """
+    return tv_data_service.tv_status()
+
+
+@mcp.tool(annotations=ToolAnnotations(title="TradingView Candles", readOnlyHint=True, destructiveHint=False, openWorldHint=True))
+def tv_candles(symbol: str, exchange: str, timeframe: str = "1D", count: int = 300) -> dict:
+    """Recent OHLCV bars from TradingView. Needs the Node bridge; see `tv_status`.
+
+    Args:
+        symbol: Bare ticker, e.g. "BTCUSDT" or "COMI"
+        exchange: Exchange, e.g. BINANCE, KUCOIN, EGX, NASDAQ
+        timeframe: 5m, 15m, 1h, 4h, 1D, 1W or 1M
+        count: Number of bars, 1 to 1000 (default 300)
+    """
+    return tv_data_service.get_candles(symbol, exchange, timeframe, count)
+
+
+@mcp.tool(annotations=ToolAnnotations(title="TradingView Quotes", readOnlyHint=True, destructiveHint=False, openWorldHint=True))
+def tv_quotes(symbols: str) -> dict:
+    """Latest TradingView quotes for EXCHANGE:SYMBOL pairs. Needs the Node bridge; see `tv_status`.
+
+    Args:
+        symbols: Comma-separated EXCHANGE:SYMBOL list, 1 to 50 entries,
+                 e.g. "NASDAQ:NVDA, BINANCE:BTCUSDT"
+    """
+    return tv_data_service.get_quotes(symbols)
+
+
+@mcp.tool(annotations=ToolAnnotations(title="TradingView Indicator", readOnlyHint=True, destructiveHint=False, openWorldHint=True))
+def tv_indicator(
+    symbol: str,
+    exchange: str,
+    indicator: str,
+    timeframe: str = "1D",
+    inputs: Optional[dict] = None,
+    count: int = 100,
+) -> dict:
+    """Run a TradingView indicator or strategy and return its recent values. Needs the Node bridge; see `tv_status`.
+
+    Args:
+        symbol: Bare ticker, e.g. "BTCUSDT"
+        exchange: Exchange, e.g. BINANCE
+        indicator: Script ID such as "STD;RSI" or a built-in study name
+        timeframe: 5m, 15m, 1h, 4h, 1D, 1W or 1M
+        inputs: Optional indicator inputs as an object
+        count: Number of values, 1 to 500 (default 100)
+    """
+    return tv_data_service.get_indicator(symbol, exchange, indicator, timeframe, inputs, count)
+
+
+@mcp.tool(annotations=ToolAnnotations(title="TradingView Symbol Search", readOnlyHint=True, destructiveHint=False, openWorldHint=True))
+def tv_symbol_search(query: str, type: Optional[str] = None) -> dict:
+    """Search TradingView symbols by text. Needs the Node bridge; see `tv_status`.
+
+    Args:
+        query: Search text, up to 60 characters
+        type: Optional market type filter
+    """
+    return tv_data_service.search_symbols(query, type)
+
+
+@mcp.tool(annotations=ToolAnnotations(title="TradingView Hotlist", readOnlyHint=True, destructiveHint=False, openWorldHint=True))
+def tv_hotlist(kind: str = "gainers", market: str = "crypto", limit: int = 25) -> dict:
+    """Top gainers, losers, most active or volume gainers for a market. Needs the Node bridge; see `tv_status`.
+
+    Args:
+        kind: gainers | losers | mostActive | volumeGainers
+        market: Scanner market, e.g. crypto, america, egypt
+        limit: Number of rows, 1 to 100 (default 25)
+    """
+    return tv_data_service.get_hotlist(kind, market, limit)
 
 
 # ── Resource ───────────────────────────────────────────────────────────────────

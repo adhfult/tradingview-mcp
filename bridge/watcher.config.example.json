@@ -1,0 +1,35 @@
+{
+  "timezone": "America/New_York",
+  "watchlist": [
+    {"symbol": "BINANCE:BTCUSDT", "timeframes": ["15", "60", "240"]},
+    {"symbol": "BINANCE:ETHUSDT", "timeframes": ["60", "240"]},
+    {"symbol": "NASDAQ:NVDA", "timeframes": ["15", "D"], "market": "stock"}
+  ],
+  "rules": [
+    {"id": "move", "type": "pct_move", "bars": 4, "threshold_pct": 3},
+    {"id": "volspike", "type": "volume_spike", "multiple": 3, "lookback": 20},
+    {"id": "rsi", "type": "rsi_cross", "period": 14, "levels": [30, 70]},
+    {"id": "bb", "type": "bollinger_break", "period": 20, "stddev": 2},
+    {"id": "breakout", "type": "new_extreme", "lookback": 50},
+    {"id": "btc100k", "type": "price_cross", "symbol": "BINANCE:BTCUSDT", "level": 100000}
+  ],
+  "trending": {
+    "enabled": true,
+    "every_minutes": 10,
+    "markets": ["crypto", "america"],
+    "kinds": ["gainers", "volumeGainers"],
+    "top_n": 15,
+    "us_regular_hours_only": true,
+    "remember_hours": 6
+  },
+  "alerts": {
+    "cooldown_minutes": 60,
+    "max_per_hour": 20,
+    "quiet_hours": {"start": "23:00", "end": "07:00"},
+    "digest_after_quiet": true
+  },
+  "health": {"stream_down_minutes": 10, "daily_heartbeat": "08:00"},
+  "state_dir": "~/.local/state/tradingview-watcher",
+  "local_api": {"enabled": true, "port": 8787},
+  "limits": {"max_streams": 25}
+}

@@ -129,7 +129,7 @@ def get_futures_overview(
         symbols = FUTURES_WATCHLIST[category]
         q = _tickers_query(symbols)
         q.query["sort"] = {"sortBy": "volume", "sortOrder": "desc"}
-        count, df = q.get_scanner_data(timeout=_SCAN_TIMEOUT_S)
+        count, df = scanner_get_data(q, timeout=_SCAN_TIMEOUT_S)
         rows = df.to_dict(orient="records")
         return {
             "category": category,
@@ -142,7 +142,7 @@ def get_futures_overview(
     # category == "all" (or unrecognized): broad volume scan across exchanges.
     q = _build_query(ex_list, volume_min=volume_min, limit=limit)
     q.query["sort"] = {"sortBy": "volume", "sortOrder": "desc"}
-    count, df = q.get_scanner_data(timeout=_SCAN_TIMEOUT_S)
+    count, df = scanner_get_data(q, timeout=_SCAN_TIMEOUT_S)
     rows = df.to_dict(orient="records")
     return {
         "category": category,
@@ -169,7 +169,7 @@ def get_futures_movers(
     q = _build_query(ex_list, volume_min=volume_min, limit=limit)
     sort_order = "desc" if direction == "gainers" else "asc"
     q.query["sort"] = {"sortBy": "change", "sortOrder": sort_order}
-    count, df = q.get_scanner_data(timeout=_SCAN_TIMEOUT_S)
+    count, df = scanner_get_data(q, timeout=_SCAN_TIMEOUT_S)
     return {
         "direction": direction,
         "total_available": count,
@@ -192,7 +192,7 @@ def get_futures_category_snapshot(category: str) -> dict[str, Any]:
     q = _tickers_query(symbols)
 
     try:
-        count, df = q.get_scanner_data(timeout=_SCAN_TIMEOUT_S)
+        count, df = scanner_get_data(q, timeout=_SCAN_TIMEOUT_S)
     except Exception as exc:
         # Do NOT silently fall back to an unrelated volume scan — that returns
         # contracts the caller never asked for, mislabeled under this category.
