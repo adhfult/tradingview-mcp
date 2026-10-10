@@ -50,3 +50,10 @@ bridge/node_modules/
 watcher.config.json
 bridge/watcher.config.json
 *.state.json
+# Same rules at any depth (a bare pattern only matches the build root)
+**/.env
+**/.env.*
+!**/.env.example
+**/watcher.config.json
+**/*.state.json
+**/paper-journal*

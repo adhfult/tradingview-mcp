@@ -19,7 +19,8 @@ from tradingview_mcp.core.errors import ErrorCode, ScreenerServiceError, make_er
 from tradingview_mcp.core.services import freshness, tv_bridge_client
 from tradingview_mcp.core.services.tv_bridge_client import SETUP_HINT, BridgeError
 from tradingview_mcp.core.utils.validators import (
-    get_market_type,
+    EXCHANGE_SCREENER,
+    _TA_ONLY_SCREENERS,
     normalize_tradingview_symbol,
     to_tv_timeframe,
     validate_exchange,
@@ -42,11 +43,15 @@ MAX_QUOTE_SYMBOLS = 50
 
 # EXCHANGE:SYMBOL, the shape the quotes and backtest inputs must match.
 _TV_SYMBOL_RE = re.compile(r"^[A-Z0-9_.!\-]+:[A-Z0-9_.!\-]+$")
+_MAX_TV_SYMBOL_LEN = 40  # the bridge rejects longer symbols
 
 
 def is_tv_symbol(value: Any) -> bool:
-    """True when *value* looks like ``EXCHANGE:SYMBOL`` (case-insensitive)."""
-    return isinstance(value, str) and bool(_TV_SYMBOL_RE.match(value.strip().upper()))
+    """True when *value* looks like ``EXCHANGE:SYMBOL`` (case-insensitive, at most 40 characters)."""
+    if not isinstance(value, str):
+        return False
+    text = value.strip().upper()
+    return len(text) <= _MAX_TV_SYMBOL_LEN and bool(_TV_SYMBOL_RE.match(text))
 
 
 def bridge_error_message(err: BridgeError) -> str:
@@ -66,10 +71,15 @@ def _client():
     return tv_bridge_client.get_client()
 
 
-def _record(client) -> None:
-    """Note a successful bridge data call for ``data_freshness``."""
-    auth = "session" if client.has_credentials() else "anonymous"
-    freshness.record("tradingview_bridge", time.time(), auth=auth)
+def _record(client, *, uses_account: bool = True) -> None:
+    """Note a successful bridge data call for ``data_freshness``.
+
+    ``uses_account=False`` is for bridge methods that never send the cookies
+    (``search`` and ``hotlist`` are anonymous in the bridge), so they are labelled
+    anonymous even when credentials are configured.
+    """
+    session = uses_account and client.has_credentials()
+    freshness.record("tradingview_bridge", time.time(), auth="session" if session else "anonymous")
 
 
 def _invalid(message: str) -> ScreenerServiceError:
@@ -94,7 +104,10 @@ def _nonblank(value: Any, name: str, max_len: int) -> str:
 def _full_symbol(symbol: Any, exchange: Any) -> str:
     """Build EXCHANGE:SYMBOL from a bare symbol and an exchange, as the screener tools do."""
     text = _nonblank(symbol, "symbol", 60)
-    return normalize_tradingview_symbol(text, validate_exchange(exchange))
+    full = normalize_tradingview_symbol(text, validate_exchange(exchange))
+    if not is_tv_symbol(full):
+        raise _invalid(f"symbol {text!r} does not form a valid EXCHANGE:SYMBOL (letters, digits, _ . ! -)")
+    return full
 
 
 def _iso_utc(ts: Any) -> str:
@@ -109,12 +122,16 @@ def tv_status() -> dict[str, Any]:
     reason = client.check_configured()
     configured = reason is None
     has = client.has_credentials()
-    bridge_ok = client.is_available()
+    cooling = client.cooling_down()
+    # is_available() is False while cooling down; report that state instead of "down".
+    bridge_ok = False if cooling else client.is_available()
     return {
         "configured": configured,
         "reason": reason,
         "has_credentials": has,
         "bridge_ok": bridge_ok,
+        "cooling_down": cooling,
+        "cooldown_remaining_s": round(client.cooldown_remaining_s(), 1) if cooling else 0.0,
         "setup": None if configured else SETUP_HINT,
         "note": (
             f"Credentials present: {'yes' if has else 'no'}. This does not check that the "
@@ -183,7 +200,7 @@ def _parse_symbols(symbols: Any) -> list[str]:
             entries.append(item)
     if not entries or len(entries) > MAX_QUOTE_SYMBOLS:
         raise _invalid(f"symbols must list 1 to {MAX_QUOTE_SYMBOLS} EXCHANGE:SYMBOL entries")
-    bad = [item for item in entries if not _TV_SYMBOL_RE.match(item)]
+    bad = [item for item in entries if not is_tv_symbol(item)]
     if bad:
         raise _invalid(f"not EXCHANGE:SYMBOL: {', '.join(bad)}")
     return entries
@@ -263,7 +280,7 @@ def search_symbols(query: str, type: Optional[str] = None) -> dict[str, Any]:
         return exc.to_envelope()
     except BridgeError as err:
         return _bridge_envelope(err)
-    _record(client)
+    _record(client, uses_account=False)  # the bridge's search sends no credentials
 
     rows = results if isinstance(results, list) else []
     return {"query": text, "count": len(rows), "results": rows}
@@ -284,7 +301,7 @@ def get_hotlist(kind: str = "gainers", market: str = "crypto", limit: int = 25) 
         return exc.to_envelope()
     except BridgeError as err:
         return _bridge_envelope(err)
-    _record(client)
+    _record(client, uses_account=False)  # the bridge's hotlist is deliberately anonymous
 
     out = dict(result) if isinstance(result, dict) else {}
     out.update(kind=kind, market=market_name)
@@ -293,17 +310,40 @@ def get_hotlist(kind: str = "gainers", market: str = "crypto", limit: int = 25) 
 
 # ── Backtest candle source ────────────────────────────────────────────────────
 
-_TV_ANNUALIZATION_CRYPTO = {"15m": 35040, "1h": 8760, "4h": 2190, "1d": 365}
-_TV_ANNUALIZATION_OTHER = {"15m": 6552, "1h": 1638, "4h": 504, "1d": 252}
+# Bars per year for Sharpe annualization, by how the market trades.
+_TV_ANNUALIZATION_CRYPTO = {"15m": 35040, "1h": 8760, "4h": 2190, "1d": 365}      # 365 days x 24h
+_TV_ANNUALIZATION_FX = {"15m": 24960, "1h": 6240, "4h": 1560, "1d": 260}          # 24h x 260 weekdays
+_TV_ANNUALIZATION_STOCK = {"15m": 6552, "1h": 1638, "4h": 504, "1d": 252}         # 252 days x 6.5h session
+
+# Venues that trade 24/7. The screener map's crypto entries are the base ("all" is a
+# placeholder, not a venue); the rest are TradingView crypto prefixes the screener
+# tools do not cover.
+_CRYPTO_PREFIXES = frozenset(
+    {name for name, screener in EXCHANGE_SCREENER.items() if screener == "crypto" and name != "all"}
+    | {"kraken", "bitstamp", "binanceus", "bitmex", "deribit", "phemex", "bithumb",
+       "upbit", "gemini", "poloniex", "bingx", "cryptocom", "coinex"}
+)
+# Forex and CFD venues trade around the clock on weekdays (the TA-only venues in the
+# validators), plus common retail-broker feeds.
+_FX_CFD_PREFIXES = frozenset(
+    set(_TA_ONLY_SCREENERS)
+    | {"forexcom", "pepperstone", "icmarkets", "eightcap", "saxo", "skilling", "blackbull"}
+)
 
 
 def tv_periods_per_year(tv_symbol: str, interval: str) -> int:
-    """Bars per year for Sharpe annualization, by market type of the TradingView prefix.
+    """Bars per year for Sharpe annualization, by the market the TradingView prefix trades.
 
-    Unknown prefixes count as crypto (``get_market_type`` defaults to crypto), so
-    CFD and forex prefixes such as TVC or OANDA get the crypto factor.
+    * known crypto venue: 24/7, 365 days
+    * forex / CFD venue (OANDA, FX_IDC, TVC, CAPITALCOM ...): 24h x 260 weekdays
+    * anything else, including an unknown prefix: stock sessions (252 days x 6.5h)
+
+    ``get_market_type`` is not used: it defaults unknown prefixes to crypto, which
+    would give forex, CFDs and every unlisted exchange the 24/7 factor.
     """
-    prefix = tv_symbol.split(":", 1)[0].lower()
-    if get_market_type(prefix) == "crypto":
+    prefix = tv_symbol.split(":", 1)[0].strip().lower()
+    if prefix in _CRYPTO_PREFIXES:
         return _TV_ANNUALIZATION_CRYPTO[interval]
-    return _TV_ANNUALIZATION_OTHER[interval]
+    if prefix in _FX_CFD_PREFIXES:
+        return _TV_ANNUALIZATION_FX[interval]
+    return _TV_ANNUALIZATION_STOCK[interval]

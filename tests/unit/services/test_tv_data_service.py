@@ -269,3 +269,201 @@ def test_tv_tools_are_registered_and_read_only():
         assert name in names, name
         assert names[name].annotations.readOnlyHint is True
         assert names[name].annotations.destructiveHint is False
+
+
+# ── Review additions ────────────────────────────────────────────────────────
+
+def _collect(fn, *args, **kwargs):
+    records, token = freshness.start_collection()
+    try:
+        out = fn(*args, **kwargs)
+    finally:
+        freshness.stop_collection(token)
+    return out, records
+
+
+@pytest.mark.parametrize(
+    "code, expected_code, retryable",
+    [
+        ("SYMBOL_NOT_FOUND", "SYMBOL_NOT_FOUND", None),
+        ("TIMEOUT", "UPSTREAM_TIMEOUT", True),
+        ("RATE_LIMITED", "UPSTREAM_RATE_LIMIT", True),
+        ("AUTH_FAILED", "AUTH_FAILED", None),
+        ("PERMISSION_OR_SERIES", "PERMISSION_DENIED", None),
+        ("INVALID_PARAMETER", "INVALID_PARAMETER", None),
+        ("NO_DATA", "NO_DATA", None),
+        ("NOT_CONFIGURED", "NOT_CONFIGURED", None),
+        ("UPSTREAM_UNAVAILABLE", "UPSTREAM_ERROR", True),
+        ("SOMETHING_NEW", "UPSTREAM_ERROR", True),
+    ],
+)
+@pytest.mark.parametrize(
+    "call",
+    [
+        ("candles", lambda: tv.get_candles("BTCUSDT", "BINANCE")),
+        ("quotes", lambda: tv.get_quotes("NASDAQ:NVDA")),
+        ("indicator", lambda: tv.get_indicator("BTCUSDT", "BINANCE", "STD;RSI")),
+        ("search", lambda: tv.search_symbols("nvda")),
+        ("hotlist", lambda: tv.get_hotlist()),
+    ],
+    ids=lambda c: c[0],
+)
+def test_every_function_maps_every_bridge_code_to_an_envelope(tv_stub, call, code, expected_code, retryable):
+    method, run = call
+    tv_stub.replies[method] = BridgeError(code, "boom")
+    out, records = _collect(run)
+    assert _code(out) == expected_code
+    if retryable is not None:
+        assert out["error"]["retryable"] is retryable
+    assert records == []  # a failed call records no freshness
+
+
+def test_auth_failed_envelope_has_the_exact_fix_text_for_every_function(tv_stub):
+    exact = "Update TRADINGVIEW_SESSION_ID / TRADINGVIEW_SESSION_SIGN in .env, then restart the MCP server."
+    for method, run in (
+        ("candles", lambda: tv.get_candles("BTCUSDT", "BINANCE")),
+        ("quotes", lambda: tv.get_quotes("NASDAQ:NVDA")),
+        ("indicator", lambda: tv.get_indicator("BTCUSDT", "BINANCE", "STD;RSI")),
+        ("search", lambda: tv.search_symbols("nvda")),
+        ("hotlist", lambda: tv.get_hotlist()),
+    ):
+        tv_stub.replies[method] = BridgeError("AUTH_FAILED", "rejected")
+        out = run()
+        assert _code(out) == "AUTH_FAILED"
+        assert exact in out["error"]["message"]
+
+
+def test_bridge_error_text_never_carries_cookie_values(tv_stub, monkeypatch):
+    monkeypatch.setenv("TRADINGVIEW_SESSION_ID", "SECRET-ID-111")
+    monkeypatch.setenv("TRADINGVIEW_SESSION_SIGN", "SECRET-SIGN-222")
+    tv_stub.replies["candles"] = BridgeError(
+        "UPSTREAM_UNAVAILABLE", "ws failed sessionid=SECRET-ID-111; sessionid_sign=SECRET-SIGN-222")
+    text = json.dumps(tv.get_candles("BTCUSDT", "BINANCE"))
+    assert "SECRET-ID-111" not in text and "SECRET-SIGN-222" not in text
+
+
+@pytest.mark.parametrize("symbol", ["BTC USDT", "BTC/USDT", "A" * 41])
+def test_candles_and_indicator_reject_symbols_the_bridge_would_refuse(tv_stub, symbol):
+    assert _code(tv.get_candles(symbol, "BINANCE")) == "INVALID_PARAMETER"
+    assert _code(tv.get_indicator(symbol, "BINANCE", "STD;RSI")) == "INVALID_PARAMETER"
+    assert tv_stub.calls == []
+
+
+def test_candles_accepts_a_prefixed_symbol_and_forex_exchange(tv_stub):
+    tv_stub.replies["candles"] = _bars(1)
+    tv.get_candles("OANDA:EURUSD", "BINANCE")
+    tv.get_candles("EURUSD", "OANDA")
+    assert tv_stub.calls[0][1]["symbol"] == "OANDA:EURUSD"
+    assert tv_stub.calls[1][1]["symbol"] == "OANDA:EURUSD"
+
+
+def test_quotes_rejects_over_long_symbols(tv_stub):
+    assert _code(tv.get_quotes("NASDAQ:" + "A" * 40)) == "INVALID_PARAMETER"
+    assert tv_stub.calls == []
+
+
+def test_quote_bad_list_type_and_non_string_fields_are_rejected(tv_stub):
+    assert _code(tv.get_quotes(["NASDAQ:NVDA"])) == "INVALID_PARAMETER"
+    assert _code(tv.search_symbols(None)) == "INVALID_PARAMETER"
+    assert _code(tv.get_hotlist(limit="5")) == "INVALID_PARAMETER"
+    assert tv_stub.calls == []
+
+
+@pytest.mark.parametrize("has_creds, expected", [(True, "session"), (False, "anonymous")])
+def test_account_backed_calls_record_the_account_auth(tv_stub, has_creds, expected):
+    tv_stub.has_creds = has_creds
+    tv_stub.replies.update(
+        candles=_bars(1),
+        quotes={"NASDAQ:NVDA": {"lp": 1.0}},
+        indicator={"name": "RSI", "values": [], "strategy": None},
+    )
+    for run in (
+        lambda: tv.get_candles("BTCUSDT", "BINANCE"),
+        lambda: tv.get_quotes("NASDAQ:NVDA"),
+        lambda: tv.get_indicator("BTCUSDT", "BINANCE", "STD;RSI"),
+    ):
+        _, records = _collect(run)
+        assert [(r["source"], r["auth"]) for r in records] == [("tradingview_bridge", expected)]
+
+
+def test_search_and_hotlist_are_recorded_anonymous_even_with_credentials(tv_stub):
+    """The bridge sends no cookies for search/hotlist, so the freshness label must not claim a session."""
+    tv_stub.has_creds = True
+    tv_stub.replies["search"] = []
+    tv_stub.replies["hotlist"] = {"totalCount": 0, "rows": []}
+    for run in (lambda: tv.search_symbols("nvda"), lambda: tv.get_hotlist()):
+        _, records = _collect(run)
+        assert [(r["source"], r["auth"]) for r in records] == [("tradingview_bridge", "anonymous")]
+
+
+def test_status_reports_cooldown_and_never_claims_the_bridge_is_ok_while_cooling(tv_stub):
+    tv_stub.cooldown_s = 42.26
+    out = tv.tv_status()
+    assert out["cooling_down"] is True
+    assert out["cooldown_remaining_s"] == 42.3
+    assert out["bridge_ok"] is False
+    assert out["configured"] is True
+
+
+def test_status_without_cooldown(tv_stub):
+    out = tv.tv_status()
+    assert out["cooling_down"] is False
+    assert out["cooldown_remaining_s"] == 0.0
+    assert out["bridge_ok"] is True
+
+
+def test_status_values_are_only_bools_and_text_even_with_stub_creds(tv_stub, monkeypatch):
+    monkeypatch.setenv("TRADINGVIEW_SESSION_ID", "SECRET-ID-111")
+    monkeypatch.setenv("TRADINGVIEW_SESSION_SIGN", "SECRET-SIGN-222")
+    tv_stub.has_creds = True
+    text = json.dumps(tv.tv_status())
+    assert "SECRET" not in text
+
+
+# ── Through the MCP tool layer (offload + freshness wrappers) ──────────────
+
+def _tool(name):
+    from tradingview_mcp.server import mcp
+
+    return next(t for t in mcp._tool_manager.list_tools() if t.name == name)
+
+
+def test_tv_tools_run_through_wrappers_and_attach_bridge_freshness(tv_stub):
+    import asyncio
+
+    tv_stub.has_creds = True
+    tv_stub.replies["candles"] = _bars(2)
+    out = asyncio.run(_tool("tv_candles").fn(symbol="BTCUSDT", exchange="BINANCE", timeframe="1h", count=2))
+    fresh = out["data_freshness"]
+    assert fresh["sources"] == ["tradingview_bridge"]
+    assert fresh["auth"] == "session"
+    assert fresh["auth_by_source"] == {"tradingview_bridge": "session"}
+
+
+def test_tv_tool_error_envelopes_get_no_data_freshness(tv_stub):
+    import asyncio
+
+    tv_stub.replies["quotes"] = BridgeError("TIMEOUT", "late")
+    out = asyncio.run(_tool("tv_quotes").fn(symbols="NASDAQ:NVDA"))
+    assert out["error"]["code"] == "UPSTREAM_TIMEOUT"
+    assert "data_freshness" not in out
+
+
+def test_tv_tool_docstrings_point_to_tv_status_and_annotations_are_open_world():
+    for name in ("tv_candles", "tv_quotes", "tv_indicator", "tv_symbol_search", "tv_hotlist"):
+        tool = _tool(name)
+        assert "Needs the Node bridge; see `tv_status`" in tool.description, name
+        assert tool.annotations.openWorldHint is True
+        assert tool.annotations.readOnlyHint is True
+        assert tool.annotations.destructiveHint is False
+    assert _tool("tv_status").annotations.openWorldHint is True
+    for name in ("yahoo_price", "stock_prices"):
+        assert "tv_quotes" in _tool(name).description
+
+
+def test_tv_tools_are_offloaded_to_threads():
+    import inspect
+
+    for name in ("tv_status", "tv_candles", "tv_quotes", "tv_indicator", "tv_symbol_search", "tv_hotlist"):
+        tool = _tool(name)
+        assert tool.is_async and inspect.iscoroutinefunction(tool.fn), name

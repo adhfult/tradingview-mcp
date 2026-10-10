@@ -47,6 +47,58 @@ All notable changes to this project will be documented in this file.
   writing (exit 1 if stale), and a guard refuses to write a list that shrank
   suspiciously.
 
+## [0.10.0] - 2026-10-10
+
+### Added
+- **TradingView account tools (optional)**: `tv_status`, `tv_candles`,
+  `tv_quotes`, `tv_indicator`, `tv_symbol_search` and `tv_hotlist`. They run
+  through a read-only Node bridge in `bridge/` (Node 20+, one pinned npm
+  dependency, `@mathieuc/tradingview` 4.0.0). Without the bridge, each tool
+  returns a `NOT_CONFIGURED` error with setup steps.
+- **Session cookies**: `TRADINGVIEW_SESSION_ID` and `TRADINGVIEW_SESSION_SIGN`,
+  from the environment or `.env`. Without them the bridge runs anonymously.
+  `tv_status` reports whether they are present and never shows their values.
+  See `docs/tradingview-session.md`.
+- **TradingView backtest source**: `backtest_strategy`, `compare_strategies`
+  and `walk_forward_backtest_strategy` accept `data_source="tradingview"` with
+  `tv_symbol` (`EXCHANGE:SYMBOL`). This adds 15m and 4h bars, with limits per
+  period and interval. Yahoo stays the default, and its results are unchanged.
+- **Logged-in scanner**: screener and futures scanner requests send the session
+  cookies when they are set. `TRADINGVIEW_MCP_SCANNER_USE_SESSION=0` turns this
+  off. `tradingview_ta` calls stay anonymous, because that library cannot send
+  cookies.
+- **`data_freshness` on market data**: each result says where its data came
+  from (`tradingview_scanner`, `tradingview_ta`, `tradingview_bridge`, `yahoo`),
+  when it was fetched (not market time), whether it was a cache hit or stale,
+  and whether it used an account (`auth`, and `auth_by_source`). Yahoo is always
+  anonymous. Error results never carry `data_freshness`.
+- **`.env` loading**: a `.env` in the repository root is read at start-up. It
+  never overrides variables that are already set. `TRADINGVIEW_ENV_FILE` picks
+  another file, and `TRADINGVIEW_MCP_NO_DOTENV=1` turns loading off. Restart
+  the MCP server after you edit `.env`.
+- **`.env.example`**: names and placeholders for the TradingView settings,
+  next to the existing Marketaux and proxy settings.
+
+### Changed
+- Scanner cache keys include the auth mode (session or anonymous), so logged-in
+  results never answer anonymous calls, or the other way round.
+- Futures and stock screener outputs now include `data_freshness`.
+
+### Infrastructure
+- **Docker image** includes the bridge and a Node 22 runtime. It starts with no
+  credentials. Pass them at run time with `--env-file .env`.
+- **`.dockerignore`** excludes `.env` files, `bridge/node_modules/`, watcher
+  configs and state files at any depth, so none of them are baked into an
+  image.
+- **CI**: a `bridge` job runs the bridge tests and
+  `npm audit --omit=dev --audit-level=high` on Node 20 and 22. The Python test
+  job is unchanged and still runs without Node.
+- **`.gitignore`** ignores `bridge/node_modules/`, watcher configs, `*.state.json`
+  and `paper-journal*`.
+- **SECURITY.md** covers the bridge: its one pinned dependency, installs with
+  `--ignore-scripts`, cookies from the environment only, redacted logs, an
+  allowlisted child environment and read-only access.
+
 ## [0.9.0] - 2026-08-26
 
 ### Changed (behavior)

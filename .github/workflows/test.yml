@@ -36,3 +36,34 @@ jobs:
 
       - name: Run unit tests
         run: uv run pytest tests/unit -q
+
+  # The Node bridge (bridge/) has its own tests and dependency audit. This job
+  # is separate from `test` above, which has no Node and so proves that the
+  # Python side works without the bridge.
+  bridge:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ["20", "22"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+          cache-dependency-path: bridge/package-lock.json
+
+      - name: Install bridge dependencies
+        working-directory: bridge
+        run: npm ci --ignore-scripts
+
+      - name: Run bridge tests
+        working-directory: bridge
+        run: npm test
+
+      - name: Audit production dependencies
+        working-directory: bridge
+        run: npm audit --omit=dev --audit-level=high

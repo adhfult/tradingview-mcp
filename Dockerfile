@@ -1,3 +1,13 @@
+# ---- Stage 0: Bridge dependencies (Node, for the TradingView bridge) ----
+FROM node:22-bookworm-slim AS bridge
+
+WORKDIR /bridge
+
+# Only the lockfile and .npmrc (ignore-scripts) go in first, so this layer is cached
+COPY bridge/package.json bridge/package-lock.json bridge/.npmrc ./
+RUN npm ci --ignore-scripts --omit=dev
+COPY bridge/ ./
+
 # ---- Stage 1: Build ----
 FROM python:3.11-slim AS builder
 
@@ -25,6 +35,14 @@ COPY --from=builder /usr/local/bin/tradingview-mcp /usr/local/bin/tradingview-mc
 
 # Copy app source (needed for coinlist data files etc.)
 COPY --from=builder /app /app
+
+# Node runtime and the TradingView bridge. No credentials are baked in:
+# pass TRADINGVIEW_SESSION_ID / TRADINGVIEW_SESSION_SIGN at run time (see docs/tradingview-session.md)
+COPY --from=bridge /usr/local/bin/node /usr/local/bin/node
+COPY --from=bridge /bridge /app/bridge
+ENV TRADINGVIEW_BRIDGE_PATH=/app/bridge/server.mjs
+# Fails the build if the copied node binary cannot load in this base image
+RUN node --version
 
 # Create non-root user for security
 RUN useradd -m mcpuser && chown -R mcpuser:mcpuser /app

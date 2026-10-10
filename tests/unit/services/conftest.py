@@ -19,6 +19,7 @@ class StubClient:
         self.replies: dict = {}
         self.has_creds = False
         self.reason = None
+        self.cooldown_s = 0.0
 
     def call(self, method, params=None, timeout_s=20.0):
         params = {} if params is None else params
@@ -37,7 +38,13 @@ class StubClient:
         return self.has_creds
 
     def is_available(self) -> bool:
-        return self.reason is None
+        return self.reason is None and self.cooldown_s <= 0.0
+
+    def cooling_down(self) -> bool:
+        return self.cooldown_s > 0.0
+
+    def cooldown_remaining_s(self) -> float:
+        return self.cooldown_s
 
 
 @pytest.fixture

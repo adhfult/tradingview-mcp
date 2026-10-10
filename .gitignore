@@ -245,3 +245,10 @@ dist/
 
 # Remotion promo video project (source + renders kept out of the repo)
 promo/
+
+# TradingView bridge and local state (never commit)
+bridge/node_modules/
+watcher.config.json
+bridge/watcher.config.json
+*.state.json
+paper-journal*

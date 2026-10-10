@@ -3,12 +3,12 @@
 <a href="https://trendshift.io/repositories/25110" target="_blank"><img src="https://trendshift.io/api/badge/repositories/25110" alt="atilaahmettaner%2Ftradingview-mcp | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
 
 **TradingView MCP server** — real-time market data, technical indicators, screeners, and backtesting for Claude, ChatGPT, Cursor, Copilot, and any MCP client. Stocks, crypto, forex & futures across global exchanges.
-Backtesting + live sentiment + Yahoo Finance + 37 technical-analysis tools — the most complete TradingView MCP toolkit, all in one server.
+Backtesting + live sentiment + Yahoo Finance + 45 tools, including technical analysis and optional TradingView account data — the most complete TradingView MCP toolkit, all in one server.
 
 **Don't want to install anything?** The [hosted server](https://pro.cryptosieve.com/?utm_source=github&utm_medium=readme&utm_content=top_cta) gives you all 37 tools as one connector URL for Claude, ChatGPT, Cursor and Copilot. From $9/mo with a 3-day free trial; self-hosting stays free.
 
 <p align="center">
-  <img src=".github/assets/tradingview-mcp-demo.gif" width="820" alt="TradingView MCP in an AI chat: ask for the top gainers on Binance and get ranked, real-time results — one of 37 tools" />
+  <img src=".github/assets/tradingview-mcp-demo.gif" width="820" alt="TradingView MCP in an AI chat: ask for the top gainers on Binance and get ranked, real-time results — one of 45 tools" />
 </p>
 
 **🆕 The [hosted server](https://pro.cryptosieve.com/?utm_source=github&utm_medium=readme&utm_content=charts) now draws.** Ask for a chart and an interactive candlestick view (1d / 1h / 15m, optional Bollinger overlay) renders live **inside the conversation** via MCP Apps — and the AI reads the band values back to you:
@@ -39,7 +39,7 @@ Backtest an RSI strategy on BTC on the daily timeframe
 > Independent open-source project — **not affiliated with, endorsed by, or associated with TradingView Inc.** "TradingView" is a trademark of its respective owner; this project consumes third-party market data and is not a TradingView product.
 
 > [!NOTE]
-> **Does it need — or risk — your TradingView account? No.** This server does **not** log into, scrape, or automate a TradingView session, and it requires no TradingView account or API key. Market data is fetched server-side from public endpoints, so there is no account of yours in the loop and no browser/UI automation. *(This is different from MCP servers that drive the TradingView Desktop app via Chrome DevTools.)* You are responsible for ensuring your own use complies with the terms of any data source you point it at.
+> **Does it need your TradingView account? No.** The server works with public data and no account or API key. You can optionally add your own TradingView session cookies, so the `tv_*` tools and the scanner use your account (see [Use your TradingView account](#use-your-tradingview-account-optional)). The server never asks for your password, and it does not drive a browser or the TradingView app. *(This is different from MCP servers that drive the TradingView Desktop app via Chrome DevTools.)* You are responsible for ensuring your own use complies with the terms of any data source you point it at.
 
 <details>
 <summary><b>How this compares to desktop-automation TradingView MCPs</b> (the ones that remote-control TradingView Desktop)</summary>
@@ -52,9 +52,9 @@ Backtest an RSI strategy on BTC on the daily timeframe
 | What you need | Nothing — public market data | TradingView Desktop, usually with a paid TradingView plan |
 | Where it works | Claude.ai, Claude Code, ChatGPT, Cursor, Copilot — any MCP client | Mostly Claude Code, on your own machine |
 | When your machine is off | Hosted version keeps answering, 24/7 | Stops |
-| Screeners & backtesting | Built in (37 tools, multi-exchange) | Whatever the TradingView UI offers |
+| Screeners & backtesting | Built in (45 tools, multi-exchange) | Whatever the TradingView UI offers |
 | Charts | Interactive in-conversation charts (MCP Apps, hosted) | TradingView's own charts |
-| Your TradingView account | Not needed, never touched | Drives your logged-in session |
+| Your TradingView account | Not needed. Optional, and only if you add your own cookies | Drives your logged-in session |
 
 If you want an AI clicking around *your* TradingView Desktop — editing Pine Script, drawing on charts, using replay — check out [tradesdontlie/tradingview-mcp](https://github.com/tradesdontlie/tradingview-mcp). If you want headless market data, screeners and backtesting available to any AI client, with nothing installed and no TradingView account in the loop — that's this project.
 
@@ -70,7 +70,7 @@ If you want an AI clicking around *your* TradingView Desktop — editing Pine Sc
 [![Python 3.10-3.13](https://img.shields.io/badge/python-3.10--3.13-blue.svg)](https://www.python.org/downloads/)
 [![MCP Ready](https://img.shields.io/badge/MCP-Ready-brightgreen)](https://modelcontextprotocol.com/)
 [![OpenClaw Ready](https://img.shields.io/badge/OpenClaw-Ready-blueviolet)](https://openclaw.ai)
-[![Version](https://img.shields.io/badge/version-v0.9.0-blue)](https://github.com/atilaahmettaner/tradingview-mcp/releases)
+[![Version](https://img.shields.io/badge/version-v0.10.0-blue)](https://github.com/atilaahmettaner/tradingview-mcp/releases)
 [![PyPI](https://img.shields.io/badge/PyPI-tradingview--mcp--server-orange)](https://pypi.org/project/tradingview-mcp-server/)
 [![GitHub Sponsors](https://img.shields.io/badge/Sponsor-❤️-pink?logo=github-sponsors)](https://github.com/sponsors/atilaahmettaner)
 
@@ -129,13 +129,13 @@ https://github-production-user-asset-6210df.s3.amazonaws.com/67838093/478689497-
 ---
 
 > [!WARNING]
-> **Security notice: impersonating copies of this repository.** This project is **Python-only** and has **no official npm / Node.js package**. The only official sources are this repository (`atilaahmettaner/tradingview-mcp`), the PyPI package [`tradingview-mcp-server`](https://pypi.org/project/tradingview-mcp-server/), and the hosted server at [pro.cryptosieve.com](https://pro.cryptosieve.com).
+> **Security notice: impersonating copies of this repository.** The official package is the Python package [`tradingview-mcp-server`](https://pypi.org/project/tradingview-mcp-server/). This repository has **no npm package at the root**. Its only `package.json` is `bridge/package.json`, which is private and is never published to npm. The only official sources are this repository (`atilaahmettaner/tradingview-mcp`), that PyPI package, and the hosted server at [pro.cryptosieve.com](https://pro.cryptosieve.com).
 >
-> Copies of this repository published under other accounts add a `package.json` whose dependencies install malware through npm (for example `oracle-redis`, [MAL-2026-16390](https://osv.dev/vulnerability/MAL-2026-16390)). If you cloned a "tradingview-mcp" repository from another account and ran `npm install`, treat that machine as compromised. Thanks to @roberttidball for the report (#101).
+> Copies of this repository published under other accounts add a root `package.json` whose dependencies install malware through npm (for example `oracle-redis`, [MAL-2026-16390](https://osv.dev/vulnerability/MAL-2026-16390)). If you cloned a "tradingview-mcp" repository from another account and ran `npm install` at its root, treat that machine as compromised. Thanks to @roberttidball for the report (#101).
 
 ## 🚀 Quick Start (5 Minutes)
 
-**Two ways to run it — the same 37 tools either way:**
+**Two ways to run it.** Self-host has 45 tools. The 6 `tv_*` tools need the optional TradingView bridge (see below).
 
 | | 🧑‍💻 Self-host (this repo) | ☁️ Hosted — [pro.cryptosieve.com](https://pro.cryptosieve.com) |
 |---|---|---|
@@ -167,6 +167,28 @@ export MARKETAUX_API_TOKEN=your_token_here   # optional
 
 Without a token those two tools return a friendly "not configured" note — all
 other tools work normally.
+
+### Use your TradingView account (optional)
+
+Without this, the server uses public data only. With your own TradingView session cookies, it also adds:
+
+- the `tv_*` tools: `tv_status`, `tv_candles`, `tv_quotes`, `tv_indicator`, `tv_symbol_search`, `tv_hotlist`
+- logged-in data for the screener and futures scanners
+- TradingView candles in backtests: `backtest_strategy`, `compare_strategies` and `walk_forward_backtest_strategy` accept `data_source="tradingview"` with `tv_symbol="BINANCE:BTCUSDT"`
+
+**Setup**
+
+1. Install Node.js 20 or newer. Node 22 is used in development.
+2. Install the bridge's dependencies once:
+   ```bash
+   cd bridge && npm ci --ignore-scripts
+   ```
+3. Copy `.env.example` to `.env`. Fill in `TRADINGVIEW_SESSION_ID` and `TRADINGVIEW_SESSION_SIGN`.
+4. Restart the MCP server, then call `tv_status`. It reports whether the bridge is set up and whether cookies are present. It does not check that they are valid.
+
+The bridge is read-only. It places no orders and changes nothing on your account. The Docker image includes the bridge but no cookies. Pass them at run time with `docker run --env-file .env ...`.
+
+Risks, how to copy the cookies and how to revoke them: [docs/tradingview-session.md](docs/tradingview-session.md). Bridge details: [bridge/README.md](bridge/README.md).
 
 ### Claude Desktop Config (`claude_desktop_config.json`)
 
@@ -396,7 +418,22 @@ Unlike basic screeners, this framework deploys **specialized AI agents** that de
 
 ---
 
-## 🔧 All 37 MCP Tools
+## 🔧 All 45 MCP Tools
+
+### 📡 TradingView Account Tools (optional)
+
+These need the Node bridge and, for logged-in data, your cookies. See [Use your TradingView account](#use-your-tradingview-account-optional). Without the bridge, each one returns a `NOT_CONFIGURED` error with setup steps. Everything else works as before.
+
+| Tool | Description |
+|------|-------------|
+| `tv_status` | Shows whether the bridge is set up and whether cookies are present. Never shows their values. |
+| `tv_candles` | Recent OHLCV bars for one symbol (1 to 1000 bars). |
+| `tv_quotes` | Latest quotes for up to 50 `EXCHANGE:SYMBOL` pairs. |
+| `tv_indicator` | Runs a TradingView indicator or strategy and returns its recent values. |
+| `tv_symbol_search` | Searches TradingView symbols by text. |
+| `tv_hotlist` | Top gainers, losers, most active or volume gainers for a market. |
+
+---
 
 ### 📊 Backtesting Engine
 
@@ -405,6 +442,8 @@ Unlike basic screeners, this framework deploys **specialized AI agents** that de
 | `backtest_strategy` | Backtest 1 of 9 strategies with institutional metrics (Sharpe, Calmar, Expectancy). Supports `1d` and `1h` timeframes; optional full trade log + equity curve. |
 | `compare_strategies` | Run all 9 strategies on the same symbol and rank by performance. |
 | `walk_forward_backtest_strategy` | Train/test split walk-forward validation with overfitting verdict (ROBUST / MODERATE / WEAK / OVERFITTED). |
+
+Pass `data_source="tradingview"` and `tv_symbol` (for example `BINANCE:BTCUSDT`) to use TradingView candles instead of Yahoo. Yahoo stays the default. TradingView needs the optional bridge.
 
 **9 Strategies to Test:**
 - `rsi` — RSI oversold/overbought mean reversion
