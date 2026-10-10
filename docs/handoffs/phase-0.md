@@ -199,3 +199,25 @@ Baseline before changes was 382 passed. 382 + 25 new = 407. `git diff --stat` to
 421 passed in 6.59s
 ```
 Not committed or pushed.
+
+## Advisor notes (Fable)
+- **Must-fix:** none.
+- **Should-fix (applied by Opus):**
+  1. Explain `data_freshness` in the server `instructions=` text: fetch time, not market time.
+  2. Distinguish it there from Yahoo's `quote_stale`.
+  3. `attach` now skips error results.
+  4. Plan §6 step 3 now says Yahoo `as_of` is fetch time.
+- **Later:**
+  - **Phase 3:** `tv_*` tools should call `freshness.record("tradingview_session", ...)` rather than hand-build `data_freshness`, because `attach` won't overwrite an existing key and would hide a scanner fallback.
+  - **Phase 3:** decide how `auth` rolls up when session scanner data and anonymous TA/Yahoo data mix. Consider reporting auth per source.
+  - **Phase 3:** add the auth flag to screener cache keys.
+  - **Phase 5 watcher:** open one collection per tick, never one for the whole loop (lists have no size cap).
+  - **Any new thread pool** must `copy_context().run` (as in `smart_money_service.py`). Add a `freshness.run_in_context` helper when a second site appears.
+- **Rejected:** Fable said `screener_provider.py` prints to stdout. Checked: all six `print()` calls there pass `file=_sys.stderr`. Not an issue.
+
+## Verification (Opus)
+- Commits: `82ef2f8` (implementation), `ae1b011` (review fixes), plus this commit (advisor fixes).
+- `uv run pytest tests/unit -q` → `422 passed in 6.96s`.
+- With Node hidden (`PATH=/usr/bin:/bin`) → `422 passed in 6.44s`.
+- Secret grep on each commit's diff: clean.
+- The diff touches only the Phase 0 files, plus `smart_money_service.py` (justified context fix).

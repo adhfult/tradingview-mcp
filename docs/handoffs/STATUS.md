@@ -14,8 +14,8 @@
 ## Phase table
 | Phase | Status | Commits | Unit tests | Notes |
 |---|---|---|---|---|
-| 0: data freshness | in progress (brief written) | – | – | – |
-| 1: Node bridge | not started | – | – | – |
+| 0: data freshness | **done** | 82ef2f8, ae1b011, (advisor fixes) | 422 pass (with and without Node) | Fable: no must-fix |
+| 1: Node bridge | in progress (Haiku implementing) | – | – | – |
 | 2: Python bridge client | not started | – | – | – |
 | 3: tv_* tools + wiring | not started | – | – | – |
 | 4: packaging/Docker/CI/docs | not started | – | – | – |
@@ -27,7 +27,7 @@
 | 7c: PyneCore | not started | – | – | – |
 
 ## Current step
-Phase 0, step 2: Haiku implements `docs/handoffs/phase-0.md`.
+Phase 1, step 2: Haiku implements `docs/handoffs/phase-1.md` (brief committed). Phase 2 brief is already written (`docs/handoffs/phase-2.md`).
 
 ## Approved dependencies
 - `@mathieuc/tradingview` 4.0.0 (ISC)
@@ -37,13 +37,16 @@ Phase 0, step 2: Haiku implements `docs/handoffs/phase-0.md`.
 - Others are allowed if they improve accuracy and consistency. Each must have an exact pin and a recorded licence.
 
 ## Decisions made during the build
-- (none yet)
+- `data_freshness.as_of_utc` / `age_seconds` = **fetch time** everywhere, never market time (Phase 0).
+- Error results (dicts with `error`) never get `data_freshness` (Phase 0).
+- `ThreadPoolExecutor` sites must submit via `contextvars.copy_context().run` (Phase 0, `smart_money_service.py`).
 
 ## Deviations from the master plan
 - (none yet)
 
 ## Open issues / follow-ups
-- (none yet)
+- Phase 3: `tv_*` tools must use `freshness.record(...)`, not hand-built `data_freshness`. Decide how `auth` rolls up across mixed sources. Add the auth flag to screener cache keys.
+- Phase 5: the watcher opens one freshness collection per tick, never one for the whole loop.
 
 ## Checks only Adham can run (not possible in the cloud session)
 - Live `tv_*` calls with TradingView cookies in `.env`.

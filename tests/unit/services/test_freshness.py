@@ -291,6 +291,16 @@ def test_attach_stale_list_adds_key_per_row():
     assert out[2]["data_freshness"]["age_seconds"] == 60
 
 
+def test_attach_skips_error_results():
+    # An error serves no data, so a "serving cached data" note would mislead.
+    envelope = {"error": {"code": "UPSTREAM_ERROR", "message": "x"}}
+    legacy = {"symbol": "X", "error": "boom"}
+    stale = [_rec(stale=True, cache_hit=True, fetched_at=NOW - 60)]
+    assert freshness.attach(envelope, stale, now=NOW) is envelope
+    assert freshness.attach(legacy, stale, now=NOW) is legacy
+    assert "data_freshness" not in envelope and "data_freshness" not in legacy
+
+
 def test_attach_never_overwrites_existing_key():
     result = {"data_freshness": "mine"}
     out = freshness.attach(result, [_rec()], now=NOW)

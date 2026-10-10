@@ -119,7 +119,9 @@ def attach(result: Any, records: list[dict], now: Optional[float] = None) -> Any
     if summary is None:
         return result
     if isinstance(result, dict):
-        if "data_freshness" in result:
+        # Error envelopes / error results serve no data, so a "serving cached
+        # data" note on them would be misleading.
+        if "data_freshness" in result or "error" in result:
             return result
         out = copy.copy(result)
         out["data_freshness"] = summary

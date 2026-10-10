@@ -206,7 +206,7 @@ Phase order and dependencies:
      - fresh-cache hit: `cache_hit=True`, `as_of` is the entry's time
      - stale fallback: `stale=True`
    - **Function signatures and return values don't change.**
-3. Also record from Yahoo fetches (`yahoo_finance_service._fetch_quote`, `backtest_service._fetch_ohlcv`) with `source="yahoo"` and `as_of` = newest candle or quote time.
+3. Also record from Yahoo fetches (`yahoo_finance_service._fetch_quote`, `backtest_service._fetch_ohlcv`) with `source="yahoo"` and `as_of` = **fetch time** (as built in Phase 0: everywhere, `as_of_utc` / `age_seconds` mean when the data was fetched from upstream, not market time; don't change this in later phases).
 4. `server.py` `_attach_freshness()`, applied to every tool at import, **after** `_offload_sync_tools`:
    - set a new collector
    - await the tool

@@ -122,7 +122,11 @@ mcp = FastMCP(
         "agriculture, rates, forex, crypto futures). "
         "Tools: top_gainers, top_losers, bollinger_scan, coin_analysis, multi_agent_analysis, "
         "volume_breakout_scanner, futures_market_overview, futures_top_movers, "
-        "futures_category_snapshot, futures_watchlist, egx_market_overview, and more."
+        "futures_category_snapshot, futures_watchlist, egx_market_overview, and more. "
+        "Results may include `data_freshness`: `as_of_utc` / `age_seconds` say when the data "
+        "was fetched from upstream (not market time); `stale: true` means upstream failed and "
+        "a cached copy was served. This is separate from Yahoo's `quote_stale`, which means "
+        "Yahoo's quote block lags its own candle data."
     ),
 )
 
