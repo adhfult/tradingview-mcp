@@ -199,3 +199,17 @@ Keep the file's existing policy ("Only the latest minor release receives securit
 - `git check-ignore -v bridge/package-lock.json`: no output, rc=1 (not ignored)
 - `git check-ignore -v .env.local bridge/watcher.env`: ignored by `.gitignore:256 .env.*` and `.gitignore:257 *.env`
 - `bridge`: `node --test` on Node 22.22.0: `# pass 322 / # fail 0`. On Node 20.18.0 (installed in scratch): `# pass 322 / # fail 0`.
+
+## Advisor notes (Fable), applied by Opus
+- **Must-fix 1:** `.env.example` would have broken Yahoo tools for anyone who copied it, because `.env` is now auto-loaded. It had `PROXY_ENABLED=true` with placeholder proxy credentials and a placeholder Marketaux token. **Fixed:** proxy off by default; prefix, password and token blank; the inline comment moved to its own line; the Node note corrected (the scanner needs only the cookies).
+- **Must-fix 2:** the old `[Unreleased]` changelog items were already in the tree. **Folded into `[0.10.0]`.**
+- **Should-fix:**
+  - Dockerfile pins `python:3.11-slim-bookworm`, matching the node stage's Debian.
+  - `docker-compose.yml` has a commented `env_file` example.
+  - The README no longer claims the hosted service has "all 37 tools". It says it's the upstream author's service and may not include this fork's `tv_*` tools.
+- Checked by Fable: the sdist and wheel contain only `src/`, the coinlists, README, LICENSE and pyproject (no `bridge/` or `.env`). No secrets in tracked files.
+- **Later:** a real `docker build` plus `/health` on WSL. Node 20 CI confirms the bridge tests.
+
+## Verification (Opus)
+- `uv run --frozen pytest tests/unit -q` → 812 passed. `docker-compose.yml` parses as YAML.
+- Docker build: not possible here (no daemon). It's on Adham's checklist in STATUS.

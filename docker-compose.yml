@@ -8,6 +8,11 @@ services:
     ports:
       - "8080:8000"
     restart: unless-stopped
+    # Optional: load TradingView cookies etc. from a local .env (never commit it).
+    # Needs Docker Compose 2.24+ for `required: false`.
+    # env_file:
+    #   - path: .env
+    #     required: false
     environment:
       # Optional: Add any future API keys or environment variables here
       - PORT=8000

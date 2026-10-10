@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [0.10.0] - 2026-10-10
 
 ### Fixed
 - **TradingView interval codes rejected as timeframes**: `"60"`, `"240"`,
@@ -46,8 +46,6 @@ All notable changes to this project will be documented in this file.
   and Canadian venues) from the scanner. `--check` reports drift without
   writing (exit 1 if stale), and a guard refuses to write a list that shrank
   suspiciously.
-
-## [0.10.0] - 2026-10-10
 
 ### Added
 - **TradingView account tools (optional)**: `tv_status`, `tv_candles`,

@@ -9,7 +9,7 @@ RUN npm ci --ignore-scripts --omit=dev
 COPY bridge/ ./
 
 # ---- Stage 1: Build ----
-FROM python:3.11-slim AS builder
+FROM python:3.11-slim-bookworm AS builder
 
 # Install system deps and uv
 RUN apt-get update && apt-get install -y --no-install-recommends curl \
@@ -25,7 +25,7 @@ COPY . .
 RUN uv pip install --system .
 
 # ---- Stage 2: Runtime ----
-FROM python:3.11-slim
+FROM python:3.11-slim-bookworm
 
 WORKDIR /app
 
