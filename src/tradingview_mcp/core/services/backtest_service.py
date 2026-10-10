@@ -14,8 +14,10 @@ v0.7.0 additions:
 """
 from __future__ import annotations
 
+import inspect
 import json
 import math
+import os
 import statistics
 import time
 import urllib.request
@@ -507,6 +509,209 @@ def _public_trade(trade: dict) -> dict:
     return {k: v for k, v in trade.items() if k not in _INTERNAL_TRADE_KEYS}
 
 
+# ─── Strategy parameters, fill model and the simulation engine ────────────────
+
+_FILLS = ("signal_close", "next_open")
+_LENGTH_NAMES = {"period", "fast", "slow", "signal", "fast_ma", "slow_ma"}
+_POSITIVE_NAMES = {"multiplier", "std_mult"}
+_ORDERED_PAIRS = (("fast_period", "slow_period"), ("fast", "slow"), ("fast_ma", "slow_ma"))
+
+
+def _is_length_param(name: str) -> bool:
+    return name in _LENGTH_NAMES or name.endswith("_period")
+
+
+def strategy_param_defaults(strategy: str) -> dict:
+    """Named tunable parameters of a strategy with their defaults.
+
+    The first parameter (candles) and any **kwargs catch-all are not tunable.
+    """
+    params = {}
+    sig = inspect.signature(_STRATEGY_MAP[strategy])
+    for idx, (name, p) in enumerate(sig.parameters.items()):
+        if idx == 0 or p.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD):
+            continue
+        if p.default is not inspect.Parameter.empty:
+            params[name] = p.default
+    return params
+
+
+def resolve_params(strategy: str, params: Optional[dict]) -> dict:
+    """Strategy defaults overlaid with the caller's params, checked.
+
+    Raises ValueError (message suitable for a tool error) on unknown names,
+    non-numeric or non-finite values, lengths below 2, non-positive multipliers,
+    and fast/slow or oversold/overbought orderings that do not hold.
+    """
+    allowed = strategy_param_defaults(strategy)
+    resolved = dict(allowed)
+    if params is not None:
+        if not isinstance(params, dict):
+            raise ValueError("params must be an object mapping parameter names to numbers")
+        unknown = sorted(set(params) - set(allowed))
+        if unknown:
+            raise ValueError(
+                f"Unknown parameter(s) for '{strategy}': {', '.join(unknown)}. "
+                f"Allowed: {', '.join(allowed) or 'none'}")
+        for name, value in params.items():
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+                raise ValueError(f"Parameter '{name}' must be a finite number, got {value!r}")
+            if _is_length_param(name):
+                if value != int(value):
+                    raise ValueError(f"Parameter '{name}' must be a whole number, got {value}")
+                value = int(value)
+                if value < 2:
+                    raise ValueError(f"Parameter '{name}' must be at least 2, got {value}")
+            if name in _POSITIVE_NAMES and value <= 0:
+                raise ValueError(f"Parameter '{name}' must be greater than 0, got {value}")
+            resolved[name] = value
+    for fast_name, slow_name in _ORDERED_PAIRS:
+        if fast_name in resolved and slow_name in resolved and not resolved[fast_name] < resolved[slow_name]:
+            raise ValueError(f"{fast_name} ({resolved[fast_name]}) must be less than "
+                             f"{slow_name} ({resolved[slow_name]})")
+    if "oversold" in resolved and "overbought" in resolved and not resolved["oversold"] < resolved["overbought"]:
+        raise ValueError(f"oversold ({resolved['oversold']}) must be less than "
+                         f"overbought ({resolved['overbought']})")
+    return resolved
+
+
+def _apply_fill(trades: list[dict], candles: list[dict], fill: str) -> list[dict]:
+    """Move trade prices to the bar after the signal when fill="next_open".
+
+    A signal on the last bar has no next open: an entry there is dropped; an exit
+    there keeps the last bar's close and is flagged forced_exit. "signal_close"
+    returns the trades untouched.
+    """
+    if fill == "signal_close":
+        return trades
+    last = len(candles) - 1
+    out = []
+    for t in trades:
+        entry_at = t["entry_idx"] + 1
+        if entry_at > last:
+            continue
+        new = {**t, "entry_date": candles[entry_at]["date"], "entry_price": candles[entry_at]["open"]}
+        exit_at = t["exit_idx"] + 1
+        if exit_at <= last:
+            new["exit_date"] = candles[exit_at]["date"]
+            new["exit_price"] = candles[exit_at]["open"]
+        else:
+            new["exit_date"] = candles[last]["date"]
+            new["exit_price"] = candles[last]["close"]
+            new["forced_exit"] = True
+        out.append(new)
+    return out
+
+
+def _trades_for(candles: list[dict], strategy: str, resolved: dict, fill: str) -> list[dict]:
+    """Raw trades (before costs) for one candle window, with the fill applied."""
+    return _apply_fill(_STRATEGY_MAP[strategy](candles, **resolved), candles, fill)
+
+
+def _simulate(
+    candles: list[dict],
+    strategy: str,
+    *,
+    params: Optional[dict] = None,
+    commission_pct: float,
+    slippage_pct: float,
+    fill: str = "signal_close",
+    interval: str = "1d",
+    periods_per_year: Optional[int] = None,
+    risk_free_rate: Optional[float] = None,
+    initial_capital: float = 10_000.0,
+) -> dict:
+    """One simulation: runner, fill, costs, metrics. Every backtest entry point goes through here.
+
+    Returns {trades, metrics, bnh, params} where params are the resolved values.
+    """
+    if fill not in _FILLS:
+        raise ValueError(f"Invalid fill '{fill}'. Choose: {', '.join(_FILLS)}")
+    resolved = resolve_params(strategy, params)
+    trades = _apply_costs(_trades_for(candles, strategy, resolved, fill), commission_pct, slippage_pct)
+    metrics = _calc_metrics(trades, initial_capital, interval, candles=candles,
+                            risk_free_rate=risk_free_rate, periods_per_year=periods_per_year)
+    bnh = _buy_and_hold_return(candles, commission_pct, slippage_pct)
+    return {"trades": trades, "metrics": metrics, "bnh": bnh, "params": resolved}
+
+
+# ─── Cost profiles, tradability and cost summary (6.1, 6.3) ──────────────────
+
+# ASSUMPTIONS: check against your real fees before trusting results.
+COST_PROFILES = {
+    "default":           {"commission_pct": 0.10, "slippage_pct": 0.05},
+    "binance_spot":      {"commission_pct": 0.10, "slippage_pct": 0.05},
+    "coinbase_advanced": {"commission_pct": 0.60, "slippage_pct": 0.10},
+    "us_stock_broker":   {"commission_pct": 0.00, "slippage_pct": 0.05},
+}
+
+MULTIPLE_TESTING_WARNING = (
+    "Picking the best of 9 strategies on one symbol overstates how good it is. "
+    "Run the winner through strategy_gauntlet."
+)
+
+_HIGH_TURNOVER_PER_YEAR = 200
+_THIN_ZERO_VOLUME_PCT = 5.0
+_DEFAULT_MIN_DAILY_VALUE = 1_000_000.0
+
+
+def _min_daily_value() -> float:
+    raw = os.environ.get("TRADINGVIEW_MCP_MIN_DAILY_VALUE", str(int(_DEFAULT_MIN_DAILY_VALUE)))
+    try:
+        return float(raw)
+    except ValueError:
+        return _DEFAULT_MIN_DAILY_VALUE
+
+
+def _tradability(candles: list[dict], interval: str = "1d") -> dict:
+    """Liquidity of the bars: average traded value per day and the share of zero-volume bars.
+
+    Value per bar is close x volume. Intraday bars are summed per calendar day
+    first, then the days are averaged.
+    """
+    bars = len(candles)
+    zero = sum(1 for c in candles if not c.get("volume"))
+    zero_pct = round(100.0 * zero / bars, 2) if bars else 0.0
+    if interval == "1d":
+        values = [float(c["close"]) * float(c.get("volume") or 0) for c in candles]
+    else:
+        per_day: dict[str, float] = {}
+        for c in candles:
+            day = str(c["date"])[:10]
+            per_day[day] = per_day.get(day, 0.0) + float(c["close"]) * float(c.get("volume") or 0)
+        values = list(per_day.values())
+    avg = sum(values) / len(values) if values else 0.0
+    return {
+        "avg_daily_value": round(avg, 2),
+        "zero_volume_bar_pct": zero_pct,
+        "bars": bars,
+        "thin_market": avg < _min_daily_value() or zero_pct > _THIN_ZERO_VOLUME_PCT,
+    }
+
+
+def _cost_summary(trades: list[dict], initial_capital: float, bars: int, ann: int,
+                  net_return_pct: float) -> dict:
+    """Gross return compounded from per-trade gross returns, and what the costs took."""
+    gross_capital = initial_capital
+    for t in trades:
+        gross_capital *= (1 + t["gross_return_pct"] / 100)
+    gross = round((gross_capital - initial_capital) / initial_capital * 100, 2)
+    drag = round(gross - net_return_pct, 2)
+    trades_per_year = round(len(trades) * ann / bars, 2) if bars else 0.0
+    warnings = []
+    if trades_per_year > _HIGH_TURNOVER_PER_YEAR:
+        warnings.append("High turnover (>200 trades/yr): costs dominate")
+    if gross > 0 and drag > gross / 2:
+        warnings.append("Costs consume more than half of gross return")
+    return {
+        "trades_per_year":   trades_per_year,
+        "gross_return_pct":  gross,
+        "net_return_pct":    net_return_pct,
+        "cost_drag_pct":     drag,
+        "cost_warnings":     warnings,
+    }
+
+
 # ─── Transaction Costs ────────────────────────────────────────────────────────
 
 def _apply_costs(trades: list[dict], commission_pct: float, slippage_pct: float) -> list[dict]:
@@ -775,6 +980,9 @@ def run_backtest(
     periods_per_year: Optional[int] = None,
     data_source: str = "yahoo",
     tv_symbol: Optional[str] = None,
+    params: Optional[dict] = None,
+    fill: str = "signal_close",
+    cost_profile: Optional[str] = None,
 ) -> dict:
     strategy = strategy.lower().strip()
     period   = period.lower().strip()
@@ -790,9 +998,25 @@ def run_backtest(
     if pi_err:
         return {"error": pi_err}
 
+    # A named cost profile wins over commission_pct / slippage_pct when given.
+    profile_name = None
+    if cost_profile is not None:
+        profile_name = cost_profile.strip().lower()
+        if profile_name not in COST_PROFILES:
+            return {"error": f"Unknown cost_profile '{cost_profile}'. Choose: {', '.join(COST_PROFILES)}"}
+        commission_pct = COST_PROFILES[profile_name]["commission_pct"]
+        slippage_pct = COST_PROFILES[profile_name]["slippage_pct"]
+
     num_err = _validate_numeric_inputs(initial_capital, commission_pct, slippage_pct)
     if num_err:
         return {"error": num_err}
+
+    if fill not in _FILLS:
+        return {"error": f"Invalid fill '{fill}'. Choose: {', '.join(_FILLS)}"}
+    try:
+        resolve_params(strategy, params)
+    except ValueError as e:
+        return {"error": str(e)}
 
     try:
         candles, source_meta = _load_candles(symbol, period, interval, data_source, tv_symbol)
@@ -812,11 +1036,11 @@ def run_backtest(
     if data_source == "tradingview" and periods_per_year is None:
         ppy = tv_periods_per_year(tv_symbol, interval)
 
-    raw_trades = _STRATEGY_MAP[strategy](candles)
-    trades     = _apply_costs(raw_trades, commission_pct, slippage_pct)
-    metrics    = _calc_metrics(trades, initial_capital, interval, candles=candles,
-                               risk_free_rate=risk_free_rate, periods_per_year=ppy)
-    bnh        = _buy_and_hold_return(candles, commission_pct, slippage_pct)
+    sim     = _simulate(candles, strategy, params=params, commission_pct=commission_pct,
+                        slippage_pct=slippage_pct, fill=fill, interval=interval,
+                        periods_per_year=ppy, risk_free_rate=risk_free_rate,
+                        initial_capital=initial_capital)
+    trades, metrics, bnh = sim["trades"], sim["metrics"], sim["bnh"]
 
     result = {
         "symbol":                  symbol.upper(),
@@ -839,6 +1063,17 @@ def run_backtest(
         "disclaimer":              "Past performance does not guarantee future results. For educational use only.",
         "timestamp":               datetime.now(timezone.utc).isoformat(),
     }
+    # Optional inputs appear in the result only when the caller used them.
+    if params is not None:
+        result["params"] = sim["params"]
+    if fill != "signal_close":
+        result["fill"] = fill
+    if profile_name is not None:
+        result["cost_profile"] = profile_name
+    ann = ppy or _ANNUALIZATION.get(interval, 252)
+    result.update(_cost_summary(trades, initial_capital, len(candles), ann,
+                                metrics["total_return_pct"]))
+    result["tradability"] = _tradability(candles, interval)
 
     if data_source == "tradingview":
         result["tv_symbol"] = tv_symbol
@@ -946,6 +1181,7 @@ def compare_strategies(
         "winner":                  results[0]["strategy"] if results else None,
         "ranking":                 results,
         "warnings":                warnings,
+        "multiple_testing_warning": MULTIPLE_TESTING_WARNING,
         "disclaimer":              "Past performance does not guarantee future results.",
         "timestamp":               datetime.now(timezone.utc).isoformat(),
     }
@@ -961,10 +1197,10 @@ def compare_strategies(
 
 # ─── Public API: walk_forward_backtest ────────────────────────────────────────
 
-def walk_forward_backtest(
-    symbol: str,
+def _walk_forward_on_candles(
+    candles: list[dict],
     strategy: str,
-    period: str = "2y",
+    *,
     initial_capital: float = 10_000.0,
     commission_pct: float = 0.1,
     slippage_pct: float = 0.05,
@@ -973,68 +1209,15 @@ def walk_forward_backtest(
     interval: str = "1d",
     risk_free_rate: Optional[float] = None,
     periods_per_year: Optional[int] = None,
-    data_source: str = "yahoo",
-    tv_symbol: Optional[str] = None,
+    params: Optional[dict] = None,
+    fill: str = "signal_close",
 ) -> dict:
+    """Folds, averages and verdict for candles that are already fetched (no network).
+
+    Returns ``{"error": ...}`` on failure, otherwise the walk-forward fields that
+    walk_forward_backtest reports. Callers validate n_splits, train_ratio and params.
     """
-    Walk-forward backtesting — detect overfitting via train/test splits.
-
-    Splits full history into n_splits folds. Each fold:
-      - Train (70%): in-sample strategy simulation
-      - Test  (30%): out-of-sample forward validation
-
-    Robustness score (test_return / train_return; train/test when both are
-    negative, so losing LESS out-of-sample scores higher):
-      >= 0.8  → ROBUST    (no overfitting)
-      >= 0.5  → MODERATE  (some degradation)
-      >= 0.2  → WEAK      (likely overfitted)
-      < 0.2   → OVERFITTED (do not trade live)
-
-    Folds whose test slice is shorter than the strategy's indicator warmup
-    are flagged ``insufficient_data`` and excluded from the average — a
-    window too small to trade is not evidence of out-of-sample failure.
-    """
-    strategy = strategy.lower().strip()
-    period   = period.lower().strip()
-    interval = interval.lower().strip()
-    data_source, tv_symbol = _normalize_source(data_source, tv_symbol)
-
-    if strategy not in _STRATEGY_MAP:
-        return {"error": f"Unknown strategy '{strategy}'. Choose: {', '.join(_STRATEGY_MAP)}"}
-    src_err = _check_data_source(data_source)
-    if src_err:
-        return {"error": src_err}
-    pi_err = _check_period_interval(period, interval, data_source, tv_symbol)
-    if pi_err:
-        return {"error": pi_err}
-    if not (2 <= n_splits <= 10):
-        return {"error": "n_splits must be between 2 and 10"}
-    if not (0.5 <= train_ratio <= 0.9):
-        return {"error": "train_ratio must be between 0.5 and 0.9"}
-    if strategy in _SMA200_STRATEGIES:
-        return {"error": (f"Strategy '{strategy}' requires SMA200 warmup "
-                          f"(~{_SMA200_MIN_BARS} bars) which exceeds typical "
-                          f"walk-forward fold sizes. Use run_backtest with "
-                          f"period='2y' instead, or pick a shorter-warmup strategy.")}
-
-    num_err = _validate_numeric_inputs(initial_capital, commission_pct, slippage_pct)
-    if num_err:
-        return {"error": num_err}
-
-    try:
-        candles, source_meta = _load_candles(symbol, period, interval, data_source, tv_symbol)
-    except Exception as e:
-        return {"error": f"Failed to fetch data for '{symbol}': {e}"}
-
-    min_bars = max(60, n_splits * 20)
-    if len(candles) < min_bars:
-        return {"error": f"Not enough data ({len(candles)} bars) for {n_splits} splits. Try longer period."}
-
-    ppy = periods_per_year
-    if data_source == "tradingview" and periods_per_year is None:
-        ppy = tv_periods_per_year(tv_symbol, interval)
-
-    fn          = _STRATEGY_MAP[strategy]
+    resolved    = resolve_params(strategy, params)
     fold_size   = len(candles) // n_splits
     warmup_bars = _STRATEGY_WARMUP_BARS.get(strategy, 20)
 
@@ -1059,12 +1242,12 @@ def walk_forward_backtest(
         # out-of-sample failure. Mark it and exclude it from the average.
         insufficient = len(test_c) < warmup_bars + 5
 
-        train_t = _apply_costs(fn(train_c), commission_pct, slippage_pct)
-        test_t  = _apply_costs(fn(test_c),  commission_pct, slippage_pct)
+        train_t = _apply_costs(_trades_for(train_c, strategy, resolved, fill), commission_pct, slippage_pct)
+        test_t  = _apply_costs(_trades_for(test_c, strategy, resolved, fill),  commission_pct, slippage_pct)
         train_m = _calc_metrics(train_t, initial_capital, interval, candles=train_c,
-                                risk_free_rate=risk_free_rate, periods_per_year=ppy)
+                                risk_free_rate=risk_free_rate, periods_per_year=periods_per_year)
         test_m  = _calc_metrics(test_t,  initial_capital, interval, candles=test_c,
-                                risk_free_rate=risk_free_rate, periods_per_year=ppy)
+                                risk_free_rate=risk_free_rate, periods_per_year=periods_per_year)
 
         all_test_trades.extend(test_t)
 
@@ -1116,7 +1299,7 @@ def walk_forward_backtest(
     avg_test   = round(statistics.mean(f["test_return_pct"]  for f in scored_folds), 2)
     avg_robust = round(statistics.mean(f["fold_robustness_score"] for f in scored_folds), 2)
     oos_m      = _calc_metrics(all_test_trades, initial_capital, interval,
-                               risk_free_rate=risk_free_rate, periods_per_year=ppy)
+                               risk_free_rate=risk_free_rate, periods_per_year=periods_per_year)
 
     if avg_robust >= 0.8:
         verdict = "ROBUST — strategy performs consistently in-sample and out-of-sample"
@@ -1126,6 +1309,109 @@ def walk_forward_backtest(
         verdict = "WEAK — significant out-of-sample degradation, likely overfitted"
     else:
         verdict = "OVERFITTED — strategy fails out-of-sample, do not trade live"
+
+    return {
+        "folds":               folds,
+        "scored_folds":        len(scored_folds),
+        "insufficient_folds":  insufficient_folds,
+        "avg_train":           avg_train,
+        "avg_test":            avg_test,
+        "avg_robust":          avg_robust,
+        "oos_m":               oos_m,
+        "verdict":             verdict,
+        "warmup_bars":         warmup_bars,
+    }
+
+
+def walk_forward_backtest(
+    symbol: str,
+    strategy: str,
+    period: str = "2y",
+    initial_capital: float = 10_000.0,
+    commission_pct: float = 0.1,
+    slippage_pct: float = 0.05,
+    n_splits: int = 3,
+    train_ratio: float = 0.7,
+    interval: str = "1d",
+    risk_free_rate: Optional[float] = None,
+    periods_per_year: Optional[int] = None,
+    data_source: str = "yahoo",
+    tv_symbol: Optional[str] = None,
+    params: Optional[dict] = None,
+    fill: str = "signal_close",
+) -> dict:
+    """
+    Walk-forward backtesting — detect overfitting via train/test splits.
+
+    Splits full history into n_splits folds. Each fold:
+      - Train (70%): in-sample strategy simulation
+      - Test  (30%): out-of-sample forward validation
+
+    Robustness score (test_return / train_return; train/test when both are
+    negative, so losing LESS out-of-sample scores higher):
+      >= 0.8  → ROBUST    (no overfitting)
+      >= 0.5  → MODERATE  (some degradation)
+      >= 0.2  → WEAK      (likely overfitted)
+      < 0.2   → OVERFITTED (do not trade live)
+
+    Folds whose test slice is shorter than the strategy's indicator warmup
+    are flagged ``insufficient_data`` and excluded from the average — a
+    window too small to trade is not evidence of out-of-sample failure.
+    """
+    strategy = strategy.lower().strip()
+    period   = period.lower().strip()
+    interval = interval.lower().strip()
+    data_source, tv_symbol = _normalize_source(data_source, tv_symbol)
+
+    if strategy not in _STRATEGY_MAP:
+        return {"error": f"Unknown strategy '{strategy}'. Choose: {', '.join(_STRATEGY_MAP)}"}
+    src_err = _check_data_source(data_source)
+    if src_err:
+        return {"error": src_err}
+    pi_err = _check_period_interval(period, interval, data_source, tv_symbol)
+    if pi_err:
+        return {"error": pi_err}
+    if not (2 <= n_splits <= 10):
+        return {"error": "n_splits must be between 2 and 10"}
+    if not (0.5 <= train_ratio <= 0.9):
+        return {"error": "train_ratio must be between 0.5 and 0.9"}
+    if strategy in _SMA200_STRATEGIES:
+        return {"error": (f"Strategy '{strategy}' requires SMA200 warmup "
+                          f"(~{_SMA200_MIN_BARS} bars) which exceeds typical "
+                          f"walk-forward fold sizes. Use run_backtest with "
+                          f"period='2y' instead, or pick a shorter-warmup strategy.")}
+    if fill not in _FILLS:
+        return {"error": f"Invalid fill '{fill}'. Choose: {', '.join(_FILLS)}"}
+    try:
+        resolved = resolve_params(strategy, params)
+    except ValueError as e:
+        return {"error": str(e)}
+
+    num_err = _validate_numeric_inputs(initial_capital, commission_pct, slippage_pct)
+    if num_err:
+        return {"error": num_err}
+
+    try:
+        candles, source_meta = _load_candles(symbol, period, interval, data_source, tv_symbol)
+    except Exception as e:
+        return {"error": f"Failed to fetch data for '{symbol}': {e}"}
+
+    min_bars = max(60, n_splits * 20)
+    if len(candles) < min_bars:
+        return {"error": f"Not enough data ({len(candles)} bars) for {n_splits} splits. Try longer period."}
+
+    ppy = periods_per_year
+    if data_source == "tradingview" and periods_per_year is None:
+        ppy = tv_periods_per_year(tv_symbol, interval)
+
+    wf = _walk_forward_on_candles(
+        candles, strategy, initial_capital=initial_capital, commission_pct=commission_pct,
+        slippage_pct=slippage_pct, n_splits=n_splits, train_ratio=train_ratio, interval=interval,
+        risk_free_rate=risk_free_rate, periods_per_year=ppy, params=params, fill=fill,
+    )
+    if "error" in wf:
+        return wf
+    oos_m = wf["oos_m"]
 
     out = {
         "symbol":                  symbol.upper(),
@@ -1139,12 +1425,12 @@ def walk_forward_backtest(
         "train_ratio":             train_ratio,
         "date_from":               candles[0]["date"],
         "date_to":                 candles[-1]["date"],
-        "avg_train_return_pct":    avg_train,
-        "avg_test_return_pct":     avg_test,
-        "robustness_score":        avg_robust,
-        "scored_folds":            len(scored_folds),
-        "insufficient_data_folds": insufficient_folds,
-        "verdict":                 verdict,
+        "avg_train_return_pct":    wf["avg_train"],
+        "avg_test_return_pct":     wf["avg_test"],
+        "robustness_score":        wf["avg_robust"],
+        "scored_folds":            wf["scored_folds"],
+        "insufficient_data_folds": wf["insufficient_folds"],
+        "verdict":                 wf["verdict"],
         "caveat": ("No parameters are optimised on the train window (fixed "
                    "defaults run on both slices), so this score measures "
                    "regime consistency across windows, not parameter "
@@ -1155,7 +1441,7 @@ def walk_forward_backtest(
         "oos_max_drawdown_pct":    oos_m["max_drawdown_pct"],
         "oos_total_return_pct":    oos_m["total_return_pct"],
         "buy_and_hold_return_pct": _buy_and_hold_return(candles, commission_pct, slippage_pct),
-        "folds":                   folds,
+        "folds":                   wf["folds"],
         "initial_capital":         round(initial_capital, 2),
         "commission_pct":          commission_pct,
         "slippage_pct":            slippage_pct,
@@ -1163,6 +1449,10 @@ def walk_forward_backtest(
         "disclaimer":              "Past performance does not guarantee future results. For educational use only.",
         "timestamp":               datetime.now(timezone.utc).isoformat(),
     }
+    if params is not None:
+        out["params"] = resolved
+    if fill != "signal_close":
+        out["fill"] = fill
     if data_source == "tradingview":
         out["tv_symbol"] = tv_symbol
         if source_meta["truncated"]:
