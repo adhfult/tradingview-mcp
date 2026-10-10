@@ -41,6 +41,7 @@
 ## Decisions made during the build
 - `data_freshness.as_of_utc` / `age_seconds` = **fetch time** everywhere, never market time (Phase 0).
 - Error results (dicts with `error`) never get `data_freshness` (Phase 0).
+- Phase 6a may add only the documented **additive** keys to default backtest output (`trades_per_year`, `gross_return_pct`, `net_return_pct`, `cost_drag_pct`, `cost_warnings`, `tradability`; `multiple_testing_warning` in compare). The Yahoo parity digest excludes exactly those keys. Every pre-existing key stays byte-identical, and pinned numbers are unchanged. (Opus decision, option A.)
 - `ThreadPoolExecutor` sites must submit via `contextvars.copy_context().run` (Phase 0, `smart_money_service.py`).
 
 ## Deviations from the master plan
