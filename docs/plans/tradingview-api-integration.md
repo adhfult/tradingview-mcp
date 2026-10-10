@@ -295,6 +295,64 @@ Notes:
 - fingerprint stability (same inputs give the same hash; any change gives a new one)
 - the watcher refusing paper mode without a matching passing report
 
+## Phase 7: charts (Lightweight Charts) and Pine indicators (PyneCore)
+
+Both parts work on TradingView's **free** plan. Build them after Phase 5 (watcher) and Phase 6 (gauntlet).
+
+### 7.1 Local dashboard with TradingView Lightweight Charts
+[Lightweight Charts](https://www.tradingview.com/lightweight-charts/) is TradingView's own open-source charting library (npm `lightweight-charts`, Apache-2.0).
+- **Ask the owner before adding it.** It would be the second pinned dependency in `bridge/` (exact version, `npm ci --ignore-scripts`). Check that the package name is exactly `lightweight-charts`.
+- **Who serves it:** the watcher serves a dashboard at `http://127.0.0.1:<port>` (default localhost only). Allowing other devices on the home network must be opt-in and protected by a token from an environment variable. Never expose it to the internet.
+- **Pages:**
+  - watchlist charts with live candles, pushed from the watcher's stream (server-sent events)
+  - rule levels drawn as lines, and markers where alerts fired
+  - paper-trade entries and exits (Phase 6.6)
+  - a list of gauntlet reports with each gate's result (Phase 6.5)
+- **Attribution is required by TradingView's licence notice.** Keep the chart's `attributionLogo` option on, and add a footer crediting TradingView with a link.
+- **Data:** read-only JSON endpoints only. The dashboard can't change rules or place anything.
+
+### 7.2 Chart images on alerts (optional, off by default)
+- Lightweight Charts draws in a browser, so turning a chart into an image needs headless Chromium (`playwright-core` with the system Chromium).
+  - That's a **third** dependency and heavy for a Pi 400, so ask the owner first.
+  - Keep it behind a config flag, default off.
+- **When it's on:**
+  - Render a small PNG of the last N candles, with the rule level and alert marker, using the same chart code as the dashboard.
+  - Attach it to the Discord/Telegram alert.
+  - Cap it at a few images per hour.
+  - Fall back to text-only if rendering fails or Chromium is missing.
+- **When it's off,** alerts include a link to that symbol's chart on the local dashboard instead.
+
+### 7.3 Pine indicators in the gauntlet with PyneCore
+PyneCore (PyneSys/pynecore, Apache-2.0) runs Pine-Script-style logic in Python.
+- **Install:** add it as an **optional extra** (`pip install tradingview-mcp-server[pine]`, exact version pin), so the default install doesn't change. Ask the owner before adding it.
+- **Check first:**
+  - its licence
+  - whether turning **Pine** code into runnable Python needs PyneSys's online compiler or an API key
+  - whether only hand-written Pyne (Python) scripts run fully offline
+
+  If compiling needs their service, document that, keep it optional, and never send the owner's scripts anywhere without asking.
+- **Where scripts live:** only in a local folder the owner controls, `~/.tradingview-mcp/strategies/`. **Pyne scripts are Python code, so running one is running code:**
+  - never download and run scripts automatically
+  - treat community scripts as code to read before running
+  - document this clearly
+- **Connect it to the gauntlet:** let `strategy_gauntlet` accept a Pyne script name in place of a built-in strategy. Steps:
+  - run the script on the same candles (TradingView source when available, otherwise Yahoo)
+  - convert its trades to this repo's trade format
+  - run all six gates, plus the no-future-data test from 6.4: compare outputs on `candles[:k+1]` against the full series for sample bars, to catch repainting or lookahead in the Pine logic
+- **Check its maths:** before trusting PyneCore results, compare 3 standard indicators (RSI, EMA, Bollinger Bands) with TradingView's own values from `tv_indicator` (Phase 3) on identical candles.
+  - Commit a small fixture for a hermetic unit test.
+  - Keep the live comparison as an opt-in `stress` test.
+  - Record the tolerance used.
+- **Sources of indicators to try:** `awesome-pinescript` and everget's Pine indicator collection. Check each script's licence before reusing it.
+
+### 7.4 Tests
+- Dashboard JSON endpoints and server-sent events: `node --test`, with a fake candle stream.
+- The token being required when the dashboard is opened to the home network.
+- The image fallback to text-only when Chromium is missing.
+- The Pyne bridge converting trades to the repo's format.
+- The no-future-data check catching a deliberately leaky script.
+- The indicator comparison against the committed fixture.
+
 ## Rules
 
 - Never commit, print or log credentials. Grep the diff for cookie-shaped strings before every commit.
@@ -325,3 +383,9 @@ Notes:
    - Blank `hypothesis` or `counterparty` gives `FAIL: no stated edge`.
    - Existing `backtest_strategy` results are unchanged with the default `fill="signal_close"`.
    - Paper mode refuses a strategy whose settings changed after it passed.
+9. Charts and Pine:
+   - The dashboard at `http://127.0.0.1:<port>` shows live candles, alert markers and the TradingView attribution.
+   - It refuses access from another device unless the token is set.
+   - With chart images on, an alert arrives with a PNG. With them off, or with no Chromium, it arrives as text with a dashboard link.
+   - A Pyne version of RSI matches `tv_indicator`'s RSI within the recorded tolerance.
+   - `strategy_gauntlet` runs a local Pyne script, and a deliberately leaky script fails the no-future-data check.
