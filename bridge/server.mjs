@@ -3,7 +3,8 @@ import { createRequire } from 'node:module';
 import { createInterface } from 'node:readline';
 import { pathToFileURL } from 'node:url';
 import { BridgeValidationError, errorMessage, isConnectionError, toBridgeError } from './lib/errors.mjs';
-import { withDeadline } from './lib/deadline.mjs';
+import { createClientManager } from './lib/client.mjs';
+import { timeoutError, withDeadline } from './lib/deadline.mjs';
 import { makeRedactor } from './lib/redact.mjs';
 import { createSemaphore } from './lib/semaphore.mjs';
 import { guardStdio } from './lib/stdio.mjs';
@@ -166,15 +167,13 @@ export function createServer({
   output = process.stdout,
   log = (message) => process.stderr.write(`${message}\n`),
   deadlineGraceMs = DEFAULT_DEADLINE_GRACE_MS,
+  now = Date.now,
 } = {}) {
   if (!lib) throw new TypeError('createServer requires lib');
 
   const redact = makeRedactor(env);
   const credentials = readCredentials(env);
   const semaphore = createSemaphore(readMaxInflight(env));
-  let client = null;
-  let shuttingDown = false;
-
   // Every log line is redacted here, whatever the caller passes in, and a failing
   // log sink can never break a request.
   const emit = (message) => {
@@ -186,59 +185,13 @@ export function createServer({
   };
   const logError = (prefix, err) => emit(`[bridge] ${prefix}: ${errorMessage(err)}`);
 
-  const closeQuietly = async (target) => {
-    try {
-      await target.close();
-    } catch (err) {
-      logError('client close failed', err);
-    }
-  };
-
-  const getClient = () => {
-    if (shuttingDown) {
-      throw Object.assign(new Error('bridge is shutting down'), { code: 'DISCONNECTED' });
-    }
-    // The library never reconnects: a client that closed while idle (server hang-up,
-    // inactivity timeout, failed login) stays closed, so replace it.
-    if (client !== null && client.isClosed === true) {
-      const stale = client;
-      client = null;
-      void closeQuietly(stale);
-    }
-    if (client === null) {
-      client = new lib.TradingViewClient(credentials ? { credentials } : {});
-    }
-    return client;
-  };
-
-  const dropClient = async (used) => {
-    if (client === used) client = null;
-    await closeQuietly(used);
-  };
-
-  const timeoutError = (timeoutMs) =>
-    Object.assign(new Error(`request timed out after ${timeoutMs} ms`), { code: 'TIMEOUT', deadline: true });
-
-  const mustDropClient = (err, used) =>
-    isConnectionError(err?.code)
-    || err?.code === 'AUTH_ERROR'
-    || err?.deadline === true // the library ignored its own timeout: the connection is suspect
-    || used.isClosed === true
-    // timed out before the connection ever became ready: do not keep waiting on it
-    || (err?.code === 'TIMEOUT' && used.isAuthenticated === false);
+  // The shared websocket client: lazy, reused, replaced when dead, closed on shutdown,
+  // with an auth-failure cooldown. See lib/client.mjs.
+  const clients = createClientManager({ lib, credentials, now, log: (message) => emit(`[bridge] ${message}`) });
 
   // Runs a websocket-based library call on the shared client, bounded by a hard
-  // deadline (the library's timeoutMs plus a grace period). A broken or stuck
-  // client is dropped so the next call opens a new one.
-  const wsCall = (timeoutMs, fn) => async () => {
-    const used = getClient();
-    try {
-      return await withDeadline(() => fn(used), timeoutMs + deadlineGraceMs, () => timeoutError(timeoutMs));
-    } catch (err) {
-      if (mustDropClient(err, used)) void dropClient(used);
-      throw err;
-    }
-  };
+  // deadline (the library's timeoutMs plus a grace period).
+  const wsCall = (timeoutMs, fn) => () => clients.call(timeoutMs, deadlineGraceMs, fn);
 
   // Runs an HTTP library call with an AbortSignal that fires after timeoutMs, plus
   // the same hard deadline. fetch reports the abort as a generic HTTP_ERROR, so an
@@ -368,7 +321,8 @@ export function createServer({
       const market = optional(params.market, (value) => v.market(value));
       const range = optional(params.range, (value) => v.range(value, 'range'));
       const timeoutMs = v.timeoutMs(params.timeoutMs);
-      // getHotlist takes HttpOptions only: no credentials are passed.
+      // Deliberately anonymous, not just a type limit: same scanner endpoint as screener, and an
+      // anonymous request ties rate limits to our IP instead of the account, better for a 24/7 scan.
       const result = await semaphore.run(httpCall(timeoutMs, (signal) => lib.getHotlist(
         pickDefined({ kind: params.kind, market, range }),
         { signal },
@@ -419,13 +373,7 @@ export function createServer({
     }
   }
 
-  async function close() {
-    shuttingDown = true;
-    const current = client;
-    client = null;
-    if (current === null) return;
-    await closeQuietly(current);
-  }
+  const close = () => clients.close();
 
   const pending = new Set();
   let done = Promise.resolve();

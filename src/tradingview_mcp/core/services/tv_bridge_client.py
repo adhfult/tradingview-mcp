@@ -22,6 +22,7 @@ import shutil
 import subprocess
 import threading
 import time
+import urllib.parse
 from concurrent.futures import Future, InvalidStateError
 from concurrent.futures import TimeoutError as FutureTimeout
 from pathlib import Path
@@ -41,6 +42,18 @@ _COOLDOWN_S = 30.0
 _CLOSE_WAIT_S = 2.0
 _PROBE_TIMEOUT_S = 10.0
 _MIN_NODE_MAJOR = 20
+
+# Bridge timing (bridge/lib/validate.mjs and bridge/server.mjs): a data call defaults to
+# 15 s, a requested timeoutMs is clamped to 1..60 s, and the bridge's own hard deadline
+# is that value plus 5 s. The client must outwait it, so it adds a margin on top.
+_BRIDGE_DEFAULT_TIMEOUT_MS = 15_000
+_BRIDGE_MIN_TIMEOUT_MS = 1_000
+_BRIDGE_MAX_TIMEOUT_MS = 60_000
+_BRIDGE_DEADLINE_GRACE_S = 5.0
+_CLIENT_MARGIN_S = 5.0
+_BRIDGE_DATA_METHODS = frozenset(
+    {"candles", "quotes", "indicator", "search", "symbol_info", "screener", "hotlist", "technical"}
+)
 
 # src/tradingview_mcp/core/services/tv_bridge_client.py -> parents[4] is the repo root.
 _REPO_ROOT = Path(__file__).resolve().parents[4]
@@ -71,7 +84,8 @@ _CHILD_ENV_KEYS = (
     "TRADINGVIEW_BRIDGE_MAX_INFLIGHT",
 )
 
-# Python twin of bridge/lib/redact.mjs (same variable list and patterns).
+# Python twin of bridge/lib/redact.mjs: same variable list, same patterns, and the
+# same URL-encoded / JSON-escaped variants of each secret value. Keep them in sync.
 _SECRET_ENV_VARS = (
     "TRADINGVIEW_SESSION_ID",
     "TRADINGVIEW_SESSION_SIGN",
@@ -89,15 +103,40 @@ _REDACT_PATTERNS = (
         re.compile(r"https://(?:ptb\.|canary\.)?discord(?:app)?\.com/api/webhooks/\S+", re.IGNORECASE),
         "[REDACTED_WEBHOOK]",
     ),
+    # JSON or colon forms of the cookie names, e.g. "sessionid":"abc" or sessionid: abc.
+    (
+        re.compile(r"""(["']?sessionid(?:_sign)?["']?\s*:\s*["']?)[^"'\s;,}&]+""", re.IGNORECASE),
+        r"\1[REDACTED]",
+    ),
+    # Websocket auth tokens are JWTs; match the shape.
+    (
+        re.compile(r"\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]*"),
+        "[REDACTED_JWT]",
+    ),
 )
+
+
+def _secret_variants(value: str) -> set[str]:
+    """The raw secret plus its URL-encoded and JSON-escaped forms."""
+    variants = {
+        value,
+        # encodeURIComponent leaves A-Z a-z 0-9 - _ . ! ~ * ' ( ) unescaped.
+        urllib.parse.quote(value, safe="!~*'()", errors="replace"),
+        json.dumps(value)[1:-1],
+        json.dumps(value, ensure_ascii=False)[1:-1],
+    }
+    return {v for v in variants if len(v) >= _MIN_SECRET_LENGTH}
 
 
 def _redact(text: Any) -> str:
     """Remove secret values and secret-shaped text from *text*."""
     out = str(text)
     values = (os.environ.get(name, "") for name in _SECRET_ENV_VARS)
-    secrets = sorted({v for v in values if len(v) >= _MIN_SECRET_LENGTH}, key=len, reverse=True)
-    for secret in secrets:
+    secrets: set[str] = set()
+    for value in values:
+        if len(value) >= _MIN_SECRET_LENGTH:
+            secrets |= _secret_variants(value)
+    for secret in sorted(secrets, key=len, reverse=True):
         out = out.replace(secret, "[REDACTED]")
     for pattern, replacement in _REDACT_PATTERNS:
         out = pattern.sub(replacement, out)
@@ -108,9 +147,15 @@ class BridgeError(Exception):
     """A failed bridge call. ``code`` is the bridge's error code string."""
 
     def __init__(self, code: str, message: str) -> None:
+        # Redacted here so that str(err) and err.message can never carry a secret.
+        message = _redact(message)
         super().__init__(message)
         self.code = code
         self.message = message
+        # Set by the client when the error means "this bridge process is gone".
+        self.process: Optional["_Process"] = None
+        # False for errors from an intentional close(), which are not a failure.
+        self.counts_as_failure = True
 
     def to_envelope(self) -> dict[str, Any]:
         """Map this error to the repo's ``{"error": {...}}`` envelope."""
@@ -168,6 +213,24 @@ def _probe_node_major(node: str, env: Mapping[str, str]) -> Optional[int]:
     return int(match.group(1)) if match else None
 
 
+def _effective_timeout_s(method: str, params: Optional[dict], timeout_s: float) -> float:
+    """Wait at least as long as the bridge may legitimately take to answer.
+
+    The bridge enforces ``timeoutMs`` (default 15 s, clamped to 1..60 s) and then a
+    5 s grace before it gives up, so a client that stops earlier would report a
+    timeout for a call the bridge is still entitled to answer.
+    """
+    requested = params.get("timeoutMs") if isinstance(params, dict) else None
+    if isinstance(requested, (int, float)) and not isinstance(requested, bool) and requested == requested:
+        bridge_ms = min(_BRIDGE_MAX_TIMEOUT_MS, max(_BRIDGE_MIN_TIMEOUT_MS, requested))
+    elif method in _BRIDGE_DATA_METHODS:
+        bridge_ms = _BRIDGE_DEFAULT_TIMEOUT_MS
+    else:
+        return timeout_s
+    needed = bridge_ms / 1000.0 + _BRIDGE_DEADLINE_GRACE_S + _CLIENT_MARGIN_S
+    return max(timeout_s, needed)
+
+
 class _Process:
     """One bridge child process and the requests still waiting on it."""
 
@@ -176,6 +239,8 @@ class _Process:
         self.pending: dict[int, Future] = {}
         self.write_lock = threading.Lock()
         self.dead = False
+        # One process death is one failure, however many requests it orphaned.
+        self.failure_counted = False
 
 
 class BridgeClient:
@@ -194,7 +259,7 @@ class BridgeClient:
         self._fail_count = 0
         self._last_fail = 0.0
         self._avail: Optional[tuple[float, bool]] = None
-        self._node_majors: dict[str, Optional[int]] = {}
+        self._node_majors: dict[str, tuple[Optional[int], float]] = {}
 
     # ------------------------------------------------------------------
     # configuration
@@ -208,9 +273,13 @@ class BridgeClient:
         node = _default_node()
         if node is None:
             return "Node.js was not found; install Node.js 20+ or set TRADINGVIEW_BRIDGE_NODE"
-        if node not in self._node_majors:
-            self._node_majors[node] = _probe_node_major(node, self._child_env())
-        major = self._node_majors[node]
+        now = time.monotonic()
+        cached = self._node_majors.get(node)
+        # A failed probe is retried after a while, so one hiccup cannot disable the bridge.
+        if cached is None or (cached[0] is None and now - cached[1] >= _AVAIL_TTL_S):
+            cached = (_probe_node_major(node, self._child_env()), now)
+            self._node_majors[node] = cached
+        major = cached[0]
         if major is None:
             return f"could not read the Node.js version from {node}"
         if major < _MIN_NODE_MAJOR:
@@ -218,7 +287,13 @@ class BridgeClient:
 
         script = _bridge_script()
         if not script.is_file():
-            return f"bridge script not found at {script}"
+            if os.environ.get("TRADINGVIEW_BRIDGE_PATH"):
+                return f"bridge script not found at {script} (from TRADINGVIEW_BRIDGE_PATH)"
+            return (
+                f"bridge script not found at the default location {script}; this is not a "
+                "source checkout (for example a pip install), so set TRADINGVIEW_BRIDGE_PATH "
+                "to the full path of bridge/server.mjs"
+            )
         if not (script.parent / "node_modules" / "@mathieuc" / "tradingview").exists():
             return f"bridge dependencies are missing; run npm ci --ignore-scripts in {script.parent}"
         return None
@@ -270,13 +345,15 @@ class BridgeClient:
         reason = self.check_configured()
         if reason is not None:
             raise BridgeError("NOT_CONFIGURED", reason)
+        timeout_s = _effective_timeout_s(method, params, timeout_s)
 
         try:
             proc = self._ensure_started()
             result = self._request(proc, method, params, timeout_s)
         except BridgeError as err:
             if err.code == "UPSTREAM_UNAVAILABLE":
-                self._note_failure()
+                if err.counts_as_failure:
+                    self._note_failure(err.process)
             elif err.code != "TIMEOUT":
                 # The bridge answered with an error, so the process is healthy.
                 self._note_healthy()
@@ -301,8 +378,12 @@ class BridgeClient:
         if cooling:
             raise BridgeError("UPSTREAM_UNAVAILABLE", "bridge cooling down after repeated failures")
 
-    def _note_failure(self) -> None:
+    def _note_failure(self, proc: Optional[_Process] = None) -> None:
         with self._lock:
+            if proc is not None:
+                if proc.failure_counted:
+                    return
+                proc.failure_counted = True
             self._fail_count += 1
             self._last_fail = time.monotonic()
 
@@ -356,7 +437,7 @@ class BridgeClient:
         fut: Future = Future()
         with self._lock:
             if proc.dead:
-                raise BridgeError("UPSTREAM_UNAVAILABLE", "bridge process exited")
+                raise self._process_error(proc, "bridge process exited")
             proc.pending[req_id] = fut
 
         try:
@@ -366,7 +447,7 @@ class BridgeClient:
         except (OSError, ValueError):
             with self._lock:
                 proc.pending.pop(req_id, None)
-            raise BridgeError("UPSTREAM_UNAVAILABLE", "could not write to the bridge process") from None
+            raise self._process_error(proc, "could not write to the bridge process") from None
 
         try:
             return fut.result(timeout=timeout_s)
@@ -392,6 +473,10 @@ class BridgeClient:
             pass
         finally:
             self._on_exit(proc)
+            try:
+                proc.popen.stdout.close()  # type: ignore[union-attr]
+            except (OSError, ValueError):
+                pass
 
     def _read_stderr(self, popen: subprocess.Popen) -> None:
         try:
@@ -401,6 +486,11 @@ class BridgeClient:
                     _log.debug("%s", _redact(line))
         except (OSError, ValueError):
             pass
+        finally:
+            try:
+                popen.stderr.close()  # type: ignore[union-attr]
+            except (OSError, ValueError):
+                pass
 
     def _dispatch(self, proc: _Process, raw: str) -> None:
         line = raw.strip()
@@ -429,19 +519,27 @@ class BridgeClient:
                 code = error.get("code")
                 if not isinstance(code, str):
                     code = "UPSTREAM_ERROR"
-                fut.set_exception(BridgeError(code, _redact(error.get("message", ""))))
+                text = error.get("message")
+                fut.set_exception(BridgeError(code, text if isinstance(text, str) else ""))
             else:
                 fut.set_result(message.get("result"))
         except InvalidStateError:
             pass
 
-    def _fail_pending(self, proc: _Process, reason: str) -> None:
+    @staticmethod
+    def _process_error(proc: _Process, reason: str, counts: bool = True) -> BridgeError:
+        err = BridgeError("UPSTREAM_UNAVAILABLE", reason)
+        err.process = proc
+        err.counts_as_failure = counts
+        return err
+
+    def _fail_pending(self, proc: _Process, reason: str, counts: bool = True) -> None:
         with self._lock:
             orphaned = list(proc.pending.values())
             proc.pending.clear()
         for fut in orphaned:
             try:
-                fut.set_exception(BridgeError("UPSTREAM_UNAVAILABLE", reason))
+                fut.set_exception(self._process_error(proc, reason, counts))
             except InvalidStateError:
                 pass
 
@@ -451,6 +549,11 @@ class BridgeClient:
             if self._proc is proc:
                 self._proc = None
         self._fail_pending(proc, "bridge process exited")
+        try:
+            if proc.popen.stdin is not None:
+                proc.popen.stdin.close()
+        except (OSError, ValueError):
+            pass
         try:
             proc.popen.wait(timeout=_CLOSE_WAIT_S)
         except subprocess.TimeoutExpired:
@@ -469,7 +572,7 @@ class BridgeClient:
             return
 
         proc.dead = True
-        self._fail_pending(proc, "bridge closed")
+        self._fail_pending(proc, "bridge closed", counts=False)
         popen = proc.popen
         try:
             if popen.stdin is not None:
@@ -507,4 +610,5 @@ def reset_client_for_tests() -> None:
     with _client_lock:
         old, _client = _client, None
     if old is not None:
+        atexit.unregister(old.close)
         old.close()

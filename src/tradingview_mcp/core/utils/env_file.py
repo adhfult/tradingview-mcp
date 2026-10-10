@@ -34,7 +34,7 @@ def load_env_file(path: Optional[Path] = None) -> list[str]:
 
     target = DEFAULT_ENV_PATH if path is None else Path(path)
     try:
-        text = target.read_text(encoding="utf-8")
+        text = target.read_text(encoding="utf-8-sig")
     except (OSError, UnicodeDecodeError):
         return []
 
@@ -55,7 +55,11 @@ def load_env_file(path: Optional[Path] = None) -> list[str]:
 
         if key in os.environ:
             continue
-        os.environ[key] = value
+        try:
+            os.environ[key] = value
+        except ValueError:
+            # e.g. an embedded NUL byte: skip the line rather than break the import.
+            continue
         set_names.append(key)
 
     return set_names

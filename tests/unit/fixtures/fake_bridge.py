@@ -10,8 +10,9 @@ Methods:
   echo     -> the params as they came (mode "env": the sorted keys of os.environ)
   sleep    -> waits params["s"] seconds, then replies
   fail     -> error {"code": params["code"], "message": params["message"]}
-  crash    -> exits with status 1 without replying
+  crash    -> exits with status 1 without replying (even with other calls in flight)
   stderr   -> writes params["text"] to stderr, then replies {}
+  flood    -> writes params["bytes"] bytes of stderr noise (many lines), then replies {}
 Anything else gets an INVALID_PARAMETER error, as the real bridge does.
 """
 import json
@@ -52,6 +53,12 @@ def main() -> None:
             sys.stderr.write(f"{params.get('text', '')}\n")
             sys.stderr.flush()
             reply(req_id, {"result": {}})
+        elif method == "flood":
+            line = "x" * 99 + "\n"
+            for _ in range(int(params.get("bytes", 0)) // len(line)):
+                sys.stderr.write(line)
+            sys.stderr.flush()
+            reply(req_id, {"result": {}})
         else:
             reply(req_id, {"error": {"code": "INVALID_PARAMETER", "message": "unknown method"}})
 
@@ -62,8 +69,9 @@ def main() -> None:
         request = json.loads(line)
         method = request.get("method")
         if method == "crash":
-            # On the main thread on purpose: sys.exit here really ends the process.
-            sys.exit(1)
+            # os._exit, not sys.exit: sleeping worker threads must not delay the death.
+            sys.stdout.flush()
+            os._exit(1)
         params = request.get("params") or {}
         worker = threading.Thread(target=handle, args=(request.get("id"), method, params))
         worker.start()

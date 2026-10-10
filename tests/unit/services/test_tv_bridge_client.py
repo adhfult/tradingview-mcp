@@ -405,3 +405,419 @@ def test_new_configuration_error_codes_have_stable_values():
     assert ErrorCode.NOT_CONFIGURED.value == "NOT_CONFIGURED"
     assert ErrorCode.AUTH_FAILED.value == "AUTH_FAILED"
     assert ErrorCode.PERMISSION_DENIED.value == "PERMISSION_DENIED"
+
+
+# ---------------------------------------------------------------------------
+# review additions (Sonnet): redaction parity with bridge/lib/redact.mjs
+# ---------------------------------------------------------------------------
+
+REDACT_MJS = Path(__file__).resolve().parents[3] / "bridge" / "lib" / "redact.mjs"
+
+# Obviously fake, but with characters that change under URL-encoding and JSON-escaping.
+_TRICKY = 'fake/sess+id=1 "q"\\z'
+
+
+def _js_source() -> str:
+    return REDACT_MJS.read_text(encoding="utf-8")
+
+
+def test_secret_env_var_list_matches_the_bridge_redactor():
+    import re
+
+    block = re.search(r"SECRET_ENV_VARS = Object\.freeze\(\[(.*?)\]\)", _js_source(), re.S)
+    assert block is not None
+    assert tuple(re.findall(r"'([A-Z_]+)'", block.group(1))) == tvb._SECRET_ENV_VARS
+
+
+def test_redaction_patterns_match_the_bridge_redactor():
+    import re
+
+    # Pattern literals in the JS PATTERNS table, e.g. [/regex/flags, 'replacement'],
+    js_patterns = re.findall(r"^\s*\[/(.+)/([a-z]*), '([^']*)'\],$", _js_source(), re.M)
+    assert len(js_patterns) == len(tvb._REDACT_PATTERNS)
+    for (js_src, _flags, _repl), (py_re, _py_repl) in zip(js_patterns, tvb._REDACT_PATTERNS):
+        assert py_re.pattern == js_src.replace("\\/", "/")
+
+
+@pytest.mark.parametrize(
+    "variant",
+    [
+        "raw",
+        "url_encoded",
+        "json_escaped",
+    ],
+)
+def test_encoded_and_escaped_secret_variants_do_not_survive(monkeypatch, variant):
+    import json
+    import urllib.parse
+
+    monkeypatch.setenv("TRADINGVIEW_SESSION_ID", _TRICKY)
+    monkeypatch.setenv("TRADINGVIEW_SESSION_SIGN", "fake-sign-456")
+    shown = {
+        "raw": _TRICKY,
+        "url_encoded": urllib.parse.quote(_TRICKY, safe=""),
+        "json_escaped": json.dumps(_TRICKY)[1:-1],
+    }[variant]
+
+    out = tvb._redact(f"login failed for {shown} and fake-sign-456")
+
+    assert shown not in out
+    assert "fake-sign-456" not in out
+
+
+def test_non_ascii_secret_survives_neither_escaped_nor_raw(monkeypatch):
+    import json
+
+    secret = "fake-sécret-日本"
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", secret)
+
+    for shown in (secret, json.dumps(secret)[1:-1]):
+        assert shown not in tvb._redact(f"token {shown} end")
+
+
+@pytest.mark.parametrize(
+    "text, leaked",
+    [
+        ("Cookie: sessionid=fake-cookie-1; sessionid_sign=fake-cookie-2", ("fake-cookie-1", "fake-cookie-2")),
+        ('{"sessionid":"fake-cookie-3","other":1}', ("fake-cookie-3",)),
+        ('{"sessionid_sign": "fake-cookie-4"}', ("fake-cookie-4",)),
+        ("sessionid: fake-cookie-5", ("fake-cookie-5",)),
+        ("'sessionid': 'fake-cookie-6'", ("fake-cookie-6",)),
+        ("SessionID=fake-cookie-7", ("fake-cookie-7",)),
+        (
+            "auth eyJhbGciOiJub25lIn0.eyJmYWtlIjoxfQ.sigfake123 done",
+            ("eyJhbGciOiJub25lIn0", "eyJmYWtlIjoxfQ", "sigfake123"),
+        ),
+        ("POST https://api.telegram.org/bot123456:ABCdef-ghi_jkl/send", ("123456:ABCdef-ghi_jkl",)),
+        (
+            "https://discord.com/api/webhooks/123456/fake-hook-token",
+            ("123456/fake-hook-token", "fake-hook-token"),
+        ),
+        (
+            "https://ptb.discordapp.com/api/webhooks/123456/fake-hook-token2",
+            ("fake-hook-token2",),
+        ),
+        ("HTTPS://CANARY.DISCORD.COM/API/WEBHOOKS/1/FAKEHOOK", ("FAKEHOOK",)),
+    ],
+)
+def test_secret_shaped_text_is_redacted_without_any_env(text, leaked):
+    out = tvb._redact(text)
+
+    for piece in leaked:
+        assert piece not in out
+
+
+def test_redaction_keeps_the_surrounding_text_readable():
+    out = tvb._redact('{"sessionid":"fake-cookie-3","other":1}')
+
+    assert out == '{"sessionid":[REDACTED],"other":1}' or '"other":1' in out
+    assert "sessionid" in out
+
+
+def test_every_configured_secret_variable_is_redacted(monkeypatch):
+    for name in tvb._SECRET_ENV_VARS:
+        monkeypatch.setenv(name, f"fake-value-for-{name.lower()}")
+
+    text = " | ".join(f"fake-value-for-{name.lower()}" for name in tvb._SECRET_ENV_VARS)
+    out = tvb._redact(text)
+
+    assert "fake-value-for" not in out
+
+
+def test_values_shorter_than_four_characters_are_left_alone(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "ab")
+
+    assert tvb._redact("chat ab here") == "chat ab here"
+
+
+def test_bridge_error_never_carries_a_secret(monkeypatch):
+    monkeypatch.setenv("TRADINGVIEW_SESSION_ID", FAKE_SESSION)
+
+    err = BridgeError("UPSTREAM_ERROR", f"boom {FAKE_SESSION}")
+
+    assert FAKE_SESSION not in str(err)
+    assert FAKE_SESSION not in err.message
+
+
+def test_secret_in_a_bridge_error_reply_is_redacted_in_the_exception(make_client, monkeypatch):
+    monkeypatch.setenv("TRADINGVIEW_SESSION_ID", _TRICKY)
+    client = make_client()
+
+    with pytest.raises(BridgeError) as exc:
+        client.call("fail", {"code": "AUTH_ERROR", "message": f"rejected {_TRICKY}"})
+
+    assert _TRICKY not in str(exc.value)
+    assert _TRICKY not in repr(exc.value.to_envelope())
+
+
+def test_non_string_error_message_from_the_bridge_is_handled(make_client):
+    client = make_client()
+
+    with pytest.raises(BridgeError) as exc:
+        client.call("fail", {"code": "NO_DATA", "message": None})
+
+    assert exc.value.code == "NO_DATA"
+    assert exc.value.message == ""
+
+
+# ---------------------------------------------------------------------------
+# review additions: timeout alignment
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "method, params, timeout_s, expected",
+    [
+        ("candles", {"timeoutMs": 30000}, 20.0, 40.0),  # 30 s + 5 s bridge grace + 5 s margin
+        ("candles", {"timeoutMs": 1000}, 20.0, 20.0),  # the caller's larger value is kept
+        ("candles", {"timeoutMs": 500}, 1.0, 11.0),  # bridge clamps up to 1 s
+        ("candles", {"timeoutMs": 999999}, 20.0, 70.0),  # bridge clamps down to 60 s
+        ("candles", {"timeoutMs": 15000}, 20.0, 25.0),
+        ("candles", {}, 20.0, 25.0),  # bridge default is 15 s, so 20 s would race its deadline
+        ("candles", None, 20.0, 25.0),
+        ("quotes", {"symbols": ["X"]}, 20.0, 25.0),
+        ("candles", {"timeoutMs": "30000"}, 20.0, 25.0),  # the bridge rejects non-numbers at once
+        ("candles", {"timeoutMs": True}, 20.0, 25.0),
+        ("candles", {"timeoutMs": float("nan")}, 20.0, 25.0),
+        ("health", None, 20.0, 20.0),
+        ("health", {}, 3.0, 3.0),
+        ("sleep", {"s": 1}, 0.3, 0.3),
+        ("sleep", {"s": 1, "timeoutMs": 2000}, 0.3, 10.3 + 1.7),
+    ],
+)
+def test_effective_timeout_outwaits_the_bridge_deadline(method, params, timeout_s, expected):
+    assert tvb._effective_timeout_s(method, params, timeout_s) == pytest.approx(expected)
+
+
+def test_call_waits_for_the_bridge_when_timeout_ms_is_larger_than_timeout_s(client):
+    # timeout_s alone would give up after 0.3 s; timeoutMs says the bridge may take longer.
+    result = client.call("sleep", {"s": 0.8, "timeoutMs": 2000}, timeout_s=0.3)
+
+    assert result == {"slept": 0.8}
+
+
+def test_call_without_timeout_ms_still_honours_a_short_timeout(client):
+    with pytest.raises(BridgeError) as exc:
+        client.call("sleep", {"s": 2}, timeout_s=0.3)
+    assert exc.value.code == "TIMEOUT"
+
+
+# ---------------------------------------------------------------------------
+# review additions: configuration reasons
+# ---------------------------------------------------------------------------
+
+
+def _fake_node(tmp_path, monkeypatch, major=22):
+    node = tmp_path / "fake-node"
+    node.write_text("#!/bin/sh\n", encoding="utf-8")
+    node.chmod(0o755)
+    monkeypatch.setenv("TRADINGVIEW_BRIDGE_NODE", str(node))
+    monkeypatch.setattr(tvb, "_probe_node_major", lambda node_path, env: major)
+
+
+def test_missing_default_script_points_to_the_path_override(tmp_path, monkeypatch):
+    _fake_node(tmp_path, monkeypatch)
+    missing = tmp_path / "site-packages" / "bridge" / "server.mjs"
+    monkeypatch.setattr(tvb, "_DEFAULT_SCRIPT", missing)
+
+    reason = BridgeClient().check_configured()
+
+    assert reason is not None
+    assert "TRADINGVIEW_BRIDGE_PATH" in reason
+    assert str(missing) in reason
+
+
+def test_missing_overridden_script_names_the_variable(tmp_path, monkeypatch):
+    _fake_node(tmp_path, monkeypatch)
+    missing = tmp_path / "elsewhere" / "server.mjs"
+    monkeypatch.setenv("TRADINGVIEW_BRIDGE_PATH", str(missing))
+
+    reason = BridgeClient().check_configured()
+
+    assert reason is not None
+    assert str(missing) in reason and "TRADINGVIEW_BRIDGE_PATH" in reason
+
+
+def test_missing_default_script_makes_call_not_configured(tmp_path, monkeypatch):
+    _fake_node(tmp_path, monkeypatch)
+    monkeypatch.setattr(tvb, "_DEFAULT_SCRIPT", tmp_path / "nope" / "server.mjs")
+
+    with pytest.raises(BridgeError) as exc:
+        BridgeClient().call("health")
+
+    assert exc.value.code == "NOT_CONFIGURED"
+    assert "TRADINGVIEW_BRIDGE_PATH" in exc.value.to_envelope()["error"]["message"]
+
+
+def test_failed_node_probe_is_retried_later(tmp_path, monkeypatch):
+    node = tmp_path / "fake-node"
+    node.write_text("#!/bin/sh\n", encoding="utf-8")
+    node.chmod(0o755)
+    monkeypatch.setenv("TRADINGVIEW_BRIDGE_NODE", str(node))
+    answers = iter([None, 22])
+    probes = []
+
+    def probe(node_path, env):
+        probes.append(node_path)
+        return next(answers)
+
+    monkeypatch.setattr(tvb, "_probe_node_major", probe)
+    client = BridgeClient()
+
+    first = client.check_configured()
+    assert first is not None and "could not read the Node.js version" in first
+    assert len(probes) == 1
+
+    # Within the TTL a failed probe is not repeated on every call.
+    client.check_configured()
+    assert len(probes) == 1
+
+    monkeypatch.setattr(tvb, "_AVAIL_TTL_S", 0.0)
+    reason = client.check_configured()
+    assert len(probes) == 2
+    assert reason is None or "Node.js" not in reason
+
+
+# ---------------------------------------------------------------------------
+# review additions: stderr, concurrency, process death
+# ---------------------------------------------------------------------------
+
+
+def test_stderr_flood_does_not_deadlock_the_bridge(client):
+    # Far more than a pipe buffer (64 KiB): only a continuously drained stderr survives it.
+    assert client.call("flood", {"bytes": 2_000_000}, timeout_s=15) == {}
+    assert client.call("echo", {"still": "alive"}) == {"still": "alive"}
+
+
+def test_many_concurrent_calls_get_their_own_replies(client):
+    def one(i):
+        return client.call("echo", {"i": i, "pad": "x" * 2000})["i"]
+
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        results = list(pool.map(one, range(200)))
+
+    assert results == list(range(200))
+    assert client._proc.pending == {}
+
+
+def test_one_crash_with_calls_in_flight_fails_them_all_and_counts_once(client):
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        sleepers = [pool.submit(client.call, "sleep", {"s": 30}) for _ in range(3)]
+        assert _wait_until(lambda: client._proc is not None and len(client._proc.pending) == 3)
+        crasher = pool.submit(client.call, "crash")
+
+        for fut in [*sleepers, crasher]:
+            with pytest.raises(BridgeError) as exc:
+                fut.result(timeout=10)
+            assert exc.value.code == "UPSTREAM_UNAVAILABLE"
+
+    # Four orphaned requests are one process death: well below the cool-down threshold.
+    assert client._fail_count == 1
+    assert client.call("echo", {"back": True}) == {"back": True}
+
+
+def test_bridge_killed_while_idle_is_restarted(client):
+    client.call("health")
+    first = client._proc.popen
+    first.kill()
+    first.wait()
+
+    assert client.call("echo", {"again": 1}) == {"again": 1}
+    assert client._proc.popen is not first
+
+
+def test_pending_future_is_failed_when_the_process_dies_mid_call(client):
+    import threading
+
+    box = {}
+
+    def slow():
+        try:
+            client.call("sleep", {"s": 30})
+        except BridgeError as err:
+            box["err"] = err
+
+    worker = threading.Thread(target=slow)
+    worker.start()
+    assert _wait_until(lambda: client._proc is not None and len(client._proc.pending) == 1)
+    client._proc.popen.kill()
+    worker.join(timeout=10)
+
+    assert not worker.is_alive()
+    assert box["err"].code == "UPSTREAM_UNAVAILABLE"
+
+
+def test_closing_during_a_call_does_not_count_as_a_failure(client):
+    import threading
+
+    box = {}
+
+    def slow():
+        try:
+            client.call("sleep", {"s": 30})
+        except BridgeError as err:
+            box["err"] = err
+
+    worker = threading.Thread(target=slow)
+    worker.start()
+    assert _wait_until(lambda: client._proc is not None and len(client._proc.pending) == 1)
+    client.close()
+    worker.join(timeout=10)
+
+    assert box["err"].code == "UPSTREAM_UNAVAILABLE"
+    assert client._fail_count == 0
+
+
+def test_unparseable_and_id_less_lines_are_ignored(tmp_path):
+    script = tmp_path / "noisy.py"
+    script.write_text(
+        "import sys, json\n"
+        "for raw in sys.stdin:\n"
+        "    req = json.loads(raw)\n"
+        "    print('not json', flush=True)\n"
+        "    print(json.dumps({'id': None, 'error': {'code': 'INVALID_PARAMETER', 'message': 'x'}}), flush=True)\n"
+        "    print(json.dumps([1, 2]), flush=True)\n"
+        "    print(json.dumps({'id': req['id'], 'result': 'ok'}), flush=True)\n",
+        encoding="utf-8",
+    )
+    noisy = BridgeClient(command=[sys.executable, str(script)])
+    try:
+        assert noisy.call("anything") == "ok"
+    finally:
+        noisy.close()
+
+
+def test_child_environment_excludes_every_other_secret(make_client, monkeypatch):
+    for name in ("TELEGRAM_BOT_TOKEN", "DISCORD_WEBHOOK_URL", "WATCHER_LOCAL_TOKEN", "SOME_RANDOM_SECRET"):
+        monkeypatch.setenv(name, "fake-value-1234")
+    monkeypatch.setenv("TRADINGVIEW_SESSION_ID", FAKE_SESSION)
+    monkeypatch.setenv("TRADINGVIEW_SESSION_SIGN", "fake-sign-456")
+    client = make_client("env")
+
+    keys = set(client.call("echo", {})["keys"])
+
+    assert {"TRADINGVIEW_SESSION_ID", "TRADINGVIEW_SESSION_SIGN"} <= keys
+    assert not keys & {"TELEGRAM_BOT_TOKEN", "DISCORD_WEBHOOK_URL", "WATCHER_LOCAL_TOKEN", "SOME_RANDOM_SECRET"}
+
+
+def test_importing_the_client_module_spawns_nothing():
+    import subprocess
+
+    code = (
+        "import subprocess\n"
+        "spawned = []\n"
+        "subprocess.Popen = lambda *a, **k: spawned.append(a)\n"
+        "subprocess.run = lambda *a, **k: spawned.append(a)\n"
+        "import tradingview_mcp.core.services.tv_bridge_client as m\n"
+        "assert spawned == [], spawned\n"
+        "assert m._client is None\n"
+    )
+    done = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env={**__import__("os").environ, "TRADINGVIEW_MCP_NO_DOTENV": "1"},
+    )
+
+    assert done.returncode == 0, done.stderr

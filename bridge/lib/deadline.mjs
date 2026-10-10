@@ -22,3 +22,8 @@ export function withDeadline(fn, ms, makeError) {
     }
   });
 }
+
+/** The error a call gets when the bridge's own timer or hard deadline fires. */
+export function timeoutError(timeoutMs) {
+  return Object.assign(new Error(`request timed out after ${timeoutMs} ms`), { code: 'TIMEOUT', deadline: true });
+}

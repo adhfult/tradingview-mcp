@@ -109,3 +109,45 @@ def test_load_env_file_once_runs_only_once(monkeypatch):
     assert load_env_file_once() == ["FAKE_ONCE"]
     assert load_env_file_once() == []
     assert len(calls) == 1
+
+
+def test_utf8_bom_does_not_hide_the_first_variable(tmp_path, monkeypatch):
+    _isolate(monkeypatch, "FAKE_BOM_FIRST")
+    dotenv = tmp_path / ".env"
+    dotenv.write_bytes(b"\xef\xbb\xbfFAKE_BOM_FIRST=bom-value\n")
+
+    assert load_env_file(dotenv) == ["FAKE_BOM_FIRST"]
+    assert os.environ["FAKE_BOM_FIRST"] == "bom-value"
+
+
+def test_a_value_the_environment_rejects_is_skipped_not_fatal(tmp_path, monkeypatch):
+    _isolate(monkeypatch, "FAKE_NUL", "FAKE_AFTER_NUL")
+    dotenv = tmp_path / ".env"
+    dotenv.write_bytes(b"FAKE_NUL=a\x00b\nFAKE_AFTER_NUL=fine\n")
+
+    assert load_env_file(dotenv) == ["FAKE_AFTER_NUL"]
+    assert "FAKE_NUL" not in os.environ
+
+
+def test_directory_in_place_of_the_file_is_fine(tmp_path):
+    assert load_env_file(tmp_path) == []
+
+
+def test_binary_garbage_is_fine(tmp_path):
+    dotenv = tmp_path / ".env"
+    dotenv.write_bytes(b"\xff\xfe\x00\x80 not utf-8")
+
+    assert load_env_file(dotenv) == []
+
+
+def test_loading_logs_nothing(tmp_path, monkeypatch, caplog):
+    import logging
+
+    _isolate(monkeypatch, "FAKE_QUIET")
+    caplog.set_level(logging.DEBUG)
+    dotenv = tmp_path / ".env"
+    dotenv.write_text("FAKE_QUIET=fake-session-123\n", encoding="utf-8")
+
+    load_env_file(dotenv)
+
+    assert "fake-session-123" not in caplog.text
