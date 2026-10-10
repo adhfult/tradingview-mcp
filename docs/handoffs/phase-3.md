@@ -139,3 +139,14 @@ Add `data_source: str = "yahoo"` and `tv_symbol: Optional[str] = None` to `run_b
 - **`tv_status`** reports `bridge_ok` from `health`, but `health` says ok even with bad cookies. Don't claim the cookies are valid. Phrase it as "credentials present: yes/no", and add a note that `AUTH_FAILED` on a real call means the cookies need refreshing.
 - **Credentials are read once** when the bridge process starts. If `tv_status` or a call returns `AUTH_FAILED`, the message must say: "after updating .env, restart the MCP server (or the bridge restarts on its next crash)". Phase 3 doesn't need a hot reload.
 - **Auth cool-down:** the bridge blocks new connections for 60s after `AUTH_ERROR` (added after the Phase 1 advisor review). Don't retry `AUTH_FAILED` automatically anywhere.
+
+### Corrections from the Phase 2 advisor (Fable), verified by Opus and sent to the implementer
+1. `_fetch_ohlcv_tv` must send `timeoutMs: 60000` (the bridge default is 15000 ms) and `maxCount: 20000` in the bridge params.
+2. The library caps `from` fetches at 20,000 bars. TradingView backtests allow only these period × interval combinations:
+   - 15m up to 6mo
+   - 1h up to 2y
+   - 4h up to 5y
+   - 1d any
+
+   Anything else gets an error listing the allowed periods. If the first candle is more than 10% of the span later than `from`, the result gets `truncated: true` and a note.
+3. `AUTH_FAILED` wording: "Update TRADINGVIEW_SESSION_ID / TRADINGVIEW_SESSION_SIGN in .env, then restart the MCP server." (A bridge restart alone keeps the old cookies.)

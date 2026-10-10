@@ -249,3 +249,20 @@ Reviewed commit 0e3430e against the brief and the current bridge (`bridge/server
 .....................................                                    [100%]
 541 passed in 9.81s
 ```
+
+## Advisor notes (Fable)
+- **Must-fix:**
+  1. `.dockerignore` didn't exclude `.env`, and `COPY . .` would bake secrets into the image. **Fixed by Opus.**
+  2. Phase 3 brief: missing `timeoutMs`. **Corrected.**
+  3. Phase 3 brief: 20k-bar `maxCount` truncation. **Corrected.**
+  4. Phase 3 brief: false "restarts on crash" wording. **Corrected.**
+- **Should-fix (sent to Sonnet):**
+  - log fatal bridge stderr and unexpected exits at WARNING
+  - honour `TRADINGVIEW_ENV_FILE`
+  - duplicate `.env` keys: last one wins
+  - `health` exempt from cool-down
+  - `docs/tradingview-session.md` (in the Phase 4 brief)
+- **Later:**
+  - Phase 3/4: a client-side in-flight gate sized to `TRADINGVIEW_BRIDGE_MAX_INFLIGHT`, so queued calls don't time out client-side. Note the shared `to_thread` executor.
+  - Phase 4+: restart a hung-but-alive bridge after N consecutive timeouts with no replies.
+  - Minor: `close()` racing a write.

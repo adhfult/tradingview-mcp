@@ -41,3 +41,12 @@ tests/
 *.md
 !README.md
 LICENSE
+
+# Secrets and local state (never bake into images)
+.env
+.env.*
+!.env.example
+bridge/node_modules/
+watcher.config.json
+bridge/watcher.config.json
+*.state.json
