@@ -156,6 +156,66 @@ Wire into existing code (each falls back automatically to the current path):
   - updated README security section
   - a `CHANGELOG.md` entry
 
+## Phase 5: market watcher (always-on alerts)
+
+The owner wants an always-on monitor for **crypto and US stocks**: what's trending, plus candle-move alerts, sent to **Discord and/or Telegram**. The MCP server only answers when asked, so this is a separate process. It must work with the MCP server stopped and without Claude.
+
+### Location and how it runs
+- `bridge/watcher.mjs` is a standalone Node process. It reuses `bridge/`'s single pinned dependency and lockfile, so nothing new gets installed.
+- Run it with `node bridge/watcher.mjs --config watcher.config.json`.
+- Intended to run around the clock on a Raspberry Pi 400 (Node 22, arm64). Include an example systemd unit, `bridge/watcher.service.example`, with restart-on-failure.
+
+### Config
+- `watcher.config.json` is gitignored. Commit `watcher.config.example.json` instead.
+- It holds: the watchlist (symbol plus timeframes), the rules, the screener schedule, the enabled notifiers, cooldowns and quiet hours.
+- Secrets live only in environment variables, never in the config: `TRADINGVIEW_SESSION_ID` / `TRADINGVIEW_SESSION_SIGN`, `DISCORD_WEBHOOK_URL`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`.
+
+### Live candle rules
+- **Data:** one shared library client streams candles with `watchCandles` for the watchlist. Cap the watchlist at about 25 symbol/timeframe pairs, to keep account traffic low.
+- **When rules run:** only on **candle close**, never mid-candle, so alerts don't flap.
+- **Indicators:** a small local indicator module (`bridge/lib/indicators.mjs`) calculates them from the streamed candles.
+- **Rule types:**
+  - % move over N bars
+  - volume spike (× SMA20 of volume)
+  - price crossing a set level
+  - RSI crossing a threshold
+  - close outside the Bollinger Bands
+  - new N-bar high or low
+- **Data-age check:** each alert records how old its data is, and the rule is skipped if the stream is stale.
+
+### "What's trending" scan
+- Every 10 minutes (configurable), run the library's `getScreener` / `getHotlist` for crypto and US stocks. Confirm the real signatures in the v4 docs first.
+- Alert only on **new entries** to the top-N gainers or volume list, not on the whole list each time.
+
+### Notifications
+- One notifier interface with two implementations:
+  - Discord: post to the webhook
+  - Telegram: the bot's `sendMessage`
+- Both use Node's built-in `fetch`, so there are **no new dependencies**. Every configured notifier receives each alert.
+- Message: symbol, timeframe, rule, values, data age and a TradingView chart link.
+- `--test-notify` sends one test message and exits.
+
+### Avoiding alert spam
+- a cooldown per symbol and rule
+- a cap on alerts per hour
+- quiet hours
+- cooldown state saved to a small JSON state file, so a restart doesn't resend old alerts
+
+### Health checks
+- Reconnect with backoff.
+- Alert if the stream is down for more than N minutes.
+- Send a daily "watcher alive" message.
+- Never log credentials or webhook URLs; reuse the bridge's redaction.
+
+### Tests
+`node --test` with:
+- a fake candle stream (rules fire on close only; cooldown and dedupe work)
+- a mocked `fetch` (Discord and Telegram message formats)
+- a mocked screener (alerts only on new entries)
+
+### Out of scope
+A Claude-written summary. That can be a later scheduled Claude routine that calls the MCP tools for a morning or hourly digest. Real-time alerts stay in plain code.
+
 ## Rules
 
 - Never commit, print or log credentials. Grep the diff for cookie-shaped strings before every commit.
@@ -176,3 +236,8 @@ Wire into existing code (each falls back automatically to the current path):
    - `stock_screener` reports `auth: "session"`
 5. Kill the Node process mid-session. The next call restarts it, or falls back cleanly with no hang.
 6. Docker: `docker build .` succeeds and `/health` returns 200 without credentials.
+7. Watcher:
+   - `node bridge/watcher.mjs --test-notify` delivers a message to each configured channel (Discord and/or Telegram).
+   - A temporary rule (for example BTCUSDT 1m move > 0.1%) fires within a few minutes. After the cooldown it doesn't repeat.
+   - Cutting the network briefly brings a "stream down" alert, then the watcher recovers.
+   - On the Pi, the systemd unit restarts the watcher after `kill`.
