@@ -166,3 +166,10 @@ Add the key `"multiple_testing_warning": "Picking the best of 9 strategies on on
 - which snapshot keys were added
 - any mismatches
 - the real last lines of both pytest runs
+
+### Carried in from the Phase 3 advisor (Fable), to be done in the 6a review pass (Sonnet)
+These touch `backtest_service.py`, which 6a is editing, so they wait for the 6a review:
+1. **Truncation flag:** `truncated = len(bars) >= 20000 or (first_ts - from_ts) > max(0.10*span, 5*86400)`. This avoids a long-weekend false positive on 1mo stock requests.
+2. **TradingView-path labels:** the fetch-error text and `result["symbol"]` must use `tv_symbol` (not the Yahoo `symbol`) when `data_source="tradingview"`.
+3. **Split the conversion** out of `_fetch_tv_candles` into a pure `tv_bars_to_candles(bars, interval)`, and add a `time` (unix seconds) key to TradingView candle dicts. 6a's sensitivity runs and 6b's forming-bar drop need the pure converter.
+4. **Gauntlet scores closed bars only:** drop a still-forming last TradingView bar before scoring.
