@@ -216,6 +216,85 @@ The owner wants an always-on monitor for **crypto and US stocks**: what's trendi
 ### Out of scope
 A Claude-written summary. That can be a later scheduled Claude routine that calls the MCP tools for a morning or hourly digest. Real-time alerts stay in plain code.
 
+## Phase 6: strategy testing gauntlet
+
+Turn good strategy-testing practice into code, so an idea has to survive several checks before it's trusted. This phase doesn't depend on Phases 1–5. It works on Yahoo data alone and uses TradingView candles when the helper is available, so it can be built earlier if wanted.
+
+What exists today, in `core/services/backtest_service.py`:
+- Costs default to 0.1% commission plus 0.05% slippage per side.
+- `walk_forward_backtest` exists.
+- Each strategy runner takes keyword parameters (for example `_run_rsi(candles, oversold=40, overbought=60, period=14)`), but the tools don't expose them.
+- **Fills happen at the close of the same candle that produced the signal**, which is slightly optimistic.
+
+### 6.1 Check the market is actually tradable
+- Add a `tradability` block to backtest results:
+  - average daily traded value (price × volume)
+  - share of zero-volume bars
+  - number of bars
+  - a `thin_market: true` flag below a configurable threshold
+- With the TradingView helper available, also confirm the symbol resolves through `tv_symbol_search`.
+
+### 6.2 "Who is on the other side?"
+The gauntlet tool (6.5) requires two text inputs: `hypothesis` (why the edge should exist) and `counterparty` (who loses the trade, for example forced sellers or leveraged longs paying funding). If either is empty or generic, the verdict is `FAIL: no stated edge`. Both are stored in the report.
+
+### 6.3 Realistic costs
+- Add a `cost_profile` parameter with named presets (for example `binance_spot`, `coinbase`, `us_stock_broker`, `custom`).
+  - Keep presets in one table in the code, each labelled as an assumption to verify against the owner's real fees.
+  - Explicit `commission_pct` / `slippage_pct` still override.
+- Add these metrics:
+  - `trades_per_year`
+  - `gross_return_pct` and `net_return_pct`
+  - `cost_drag_pct`
+- Warn when `trades_per_year > 200`, or when costs eat more than half the gross return.
+
+### 6.4 No peeking at the future
+- **Test it.** Add a test for all 9 strategies: entries and exits up to bar *k* must be identical whether the strategy runs on `candles[:k+1]` or on the full series. Any difference means it uses future data.
+- **Add a fill mode.** Add `fill: "signal_close" | "next_open"` to the backtest functions. The default stays `signal_close` for existing tools, so current results don't change. The gauntlet always uses `next_open`.
+
+### 6.5 New tool: `strategy_gauntlet`
+Signature: `strategy_gauntlet(symbol, strategy, hypothesis, counterparty, cost_profile=..., interval="1d", params=None)`.
+
+It runs every gate and returns per-gate results plus an overall `PASS` / `FAIL` that lists the failed gates. The output never says "profitable", only whether the strategy survived the tests.
+
+| Gate | Check | Fails when |
+|---|---|---|
+| 1. Honest settings | longest available history, chosen cost profile, `next_open` fills, warm-up respected | — (sets up the rest) |
+| 2. Enough evidence | number of trades, win rate together with profit factor, max drawdown | fewer than about 30 trades, profit factor ≤ 1, or drawdown above a threshold |
+| 3. Parameter sensitivity | re-run with each parameter nudged ±10–20% (a small set of neighbouring settings), report the share of neighbours still profitable and the spread | results collapse: "spike, not plateau" |
+| 4. Double costs | re-run at 2× commission and slippage | net return ≤ 0 |
+| 5. Most recent year alone | the last 12 months on their own (needs more than a year of history) | it loses money, or does much worse than the full period |
+| 6. Walk-forward | reuse `walk_forward_backtest` | verdict WEAK or OVERFITTED |
+
+Notes:
+- Expose the strategies' existing parameters through `params`, checked against each runner's allowed names.
+- Add a multiple-testing warning to `compare_strategies`: "the best of 9 strategies on one symbol looks better than it really is; run the winner through `strategy_gauntlet`."
+
+### 6.6 Paper trading forward (uses the Phase 5 watcher)
+- Add a `paper` mode to `bridge/watcher.mjs`. It runs one strategy on live candles and writes **hypothetical** trades to a local journal (JSONL or CSV). It **never places orders**.
+- Send a weekly Discord/Telegram summary comparing paper results with the backtest's expectations.
+- The watcher refuses to start paper mode unless it finds a **passing gauntlet report whose fingerprint matches** (see 6.7).
+
+### 6.7 Re-test every change; start small
+- Each gauntlet report includes a `strategy_fingerprint`: a hash of strategy name, parameters, cost profile, interval, data source and backtest code version.
+- Save reports to `~/.tradingview-mcp/gauntlet/`.
+- Any change gives a new fingerprint, so the strategy has to pass again before paper mode will run it.
+- Docs: start with one strategy, one asset and small size. This system only tests and paper trades; it never trades real money.
+
+### 6.8 Separate builder and reviewer
+- Add two MCP prompts (FastMCP `@mcp.prompt`):
+  - `strategy_builder`: scan the market first, then propose a hypothesis with a named counterparty.
+  - `strategy_reviewer`: try to kill the idea. Check the counterparty, overfitting signs, cost drag and recent-year performance, and recommend rejection unless every gate is clearly passed.
+- Keep a running log (`gauntlet_log.jsonl`) and a `gauntlet_stats` summary of pass/fail rates. Docs say to expect most ideas (around 6 of 7) to fail, and that this is normal.
+
+### 6.9 Tests (unit, hermetic)
+- the no-future-data test for all 9 strategies
+- `next_open` fills
+- cost-profile maths and the warnings
+- each gate's pass/fail logic, using synthetic candles built to pass or fail
+- sensitivity grid generation
+- fingerprint stability (same inputs give the same hash; any change gives a new one)
+- the watcher refusing paper mode without a matching passing report
+
 ## Rules
 
 - Never commit, print or log credentials. Grep the diff for cookie-shaped strings before every commit.
@@ -241,3 +320,8 @@ A Claude-written summary. That can be a later scheduled Claude routine that call
    - A temporary rule (for example BTCUSDT 1m move > 0.1%) fires within a few minutes. After the cooldown it doesn't repeat.
    - Cutting the network briefly brings a "stream down" alert, then the watcher recovers.
    - On the Pi, the systemd unit restarts the watcher after `kill`.
+8. Gauntlet:
+   - `strategy_gauntlet("BTC-USD", "rsi", hypothesis=..., counterparty=...)` returns six gate results and an overall verdict.
+   - Blank `hypothesis` or `counterparty` gives `FAIL: no stated edge`.
+   - Existing `backtest_strategy` results are unchanged with the default `fill="signal_close"`.
+   - Paper mode refuses a strategy whose settings changed after it passed.
