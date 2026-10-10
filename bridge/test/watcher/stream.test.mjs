@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createStreams, RESTART_BACKOFF_MS, BACKOFF_RESET_MS } from '../../lib/stream.mjs';
+import { createStreams, RESTART_BACKOFF_MS, BACKOFF_RESET_MS, AUTH_BACKOFF_MS } from '../../lib/stream.mjs';
 import { createClientManager } from '../../lib/client.mjs';
 import { createFakeClock, createFakeLib, settle, snapshot } from './support.mjs';
 
@@ -219,7 +219,7 @@ test('an auth error starts the auth cool-down: no new client is opened until it 
   lib.watchers[0].fail('AUTH_ERROR', 'bad cookie');
   await settle();
   let createdAt = null;
-  for (let i = 0; i < 200 && createdAt === null; i += 1) {
+  for (let i = 0; i < 400 && createdAt === null; i += 1) {
     clock.advance(1000);
     await settle();
     if (lib.clients.length === 2) createdAt = clock.now();
@@ -337,4 +337,157 @@ test('an exception in a rule evaluation is logged, and the stream keeps going', 
   assert.ok(log.lines.some((line) => line.includes('rule evaluation failed') && line.includes('rule exploded')));
   w.feed(snapshot([10, 11, 12]));
   assert.equal(streams.list()[0].status, 'healthy');
+});
+
+
+// --- review additions: catch-up, ordering, auth backoff ---
+
+const HOUR_S = 3600;
+
+/** A snapshot whose forming (last) bar opened `formingAgoSec` before the fake clock's now. */
+function recentSnapshot(clock, closes, formingAgoSec = 600) {
+  const forming = Math.floor(clock.now() / 1000) - formingAgoSec;
+  return snapshot(closes, { startTime: forming - (closes.length - 1) * HOUR_S, step: HOUR_S });
+}
+
+test('catch-up: recent bars that closed while the stream was reconnecting are evaluated once', async () => {
+  const { lib, streams, evaluations, clock, evaluatedMap } = setup();
+  const nowSec = Math.floor(clock.now() / 1000);
+  const base = nowSec - 600 - 3 * HOUR_S; // oldest bar of a 4-bar snapshot
+  evaluatedMap[KEY] = base;               // state: the oldest bar was already evaluated
+  streams.start();
+  await settle();
+  const w = lib.watchers[0];
+  w.feed(recentSnapshot(clock, [10, 11, 12, 13]));
+  assert.deepEqual(evaluations.map((e) => e.barTime), [base + HOUR_S, base + 2 * HOUR_S], 'the two bars after the persisted one');
+  assert.deepEqual(evaluations.map((e) => e.length), [2, 3]);
+  w.feed(recentSnapshot(clock, [10, 11, 12, 13.5]));
+  assert.equal(evaluations.length, 2, 'a repeated snapshot adds nothing');
+  assert.equal(evaluatedMap[KEY], base + 2 * HOUR_S);
+});
+
+test('catch-up: bars that closed longer ago than two bar lengths are never replayed', async () => {
+  const { lib, streams, evaluations, clock, evaluatedMap } = setup();
+  const nowSec = Math.floor(clock.now() / 1000);
+  evaluatedMap[KEY] = nowSec - 20 * HOUR_S;
+  streams.start();
+  await settle();
+  // the forming bar opened 5 hours ago: the last closed bar closed 5 hours ago, beyond 2 x 1h
+  lib.watchers[0].feed(recentSnapshot(clock, [10, 11, 12, 13], 5 * HOUR_S));
+  assert.deepEqual(evaluations, []);
+});
+
+test('catch-up never evaluates the forming bar, and a stream with no persisted bar evaluates nothing', async () => {
+  const fresh = setup();
+  fresh.streams.start();
+  await settle();
+  fresh.lib.watchers[0].feed(recentSnapshot(fresh.clock, [10, 11, 12, 13]));
+  assert.deepEqual(fresh.evaluations, [], 'no persisted lastEvaluatedTime: nothing to catch up');
+
+  const { lib, streams, evaluations, clock, evaluatedMap } = setup();
+  const snap = recentSnapshot(clock, [10, 11, 12, 13]);
+  evaluatedMap[KEY] = snap[2].time; // everything but the forming bar is already done
+  streams.start();
+  await settle();
+  lib.watchers[0].feed(snap);
+  assert.deepEqual(evaluations, []);
+});
+
+test('a bar evaluated before an in-process restart is not evaluated again after it', async () => {
+  const { lib, streams, evaluations, clock } = setup();
+  const t0 = Math.floor(clock.now() / 1000) - 3 * HOUR_S - 600; // bars t0, t0+1h, t0+2h, t0+3h (now is 10 min into the last)
+  const snap = (closes) => snapshot(closes, { startTime: t0, step: HOUR_S });
+  streams.start();
+  await settle();
+  lib.watchers[0].feed(snap([10, 11]));
+  lib.watchers[0].feed(snap([10, 11, 12]));            // bar t0+1h closes: evaluated
+  assert.equal(evaluations.length, 1);
+  lib.watchers[0].fail('CONNECTION_ERROR');
+  clock.advance(5000);
+  await settle();
+  lib.watchers[1].feed(snap([10, 11, 12]));            // replay after reconnect: same closed bar, same forming bar
+  assert.equal(evaluations.length, 1, 'the replayed closed bar is skipped, even with catch-up on');
+  lib.watchers[1].feed(snap([10, 11, 12, 13]));        // t0+2h closes
+  assert.equal(evaluations.length, 2, 'the next close is evaluated exactly once');
+  assert.equal(evaluations[1].barTime, t0 + 2 * HOUR_S);
+});
+
+test('an out-of-order (older) snapshot is ignored and does not move the forming bar back', async () => {
+  const { lib, streams, evaluations } = setup();
+  streams.start();
+  await settle();
+  const w = lib.watchers[0];
+  w.feed(snapshot([10, 11, 12, 13]));          // forming = +3
+  w.feed(snapshot([10, 11, 12]));              // stale snapshot, forming would be +2
+  assert.deepEqual(evaluations, []);
+  w.feed(snapshot([10, 11, 12, 13, 14]));      // +3 closes now
+  assert.deepEqual(evaluations.map((e) => e.barTime), [1_700_000_000 + 3 * 3600], 'only +3, once');
+});
+
+test('AUTH_ERROR backs off for 5, then 15 minutes instead of retrying every minute', async () => {
+  const { lib, streams, clock } = setup({ random: () => 0, credentials: { session: 's1234', signature: 'sig5678' } });
+  streams.start();
+  await settle();
+  lib.watchers[0].fail('AUTH_ERROR', 'bad cookie');
+  await settle();
+  clock.advance(AUTH_BACKOFF_MS[0] - 1000);
+  await settle();
+  assert.equal(lib.clients.length, 1, 'no new connection attempt inside 5 minutes');
+  clock.advance(1000);
+  await settle();
+  assert.equal(lib.clients.length, 2, 'one attempt after 5 minutes');
+  // the second attempt fails the same way: next wait is 15 minutes
+  lib.watchers.at(-1)?.fail('AUTH_ERROR', 'bad cookie');
+  await settle();
+  const watchersBefore = lib.watchers.length;
+  clock.advance(AUTH_BACKOFF_MS[1] - 1000);
+  await settle();
+  assert.equal(lib.watchers.length, watchersBefore, 'still waiting at 15 minutes minus 1 s');
+  assert.deepEqual([...AUTH_BACKOFF_MS], [300_000, 900_000, 1_800_000, 3_600_000]);
+});
+
+test('data resets the auth escalation, so a later one-off auth error waits only 5 minutes', async () => {
+  const { lib, streams, clock } = setup({ random: () => 0, credentials: { session: 's1234', signature: 'sig5678' } });
+  streams.start();
+  await settle();
+  lib.watchers[0].fail('AUTH_ERROR', 'x');
+  clock.advance(AUTH_BACKOFF_MS[0]);
+  await settle();
+  lib.watchers.at(-1).feed(snapshot([10]));
+  lib.watchers.at(-1).fail('AUTH_ERROR', 'x');
+  await settle();
+  const before = lib.watchers.length;
+  clock.advance(AUTH_BACKOFF_MS[0]);
+  await settle();
+  assert.ok(lib.watchers.length > before, 'back to the 5 minute step');
+});
+
+test('many streams that fail together restart spread over the jitter window, on one new client', async () => {
+  const clock = createFakeClock();
+  const lib = createFakeLib();
+  const log = logger();
+  const clients = createClientManager({ lib, now: clock.now, log: (m) => log.info(m) });
+  let n = 0;
+  const randoms = [0, 0.25, 0.5, 0.75, 1];
+  const list = Array.from({ length: 5 }, (_, i) => ({ key: `S${i}|1`, symbol: `S${i}`, timeframe: '1', market: 'crypto' }));
+  const streams = createStreams({
+    streams: list, lib, clients, clock, logger: log,
+    evaluated: { get: () => undefined, set: () => {} },
+    onClosedBar: () => {},
+    random: () => randoms[n++ % randoms.length],
+  });
+  streams.start();
+  await settle();
+  for (const w of [...lib.watchers]) w.fail('CONNECTION_ERROR');
+  await settle();
+  const started = [];
+  for (let ms = 0; ms <= 6500; ms += 250) {
+    clock.advance(250);
+    await settle();
+    started.push(lib.watchers.length);
+  }
+  assert.equal(lib.clients.length, 2, 'one replacement client for all streams');
+  const firstRestart = started.findIndex((count) => count > 5);
+  const lastRestart = started.findIndex((count) => count === 10);
+  assert.ok(lastRestart > firstRestart, 'restarts are spread out, not simultaneous');
 });

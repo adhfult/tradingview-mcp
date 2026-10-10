@@ -65,7 +65,7 @@ test('the atomic write syncs the temp file before renaming it into place', async
   await store.load();
   store.touch();
   await store.flush();
-  assert.deepEqual(order, ['mkdir', 'write', 'fsync', 'rename']);
+  assert.deepEqual(order, ['mkdir', 'write', 'fsync', 'rename', 'fsync'], 'temp file synced, renamed, then the directory synced');
 });
 
 test('touch debounces: writes happen once, 5 seconds after the first change', async (t) => {

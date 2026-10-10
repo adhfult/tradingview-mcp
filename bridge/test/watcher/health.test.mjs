@@ -174,3 +174,18 @@ test('the heartbeat uses the config timezone for the local date', () => {
   assert.equal(store.state.heartbeatDate, '2026-10-13');
   assert.equal(sent.filter((s) => s.kind === 'heartbeat').length, 2);
 });
+
+// --- review additions ---
+
+test('a silent stream is not counted as healthy in the summary, and counts again after recovery', () => {
+  const { clock, health, list } = setup({ streams: [btc({ status: 'healthy' })] });
+  list[0].healthy = true;
+  assert.deepEqual(health.summary(), { healthy: 1, total: 1 });
+  clock.advance(11 * MINUTE);
+  health.tick();
+  assert.deepEqual(health.summary(), { healthy: 0, total: 1 });
+  clock.advance(1000);
+  list[0].lastDataAt = clock.now();
+  health.tick();
+  assert.deepEqual(health.summary(), { healthy: 1, total: 1 });
+});

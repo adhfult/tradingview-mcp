@@ -116,6 +116,19 @@ export function normalizeRule(rule) {
   return out;
 }
 
+/** Closed bars a rule needs before it can fire (the same minimums the evaluators check). */
+export function barsNeeded(rule) {
+  switch (rule.type) {
+    case 'pct_move': return rule.bars + 1;
+    case 'volume_spike': return rule.lookback + 1;
+    case 'rsi_cross': return rule.period + 2;
+    case 'bollinger_break': return rule.period;
+    case 'new_extreme': return rule.lookback + 1;
+    case 'price_cross': return 2;
+    default: return 0;
+  }
+}
+
 const round = (value, digits = 4) => Number(value.toFixed(digits));
 
 function pctMove(rule, c) {

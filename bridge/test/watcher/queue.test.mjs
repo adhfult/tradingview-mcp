@@ -165,3 +165,33 @@ test('the log never contains a webhook URL or bot token, even when a transport e
   assert.ok(!everything.includes(token));
   assert.ok(!everything.includes('SECRET_BOT_TOKEN_VALUE'));
 });
+
+// --- review additions ---
+
+test('a permanent client error (400, 401, 403, 404) is dropped at once, without retries', async () => {
+  for (const status of [400, 401, 403, 404]) {
+    const clock = createFakeClock();
+    const logs = [];
+    const broken = notifier('discord', () => httpError(status));
+    const queue = createQueue({ notifiers: [broken], clock, log: (line) => logs.push(line) });
+    queue.enqueue(message);
+    await settle();
+    await queue.idle();
+    assert.equal(broken.calls.length, 1, `HTTP ${status} is not retried`);
+    assert.match(logs[0], new RegExp(`not retried \\(HTTP ${status}\\)`));
+  }
+});
+
+test('408 and 5xx are still retried', async () => {
+  for (const status of [408, 500, 502]) {
+    const clock = createFakeClock();
+    const flaky = notifier('discord', (n) => (n === 1 ? httpError(status) : null));
+    const queue = createQueue({ notifiers: [flaky], clock });
+    queue.enqueue(message);
+    await settle();
+    clock.advance(2000);
+    await settle();
+    await queue.idle();
+    assert.equal(flaky.calls.length, 2, `HTTP ${status} is retried`);
+  }
+});

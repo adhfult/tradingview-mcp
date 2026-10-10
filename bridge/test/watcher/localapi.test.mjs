@@ -133,3 +133,42 @@ test('a failing submit returns 500 with a generic message', async (t) => {
   assert.equal(res.status, 500);
   assert.deepEqual(await res.json(), { error: 'internal error' });
 });
+
+// --- review additions ---
+
+test('tokenMatches compares digests, so tokens of any length are handled without error', () => {
+  assert.equal(tokenMatches(`Bearer ${TOKEN}`, TOKEN), true);
+  assert.equal(tokenMatches(`Bearer ${TOKEN}x`, TOKEN), false);
+  assert.equal(tokenMatches('Bearer x', TOKEN), false);
+  assert.equal(tokenMatches(`Bearer ${'a'.repeat(100_000)}`, TOKEN), false);
+  assert.equal(tokenMatches(`bearer ${TOKEN}`, TOKEN), true, 'the scheme is case-insensitive');
+});
+
+test('a declared Content-Length over the limit is refused before the body is read', async (t) => {
+  const { host, port, submitted } = await start(t);
+  const http = await import('node:http');
+  const status = await new Promise((resolve, reject) => {
+    const req = http.request({
+      host, port, path: '/notify', method: 'POST',
+      headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json', 'content-length': String(MAX_BODY_BYTES * 100) },
+    }, (res) => { res.resume(); resolve(res.statusCode); });
+    req.on('error', reject);
+    req.end('{}'); // far less than declared: the server must answer from the header alone
+  });
+  assert.equal(status, 400);
+  assert.equal(submitted.length, 0);
+});
+
+test('an unauthenticated request is refused before its body is read, whatever the size', async (t) => {
+  const { base, submitted } = await start(t);
+  const res = await notify(base, JSON.stringify({ title: 'x', key: 'k', body: 'a'.repeat(MAX_BODY_BYTES * 2) }), 'Bearer wrong');
+  assert.equal(res.status, 401);
+  assert.equal(submitted.length, 0);
+});
+
+test('GET /health never contains the token or any env secret name', async (t) => {
+  const { base } = await start(t);
+  const text = await (await fetch(`${base}/health`)).text();
+  assert.ok(!text.includes(TOKEN));
+  assert.ok(!/token|webhook|cookie|session/i.test(text));
+});

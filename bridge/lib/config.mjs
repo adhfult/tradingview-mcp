@@ -10,7 +10,8 @@ import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import * as v from './validate.mjs';
-import { RULE_TYPES, normalizeRule, validateRuleParams } from './rules.mjs';
+import { RULE_TYPES, barsNeeded, normalizeRule, validateRuleParams } from './rules.mjs';
+import { CANDLE_COUNT } from './stream.mjs';
 
 /** Timeframes the watcher accepts (a narrower set than the library's). */
 export const WATCH_TIMEFRAMES = Object.freeze(['1', '3', '5', '15', '30', '45', '60', '120', '180', '240', 'D', 'W', 'M']);
@@ -226,7 +227,13 @@ function parseRules(input, watchlist, errors) {
         && (timeframes === undefined || entry.timeframes.some((tf) => timeframes.includes(tf))));
       if (!matches) errors.push(`${path}: matches no watched symbol and timeframe`);
       const rule = { ...raw, symbol, timeframes };
-      rules.push(normalizeRule(Object.fromEntries(Object.entries(rule).filter(([, value]) => value !== undefined))));
+      const normalized = normalizeRule(Object.fromEntries(Object.entries(rule).filter(([, value]) => value !== undefined)));
+      // Each stream keeps CANDLE_COUNT bars. A rule that needs more could never fire.
+      const needed = barsNeeded(normalized);
+      if (needed > CANDLE_COUNT) {
+        errors.push(`${path}: needs ${needed} closed bars but the watcher keeps only ${CANDLE_COUNT} per stream`);
+      }
+      rules.push(normalized);
     }
   });
   return rules;

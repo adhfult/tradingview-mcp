@@ -4,8 +4,9 @@
 # Logs:    journalctl -u tradingview-watcher -f
 [Unit]
 Description=TradingView market watcher (alerts only, never trades)
-After=network-online.target
-Wants=network-online.target
+# A Pi has no battery clock: wait for the time sync, or cooldowns and quiet hours start from a wrong time.
+After=network-online.target time-sync.target
+Wants=network-online.target time-sync.target
 
 [Service]
 User=pi
@@ -17,6 +18,7 @@ RestartSec=10
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=read-only
+# This directory must exist before the service starts (mkdir -p ~/.local/state/tradingview-watcher).
 ReadWritePaths=/home/pi/.local/state/tradingview-watcher
 PrivateTmp=yes
 

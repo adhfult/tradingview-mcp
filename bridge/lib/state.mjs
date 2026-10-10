@@ -2,7 +2,7 @@
  * The watcher's persistent state, kept in `<state_dir>/state.json`.
  *
  * - Writes are atomic: a temp file is written and fsynced, then renamed over the
- *   old file, so a crash never leaves half a file.
+ *   old file (and the directory is fsynced), so a crash never leaves half a file.
  * - Changes are debounced: `touch()` schedules at most one write per `debounceMs`
  *   window. `flush()` writes now (used on shutdown).
  * - A file that cannot be parsed is renamed to `state.json.corrupt-<ms>` and the
@@ -111,6 +111,18 @@ export function createStateStore({
         await handle.close();
       }
       await fsp.rename(tmp, file);
+      // Make the rename itself durable (power loss on an SD card). Best effort: some
+      // platforms cannot open a directory.
+      try {
+        const dirHandle = await fsp.open(dir, 'r');
+        try {
+          await dirHandle.sync();
+        } finally {
+          await dirHandle.close();
+        }
+      } catch {
+        // The data file is already in place; losing only the directory sync is acceptable.
+      }
     } catch (err) {
       await fsp.rm(tmp, { force: true }).catch(() => {});
       throw err;

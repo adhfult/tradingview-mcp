@@ -29,7 +29,8 @@ import { makeRedactor } from './lib/redact.mjs';
 import { guardStdio } from './lib/stdio.mjs';
 
 export const TICK_MS = 30_000;
-const SHUTDOWN_GRACE_MS = 5000;
+const SHUTDOWN_GRACE_MS = 15_000; // systemd waits 90s by default; stop() itself is bounded well below this
+const FATAL_FLUSH_MS = 2000;
 const QUEUE_DRAIN_MS = 5000;
 const USAGE = 'usage: node bridge/watcher.mjs --config <path> [--check-config] [--test-notify] [--dry-run] [--once] [--log-json]';
 
@@ -120,6 +121,11 @@ export function createWatcher({
         cooldownKey: `${hit.symbol}|${hit.timeframe}|${hit.ruleId}`,
       });
     }
+    // Save at once when something was sent: a crash inside the 5 s debounce window would
+    // otherwise lose the dedupe record and could repeat the alert after the restart.
+    if (hits.length > 0) {
+      store.flush().catch((err) => logger.warn(`state write failed: ${err?.code ?? 'error'}`));
+    }
   };
 
   const clients = createClientManager({
@@ -195,8 +201,14 @@ export function createWatcher({
   /** One pass: digests and heartbeat, stream health, and a trending scan when due. */
   async function tick() {
     if (stopping) return;
-    alerts.tick();
-    health.tick();
+    // A bug in one housekeeping step must not kill a process that is otherwise healthy.
+    for (const [name, step] of [['alerts', () => alerts.tick()], ['health', () => health.tick()]]) {
+      try {
+        step();
+      } catch (err) {
+        logger.error(`${name} tick failed: ${errorMessage(err)}`);
+      }
+    }
     const now = clock.now();
     if (config.trending.enabled && now >= nextScanAt && scanInFlight === null) {
       nextScanAt = now + config.trending.every_minutes * 60_000;
@@ -244,11 +256,13 @@ export function createWatcher({
       if (ticker !== null) clock.clearInterval(ticker);
       ticker = null;
       await streams.stop();
+      // Save first: what was evaluated must survive even if delivery below takes a while.
+      await store.flush().catch((err) => logger.warn(`state write failed: ${err?.code ?? 'error'}`));
       await drain(queue, clock, QUEUE_DRAIN_MS);
       const undelivered = queue.pending();
       if (undelivered > 0) logger.warn(`shutdown: ${undelivered} alert(s) not yet delivered were dropped`);
       queue.close();
-      await store.close();
+      await store.close().catch((err) => logger.warn(`state write failed: ${err?.code ?? 'error'}`));
       if (localApi !== null) await localApi.close();
       await clients.close();
       logger.info('stopped');
@@ -322,8 +336,11 @@ export async function runCheckConfig({ configPath, env, out, err, redact }) {
 }
 
 /** --test-notify: one message to each configured channel. Exit 0 only if all succeed. */
-export async function runTestNotify({ env, fetch, out, redact, now = Date.now() }) {
-  const notifiers = buildNotifiers({ env, fetch, redact });
+export async function runTestNotify({ env, fetch, out, redact, now = Date.now(), dryRun = false }) {
+  // --dry-run never sends: the test message is only printed.
+  const notifiers = dryRun
+    ? [createStdoutNotifier({ write: out, redact })]
+    : buildNotifiers({ env, fetch, redact });
   if (notifiers.length === 0) {
     out('no notification channel is configured (set DISCORD_WEBHOOK_URL, or TELEGRAM_BOT_TOKEN with TELEGRAM_CHAT_ID)\n');
     return 1;
@@ -404,7 +421,7 @@ export async function main(argv, { env = process.env, fetch = globalThis.fetch }
   }
 
   if (args.testNotify) {
-    return runTestNotify({ env, fetch, out: write, redact });
+    return runTestNotify({ env, fetch, out: write, redact, dryRun: args.dryRun });
   }
 
   const lib = await loadLibrary();
@@ -427,13 +444,18 @@ export async function main(argv, { env = process.env, fetch = globalThis.fetch }
     process.exit(0);
   };
   // A crash exits 1 so systemd restarts the service. Messages are redacted.
+  const fatal = (text) => {
+    logWrite(`${redact(text)}\n`);
+    // Best effort: save what was evaluated (bounded), then exit 1 so systemd restarts us.
+    const done = () => process.exit(1);
+    setTimeout(done, FATAL_FLUSH_MS);
+    watcher.state.flush().then(done, done);
+  };
   process.on('unhandledRejection', (reason) => {
-    logWrite(`${redact(`fatal: unhandled rejection: ${errorMessage(reason)}`)}\n`);
-    process.exit(1);
+    fatal(`fatal: unhandled rejection: ${errorMessage(reason)}`);
   });
   process.on('uncaughtException', (error) => {
-    logWrite(`${redact(`fatal: uncaught exception: ${errorMessage(error)}`)}\n`);
-    process.exit(1);
+    fatal(`fatal: uncaught exception: ${errorMessage(error)}`);
   });
   process.once('SIGTERM', () => { void shutdown('SIGTERM'); });
   process.once('SIGINT', () => { void shutdown('SIGINT'); });

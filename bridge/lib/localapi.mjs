@@ -2,7 +2,7 @@
  * Local HTTP API on 127.0.0.1 only (never another interface).
  *
  * - POST /notify: needs `Authorization: Bearer <WATCHER_LOCAL_TOKEN>`. The token is
- *   compared with crypto.timingSafeEqual, and only after the lengths match.
+ *   compared with crypto.timingSafeEqual on SHA-256 digests (equal-length buffers).
  *   Body: JSON {title (<=200), body (<=2000), key (<=200), level: info|up|down}.
  *   Body up to 8 KB. Responses: 202 accepted, 400 bad body, 401 bad token. The
  *   payload goes through the same alerts pipeline (dedupe by key).
@@ -12,7 +12,7 @@
  * The API starts only when local_api.enabled is on AND a token is set. The caller
  * decides that (see watcher.mjs).
  */
-import { timingSafeEqual } from 'node:crypto';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { createServer } from 'node:http';
 
 export const MAX_BODY_BYTES = 8192;
@@ -28,9 +28,10 @@ export function tokenMatches(header, token) {
   if (typeof header !== 'string' || typeof token !== 'string' || token === '') return false;
   const match = /^Bearer\s+(.+)$/i.exec(header);
   if (!match) return false;
-  const given = Buffer.from(match[1], 'utf8');
-  const expected = Buffer.from(token, 'utf8');
-  if (given.length !== expected.length) return false;
+  // Hash both sides first: the buffers are then always the same length, so neither the
+  // comparison time nor an early return reveals anything about the token or its length.
+  const given = createHash('sha256').update(match[1], 'utf8').digest();
+  const expected = createHash('sha256').update(token, 'utf8').digest();
   return timingSafeEqual(given, expected);
 }
 
@@ -119,6 +120,12 @@ export function createLocalApi({ port, token, submit, health, logger, host = '12
         send(res, 401, { error: 'unauthorized' });
         return;
       }
+      const declared = Number(req.headers['content-length']);
+      if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) {
+        // Refuse before reading anything, and drop the connection.
+        send(res, 400, { error: 'body is too large' }, { connection: 'close' });
+        return;
+      }
       let raw;
       try {
         raw = await readBody(req, MAX_BODY_BYTES);
@@ -153,6 +160,10 @@ export function createLocalApi({ port, token, submit, health, logger, host = '12
       else res.end();
     });
   });
+
+  // Slow or stalled clients cannot hold a connection open for long.
+  server.requestTimeout = 15_000;
+  server.headersTimeout = 10_000;
 
   return {
     server,

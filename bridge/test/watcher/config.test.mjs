@@ -241,3 +241,15 @@ test('checkEnv validates shapes and never echoes values', () => {
   const none = checkEnv({});
   assert.ok(none.warnings.some((w) => w.includes('no notification channel')));
 });
+
+// --- review additions ---
+
+test('a rule that needs more closed bars than the 300 each stream keeps is a config error', () => {
+  const base = { watchlist: [{ symbol: 'BINANCE:BTCUSDT', timeframes: ['60'] }] };
+  const check = (rule) => parseConfig({ ...base, rules: [rule] }, { home: '/h' }).errors.join('\n');
+  assert.match(check({ id: 'a', type: 'new_extreme', lookback: 400 }), /rules\[0\]: needs 401 closed bars but the watcher keeps only 300/);
+  assert.match(check({ id: 'b', type: 'pct_move', bars: 300, threshold_pct: 1 }), /needs 301 closed bars/);
+  assert.match(check({ id: 'c', type: 'volume_spike', multiple: 2, lookback: 300 }), /needs 301 closed bars/);
+  assert.equal(check({ id: 'd', type: 'new_extreme', lookback: 299 }), '');
+  assert.equal(check({ id: 'e', type: 'bollinger_break', period: 300 }), '');
+});

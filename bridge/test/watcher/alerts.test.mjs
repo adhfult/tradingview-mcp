@@ -185,3 +185,94 @@ test('state records the send times that drive the hourly cap', () => {
   assert.deepEqual(store.state.sends, [NOON, NOON + 1000]);
   assert.equal(pipeline.counts().sentLastHour, 2);
 });
+
+// --- review additions ---
+
+test('held alerts saved before a restart go out when the watcher comes back after quiet hours ended', () => {
+  const first = setup({ start: NIGHT, alerts: { quiet_hours: { start: '23:00', end: '07:00' } } });
+  first.pipeline.submit(item(first.clock, 'night'));
+  assert.equal(first.store.state.digest.held.length, 1);
+  // A new process starts at 09:00 with the saved state: it never saw quiet hours end.
+  const clock = createFakeClock(Date.UTC(2026, 9, 11, 9, 0, 0));
+  const enqueued = [];
+  const pipeline = createAlerts({
+    alerts: { cooldown_minutes: 60, max_per_hour: 20, quiet_hours: { start: '23:00', end: '07:00' }, digest_after_quiet: true },
+    timezone: 'UTC',
+    store: first.store,
+    clock,
+    queue: { enqueue: (m) => enqueued.push(m) },
+  });
+  pipeline.tick();
+  assert.equal(enqueued.length, 1, 'one digest for what was held');
+  assert.ok(enqueued[0].lines.includes('• night'));
+  assert.equal(first.store.state.digest.held.length, 0);
+});
+
+test('health alerts are not counted against the hourly cap, so they cannot starve rule alerts', () => {
+  const { clock, pipeline, enqueued } = setup({ alerts: { max_per_hour: 2 } });
+  for (let i = 0; i < 5; i += 1) pipeline.submit(item(clock, `down${i}`, { critical: true }));
+  assert.equal(pipeline.counts().sentLastHour, 0);
+  assert.equal(pipeline.submit(item(clock, 'rule1')), 'sent');
+  assert.equal(pipeline.submit(item(clock, 'rule2')), 'sent');
+  assert.equal(pipeline.submit(item(clock, 'rule3')), 'digested');
+  assert.equal(enqueued.length, 7);
+});
+
+test('the digest buffers stay bounded over a long quiet period or a long outage', () => {
+  const { clock, pipeline, store } = setup({
+    start: NIGHT,
+    alerts: { quiet_hours: { start: '23:00', end: '07:00' }, cooldown_minutes: 0 },
+  });
+  for (let i = 0; i < 900; i += 1) pipeline.submit(item(clock, `k${i}`));
+  assert.equal(store.state.digest.held.length, 500, 'oldest dropped first');
+  assert.equal(store.state.digest.held[0].summary, 'k400');
+  assert.equal(store.state.alerts.length, 500);
+});
+
+test('quiet hours follow the wall clock across the autumn DST change in New York', () => {
+  const quietAt = (ms) => setup({
+    start: ms,
+    timezone: 'America/New_York',
+    alerts: { quiet_hours: { start: '23:00', end: '07:00' } },
+  }).pipeline.quietNow();
+  // Sat 2026-10-31, still EDT (UTC-4): 06:59 is quiet, 07:00 is not.
+  assert.equal(quietAt(Date.UTC(2026, 9, 31, 10, 59)), true);
+  assert.equal(quietAt(Date.UTC(2026, 9, 31, 11, 0)), false);
+  // Sun 2026-11-01 the clocks go back at 02:00 EDT: now EST (UTC-5). 07:00 EST is 12:00Z.
+  assert.equal(quietAt(Date.UTC(2026, 10, 1, 11, 59)), true);
+  assert.equal(quietAt(Date.UTC(2026, 10, 1, 12, 0)), false);
+  // 23:00 EST on Nov 1 is 04:00Z on Nov 2.
+  assert.equal(quietAt(Date.UTC(2026, 10, 2, 3, 59)), false);
+  assert.equal(quietAt(Date.UTC(2026, 10, 2, 4, 0)), true);
+});
+
+test('quiet hours follow the wall clock across the spring DST change in New York', () => {
+  const quietAt = (ms) => setup({
+    start: ms,
+    timezone: 'America/New_York',
+    alerts: { quiet_hours: { start: '23:00', end: '07:00' } },
+  }).pipeline.quietNow();
+  // Sun 2026-03-08 clocks go forward at 02:00 EST. 07:00 EDT (UTC-4) is 11:00Z.
+  assert.equal(quietAt(Date.UTC(2026, 2, 8, 10, 59)), true);
+  assert.equal(quietAt(Date.UTC(2026, 2, 8, 11, 0)), false);
+});
+
+test('a cooldown or dedupe time in the future (clock stepped back) does not silence alerts', () => {
+  const { clock, pipeline, store } = setup();
+  store.state.cooldowns['BTC|60|r'] = clock.now() + 5 * HOUR;
+  store.state.seen.stale = clock.now() + 5 * HOUR;
+  assert.equal(pipeline.submit(item(clock, 'stale', { cooldownKey: 'BTC|60|r' })), 'sent');
+});
+
+test('cooldown holds across midnight in the configured timezone, and ends on time', () => {
+  const { clock, pipeline } = setup({
+    start: Date.UTC(2026, 9, 11, 3, 50), // 23:50 New York
+    timezone: 'America/New_York',
+    alerts: { cooldown_minutes: 60 },
+  });
+  assert.equal(pipeline.submit(item(clock, 'a', { cooldownKey: 'k' })), 'sent');
+  clock.advance(30 * 60_000);                 // 00:20 next local day
+  assert.equal(pipeline.submit(item(clock, 'b', { cooldownKey: 'k' })), 'cooldown');
+  clock.advance(30 * 60_000);                 // 00:50
+  assert.equal(pipeline.submit(item(clock, 'c', { cooldownKey: 'k' })), 'sent');
+});

@@ -326,3 +326,105 @@ test('--test-notify with no channel configured exits 1 with guidance', async () 
   assert.equal(code, 1);
   assert.match(outs[0], /no notification channel is configured/);
 });
+
+// --- review additions ---
+
+/** Reads state.json, waiting (real time, up to 2 s) for the disk write to finish. */
+async function readStateSoon(dir) {
+  for (let i = 0; i < 100; i += 1) {
+    try {
+      return JSON.parse(await readFile(join(dir, 'state.json'), 'utf8'));
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  }
+  return JSON.parse(await readFile(join(dir, 'state.json'), 'utf8'));
+}
+
+test('--test-notify together with --dry-run prints the message and never calls fetch', async () => {
+  const spy = createFakeFetch(() => { throw new Error('fetch must not be called'); });
+  const outs = [];
+  const code = await runTestNotify({
+    env: { DISCORD_WEBHOOK_URL: WEBHOOK, TELEGRAM_BOT_TOKEN: TELEGRAM, TELEGRAM_CHAT_ID: '4242' },
+    fetch: spy.fetch,
+    out: (t) => outs.push(t),
+    redact: makeRedactor({ DISCORD_WEBHOOK_URL: WEBHOOK }),
+    dryRun: true,
+  });
+  assert.equal(code, 0);
+  assert.equal(spy.calls.length, 0);
+  assert.ok(outs.join('').includes('tradingview watcher test'));
+});
+
+test('a bug in a housekeeping step is logged and does not stop the tick or crash the process', async (t) => {
+  const { watcher, logs } = await build(t, { configOverrides: { local_api: { enabled: false, port: 8787 } } });
+  await watcher.start();
+  watcher.health.tick = () => { throw new Error('health exploded'); };
+  await watcher.tick();                                   // must not reject
+  assert.ok(logs.some((line) => line.includes('health tick failed: health exploded')));
+  await watcher.stop();
+});
+
+test('a rule hit is saved to disk at once, not 5 seconds later', async (t) => {
+  const { watcher, lib, dir } = await build(t, { configOverrides: { local_api: { enabled: false, port: 8787 } } });
+  await watcher.start();
+  lib.watchers[0].feed(snapshot([100, 101]));
+  lib.watchers[0].feed(snapshot([100, 101, 102]));        // closes the 101 bar: +1% hit
+  await settle();
+  const saved = await readStateSoon(dir);
+  assert.equal(Object.keys(saved.seen).length, 1, 'the dedupe record is on disk');
+  assert.ok(saved.streams['BINANCE:BTCUSDT|15'].lastEvaluatedTime > 0);
+  await watcher.stop();
+});
+
+test('shutdown saves state before it waits for undelivered alerts', async (t) => {
+  // Discord hangs forever: stop() waits for the bounded drain, but state must already be saved.
+  const hang = createFakeFetch(() => new Promise(() => {}));
+  const { watcher, lib, clock, dir } = await build(t, {
+    fetch: hang.fetch,
+    configOverrides: { local_api: { enabled: false, port: 8787 } },
+  });
+  await watcher.start();
+  lib.watchers[0].feed(snapshot([100, 100]));
+  lib.watchers[0].feed(snapshot([100, 100, 100]));        // flat: evaluated, no hit, so no immediate save
+  watcher.alerts.submit({                                  // a message whose delivery hangs
+    kind: 'notify',
+    message: { level: 'info', title: 'x', lines: [], timestamp: new Date(clock.now()).toISOString() },
+    summary: 'x',
+  });
+  await settle();
+  assert.equal(watcher.queue.pending(), 1);
+  const stopping = watcher.stop();
+  await settle();
+  const saved = await readStateSoon(dir);
+  assert.ok(saved.streams['BINANCE:BTCUSDT|15'], 'state is on disk while the drain is still waiting');
+  clock.advance(5000);                                    // the drain gives up
+  await stopping;
+});
+
+test('the chat id, local token, cookies, webhook and bot token never reach a log, even when Telegram fails', async (t) => {
+  const CHAT = '-1009988776655';
+  const failing = createFakeFetch((url) => {
+    if (url.includes('telegram')) throw new Error(`socket hang up for ${url} chat ${CHAT}`);
+    return new Response(null, { status: 500 });
+  });
+  const { watcher, lib, logs, clock, fullEnv } = await build(t, {
+    fetch: failing.fetch,
+    env: { TELEGRAM_BOT_TOKEN: TELEGRAM, TELEGRAM_CHAT_ID: CHAT },
+    configOverrides: { local_api: { enabled: false, port: 8787 } },
+  });
+  await watcher.start();
+  lib.watchers[0].feed(snapshot([100, 101]));
+  lib.watchers[0].feed(snapshot([100, 101, 102]));
+  for (let i = 0; i < 4; i += 1) {
+    await settle();
+    clock.advance(5000);
+  }
+  await watcher.stop();
+  const text = logs.join('\n');
+  assert.ok(text.includes('alert dropped'), 'deliveries failed and were logged');
+  for (const secret of [CHAT, WEBHOOK, TELEGRAM, 'SECRET_BOT_TOKEN_VALUE', 'SECRET_WEBHOOK_PART', fullEnv.WATCHER_LOCAL_TOKEN,
+    fullEnv.TRADINGVIEW_SESSION_ID, fullEnv.TRADINGVIEW_SESSION_SIGN]) {
+    assert.ok(!text.includes(secret), `log leaked ${secret}`);
+  }
+});

@@ -175,3 +175,33 @@ test('dry-run prints the plain text of each alert and makes no network call', as
   assert.match(written[0], /BINANCE:BTCUSDT · 1h · pct_move\nUp 3.4% over 4 bars/);
   assert.match(written[0], /https:\/\/www\.tradingview\.com\/chart/);
 });
+
+// --- review additions ---
+
+test('Discord payload turns off mention parsing, so @everyone in an alert text pings nobody', () => {
+  const payload = discordPayload(message({ lines: ['@everyone <@&123> hello'] }));
+  assert.deepEqual(payload.allowed_mentions, { parse: [] });
+});
+
+test('a transport error that echoes only the webhook secret or the bot token part is scrubbed', async () => {
+  const { fetch } = createFakeFetch(() => {
+    throw new Error('boom SECRET_WEBHOOK_PART and SECRET_BOT_TOKEN_VALUE');
+  });
+  const identity = (text) => text; // no env-based redactor: the notifier must scrub on its own
+  const discord = createDiscordNotifier({ url: WEBHOOK, fetch, redact: identity });
+  await assert.rejects(discord.send(message()), (err) => !err.message.includes('SECRET_WEBHOOK_PART'));
+  const telegram = createTelegramNotifier({ token: TOKEN, chatId: '1', fetch, redact: identity });
+  await assert.rejects(telegram.send(message()), (err) => !err.message.includes(TOKEN));
+});
+
+test('Telegram escapes markup in every part of an alert, including the title and the link text', () => {
+  const payload = telegramPayload(message({
+    title: '<b>x</b> & "y"',
+    lines: ['<script>alert(1)</script>'],
+    url: 'https://example.com/?a=1&b="2"',
+  }), '1');
+  assert.ok(!payload.text.includes('<script>'));
+  assert.ok(payload.text.includes('&lt;script&gt;'));
+  assert.ok(payload.text.includes('href="https://example.com/?a=1&amp;b=&quot;2&quot;"'));
+  assert.equal((payload.text.match(/<b>/g) ?? []).length, 1, 'only our own bold tag is real');
+});

@@ -92,7 +92,7 @@ The other secret names known to the redactor (`DISCORD_WEBHOOK_URL`, `TELEGRAM_B
    ```
 4. Create the config and check it. `--check-config` prints `OK`, or every problem:
    ```sh
-   mkdir -p ~/.config/tradingview-watcher
+   mkdir -p ~/.config/tradingview-watcher ~/.local/state/tradingview-watcher   # the state dir must exist: the unit makes only it writable
    cp watcher.config.example.json ~/.config/tradingview-watcher/config.json
    node watcher.mjs --config ~/.config/tradingview-watcher/config.json --check-config
    ```
