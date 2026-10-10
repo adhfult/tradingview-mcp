@@ -69,7 +69,7 @@ SETUP_HINT = (
     "(see docs/tradingview-session.md)."
 )
 _AUTH_MESSAGE = (
-    "TradingView rejected the session cookies; copy fresh sessionid / sessionid_sign into .env"
+    "TradingView rejected the session cookies. Update TRADINGVIEW_SESSION_ID / TRADINGVIEW_SESSION_SIGN in .env, then restart the MCP server."
 )
 _CREDENTIAL_VARS = ("TRADINGVIEW_SESSION_ID", "TRADINGVIEW_SESSION_SIGN")
 

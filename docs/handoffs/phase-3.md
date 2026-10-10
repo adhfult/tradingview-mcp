@@ -187,3 +187,50 @@ All ten names in the brief exist in the `QuoteField` union: `lp`, `ch`, `chp`, `
 - `cd bridge && npm test`: `# tests 207 / # pass 207 / # fail 0`
 - `uv run pytest tests/unit -q`: last line `658 passed in 11.15s`
 - `PATH=/usr/bin:/bin /root/.local/bin/uv run pytest tests/unit -q`: last line `658 passed in 11.07s`
+
+## Review report (Sonnet)
+
+### Default behaviour: proven unchanged
+Compared the pre-Phase-3 `backtest_service.py` (`git show 82ef2f8:...`, loaded as a temp module) against the current one, with `_fetch_ohlcv` patched to the same deterministic candles (520 daily, 900 hourly):
+- `run_backtest`: 9 strategies x {plain, `include_trade_log`+`include_equity_curve`, `risk_free_rate`+`periods_per_year`} x {1d, 1h}
+- `compare_strategies`: 1d and 1h
+- `walk_forward_backtest`: 7 strategies x {1d, 1h}
+
+Result: **0 mismatches** (full-dict equality, `timestamp` and `data_freshness` excluded). Error messages for invalid Yahoo period/interval are byte-identical (already pinned by Haiku's tests).
+Pinned in the new `tests/unit/services/test_backtest_yahoo_parity.py` (14 tests): per-strategy return/trades/Sharpe plus a SHA-256 digest of each full result, taken from the OLD code.
+
+### Defects found and fixed
+1. **Annualization used crypto's 24/7 factor for forex, CFDs and unknown exchanges** (`tv_data_service.py` `tv_periods_per_year`, via `get_market_type`'s crypto default). Now:
+   - known crypto venue -> 365 days x 24h (`{15m:35040, 1h:8760, 4h:2190, 1d:365}`). The set is the `EXCHANGE_SCREENER` entries whose screener is `crypto` (minus the `all` placeholder) plus a few TradingView crypto prefixes the screener does not list (kraken, bitstamp, binanceus, bitmex, deribit, phemex, bithumb, upbit, gemini, poloniex, bingx, cryptocom, coinex).
+   - forex/CFD venue (`_TA_ONLY_SCREENERS`: oanda, fx_idc, fxcm, tvc, capitalcom; plus forexcom, pepperstone, icmarkets, eightcap, saxo, skilling, blackbull) -> 260 weekdays x 24h (`{15m:24960, 1h:6240, 4h:1560, 1d:260}`).
+   - stocks and any unknown prefix -> `{15m:6552, 1h:1638, 4h:504, 1d:252}`.
+   `get_market_type` itself is untouched (the screener paths still rely on its crypto default).
+2. **`search` and `hotlist` were recorded as `auth="session"` when credentials existed**, but the bridge sends no cookies for either (`bridge/server.mjs`: "searchMarkets takes HttpOptions only", hotlist "deliberately anonymous"). That made `data_freshness.auth` claim an account-backed result that was anonymous. `_record(client, uses_account=False)` now labels them anonymous (`tv_data_service.py` `_record`, `search_symbols`, `get_hotlist`).
+3. **`tv_status` ignored the client's cool-down.** While cooling down, `is_available()` returns False, so the tool reported a bridge that was merely paused as plain "down". It now adds `cooling_down` and `cooldown_remaining_s` (from `cooling_down()` / `cooldown_remaining_s()`), and `bridge_ok` is False without probing while cooling. Still no values anywhere.
+4. **Symbol length not checked locally.** The bridge rejects symbols over 40 characters and any other characters; `tv_candles`/`tv_indicator` accepted anything after `normalize_tradingview_symbol` (for example `BTC USDT`) and only failed after a bridge round trip, and `tv_quotes` used a regex without the length cap. `is_tv_symbol` now caps at 40, `_full_symbol` validates the built `EXCHANGE:SYMBOL`, and `_parse_symbols` uses the same check. Bad input now returns `INVALID_PARAMETER` with no bridge call.
+
+### Checked, no defect
+- Bridge params: `candles` sends `from`, `maxCount: 20000`, `timeoutMs: 60000`, `timeout_s=60`, never `count`; combo caps (15m<=6mo, 1h<=2y, 4h/1d<=5y) are enforced before any call for all three tools; every allowed combo fits 20,000 bars even for 24/7 markets (new test). Truncation uses `first_ts - from > 10% x span`; boundary tests added (9% no, 11% yes), also on compare and walk-forward.
+- Cookies: `session_cookies()` needs both vars non-empty and respects `TRADINGVIEW_MCP_SCANNER_USE_SESSION=0`; loads `.env` first; values never appear in logs, stderr, results or errors; cache keys carry `("auth", ...)`, so session and anonymous payloads never cross (including the stale fallback); `tradingview_ta` stays anonymous and is recorded as `tradingview_ta`; direct callers record only after success.
+- Freshness: `auth` is rolled up over `tradingview*` sources only, `auth_by_source` covers all; mixed sources verified (session scanner + anonymous TA + Yahoo -> `mixed`, with the per-source map).
+- Error mapping: all bridge codes map to the right envelope for all five data functions; `AUTH_FAILED` always carries "Update TRADINGVIEW_SESSION_ID / TRADINGVIEW_SESSION_SIGN in .env, then restart the MCP server."; freshness goes through `freshness.record("tradingview_bridge", ...)`, never hand-built; failed calls record nothing.
+- Tool docstrings and annotations are accurate; `tv_status` docstring matches behaviour.
+
+### Tests added (658 -> 777)
+- `tests/unit/services/test_backtest_yahoo_parity.py` (new, 14): Yahoo default numbers pinned from the pre-Phase-3 code (run/compare/walk-forward, 1d and 1h, tool wrapper, `tv_symbol` ignored on Yahoo, bridge never touched).
+- `test_backtest_tv_source.py` (+~35): annualization by market (crypto/forex/CFD/stock/unknown, every screener crypto venue, non-crypto screener venues), factor reaching `_calc_metrics` in compare and walk-forward, combo caps and long-fetch params for compare/walk-forward, bar-cap bound for every allowed combo, truncation boundary, bad bridge replies, no cookie leak in results.
+- `test_tv_data_service.py` (+~60): every bridge code x every function -> envelope/retryable, exact `AUTH_FAILED` text, secret redaction in error text, bad/over-long symbols, search/hotlist recorded anonymous, account calls recorded with the right auth, `tv_status` cool-down fields, tools through the offload + freshness wrappers (`data_freshness.auth_by_source`), docstring "see `tv_status`" and `openWorldHint` for each tool.
+- `test_scanner_session.py` (+5): `.env` loaded before the check, opt-out beats cookies on every path, explicit cookies cached apart from anonymous, failing scan leaks no cookie values, scanner+TA+Yahoo rollup.
+- `test_tool_annotations.py` / `test_tool_offload.py` (+1 each): the six `tv_*` tools by name.
+- `tests/unit/services/conftest.py`: `StubClient` gained `cooling_down()` / `cooldown_remaining_s()`.
+
+### Follow-ups (not done)
+- `tv_bridge_client._AUTH_MESSAGE` (Phase 2, pinned by `test_tv_bridge_client.py`) still says "copy fresh sessionid / sessionid_sign into .env". The tv service overrides it, so tool output is right, but any future caller using `err.to_envelope()` directly would show the old wording. Change both together when convenient.
+- Futures venues (CME, CBOT, NYMEX, COMEX ...) trade ~23h x 5 days; they fall in the stock bucket now. Add a futures bucket if futures backtests matter.
+- The 10% truncation rule can flag a false positive for 1-month daily stock requests when `from` lands just before a long weekend. It follows the brief; a bar-count-aware rule would be more precise.
+- The tool aliases `timeframe="1m"` to monthly (`1M`), a pre-existing alias, not minutes; worth a docstring note on `tv_candles`.
+
+### Verification
+- `uv run pytest tests/unit -q`: `777 passed in 11.58s`
+- `PATH=/usr/bin:/bin /root/.local/bin/uv run pytest tests/unit -q`: `777 passed in 11.47s`
+- Parity script (old vs new on identical candles): `mismatches: 0`

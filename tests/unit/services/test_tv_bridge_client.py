@@ -151,7 +151,7 @@ def test_error_table_maps_to_envelope_codes(bridge_code, expected, retryable):
 def test_auth_failed_message_says_where_to_fix_it():
     message = BridgeError("AUTH_FAILED", "raw text").to_envelope()["error"]["message"]
     assert message == (
-        "TradingView rejected the session cookies; copy fresh sessionid / sessionid_sign into .env"
+        "TradingView rejected the session cookies. Update TRADINGVIEW_SESSION_ID / TRADINGVIEW_SESSION_SIGN in .env, then restart the MCP server."
     )
 
 

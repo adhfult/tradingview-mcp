@@ -38,3 +38,10 @@ def test_offload_preserves_annotations_and_metadata():
         assert t.annotations is not None and t.annotations.title
         assert t.annotations.readOnlyHint is True
         assert t.fn_metadata is not None  # validation schema still from the original signature
+
+
+def test_tradingview_bridge_tools_are_offloaded():
+    by_name = {t.name: t for t in _tools()}
+    for name in ("tv_status", "tv_candles", "tv_quotes", "tv_indicator", "tv_symbol_search", "tv_hotlist"):
+        assert name in by_name, f"missing tool {name}"
+        assert by_name[name].is_async and inspect.iscoroutinefunction(by_name[name].fn), name

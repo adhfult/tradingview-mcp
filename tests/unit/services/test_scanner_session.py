@@ -282,3 +282,68 @@ def test_session_and_anonymous_tradingview_sources_roll_up_to_mixed():
     assert out["auth"] == "mixed"
     assert out["auth_by_source"]["tradingview_bridge"] == "session"
     assert out["auth_by_source"]["tradingview_ta"] == "anonymous"
+
+
+# ── Review additions ────────────────────────────────────────────────────────
+
+def test_session_cookies_loads_the_env_file_before_checking(monkeypatch):
+    """The repo .env may hold the cookies; the loader must run before the env check."""
+    calls = []
+
+    def fake_loader():
+        calls.append(1)
+        monkeypatch.setenv("TRADINGVIEW_SESSION_ID", SECRET_ID)
+        monkeypatch.setenv("TRADINGVIEW_SESSION_SIGN", SECRET_SIGN)
+        return []
+
+    monkeypatch.setattr(sp, "load_env_file_once", fake_loader)
+    assert sp.session_cookies() == {"sessionid": SECRET_ID, "sessionid_sign": SECRET_SIGN}
+    assert calls == [1]
+
+
+def test_opt_out_beats_configured_cookies_for_every_scanner_path(monkeypatch):
+    _set_session(monkeypatch)
+    monkeypatch.setenv("TRADINGVIEW_MCP_SCANNER_USE_SESSION", "0")
+    q = RecordingQuery()
+    _, recs = _collect(sp._scan_with_retry, q)
+    assert q.kwargs == [{"cookies": None}]
+    assert recs[0]["auth"] == "anonymous"
+    q2 = RecordingQuery()
+    _, recs2 = _collect(sp.scanner_get_data, q2, timeout=5)
+    assert q2.kwargs == [{"timeout": 5}]
+    assert recs2[0]["auth"] == "anonymous"
+
+
+def test_explicit_cookies_are_cached_apart_from_anonymous(monkeypatch):
+    base = ("indicators_v1", "EGX", ("EGX:ASCM",), "1D", None)
+    explicit = {"sessionid": "explicit-id", "sessionid_sign": "explicit-sign"}
+    sp._scan_with_retry(RecordingQuery(result=(1, "explicit_df")), cookies=explicit, cache_key=base)
+    monkeypatch.setenv("TRADINGVIEW_MCP_RETRY_DELAYS", "0.01")
+    with pytest.raises(RuntimeError):
+        sp._scan_with_retry(RecordingQuery(fail_times=99), cache_key=base)  # anonymous: no stale hit
+
+
+def test_failing_scanner_call_leaks_no_cookie_values(monkeypatch, capsys):
+    _set_session(monkeypatch)
+    monkeypatch.setenv("TRADINGVIEW_MCP_RETRY_DELAYS", "0.01")
+    with pytest.raises(RuntimeError) as info:
+        sp._scan_with_retry(RecordingQuery(fail_times=99))
+    captured = capsys.readouterr()
+    for text in (str(info.value), captured.out, captured.err):
+        assert SECRET_ID not in text and SECRET_SIGN not in text
+
+
+def test_ta_records_stay_anonymous_and_mixed_scanner_plus_ta_rolls_up_per_source(monkeypatch):
+    _set_session(monkeypatch)
+    records, token = freshness.start_collection()
+    try:
+        sp._scan_with_retry(RecordingQuery())
+        freshness.record("tradingview_ta", 1.0, auth="anonymous")
+        freshness.record("yahoo", 1.0, auth="anonymous")
+    finally:
+        freshness.stop_collection(token)
+    summary = freshness.summarize(records)
+    assert summary["auth"] == "mixed"
+    assert summary["auth_by_source"] == {
+        "tradingview_scanner": "session", "tradingview_ta": "anonymous", "yahoo": "anonymous",
+    }

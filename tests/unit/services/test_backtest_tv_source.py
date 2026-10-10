@@ -298,3 +298,184 @@ def test_yahoo_compare_output_has_no_source_keys():
     with mock.patch.object(bt, "_fetch_ohlcv", return_value=_yahoo_candles()):
         out = bt.compare_strategies("AAPL", period="1y", interval="1d")
     assert "data_source" not in out and "tv_symbol" not in out
+
+
+# ── Review additions ────────────────────────────────────────────────────────
+
+from tradingview_mcp.core.services import tv_data_service as tvs  # noqa: E402
+
+
+@pytest.mark.parametrize(
+    "symbol, expected",
+    [
+        # 24/7 crypto venues: 365 days x 24h
+        ("BINANCE:BTCUSDT", {"15m": 35040, "1h": 8760, "4h": 2190, "1d": 365}),
+        ("coinbase:btcusd", {"15m": 35040, "1h": 8760, "4h": 2190, "1d": 365}),
+        ("KRAKEN:XBTUSD", {"15m": 35040, "1h": 8760, "4h": 2190, "1d": 365}),
+        # forex / CFD: 24h x 260 weekdays, never the crypto factor
+        ("OANDA:EURUSD", {"15m": 24960, "1h": 6240, "4h": 1560, "1d": 260}),
+        ("FX_IDC:EURUSD", {"15m": 24960, "1h": 6240, "4h": 1560, "1d": 260}),
+        ("TVC:GOLD", {"15m": 24960, "1h": 6240, "4h": 1560, "1d": 260}),
+        ("CAPITALCOM:US500", {"15m": 24960, "1h": 6240, "4h": 1560, "1d": 260}),
+        ("FXCM:EURUSD", {"15m": 24960, "1h": 6240, "4h": 1560, "1d": 260}),
+        # stocks and everything unknown: 252 days x 6.5h session
+        ("NASDAQ:AAPL", {"15m": 6552, "1h": 1638, "4h": 504, "1d": 252}),
+        ("EGX:COMI", {"15m": 6552, "1h": 1638, "4h": 504, "1d": 252}),
+        ("LSE:VOD", {"15m": 6552, "1h": 1638, "4h": 504, "1d": 252}),
+        ("SOMEUNKNOWNEXCHANGE:XYZ", {"15m": 6552, "1h": 1638, "4h": 504, "1d": 252}),
+    ],
+)
+def test_periods_per_year_by_market(symbol, expected):
+    got = {iv: tvs.tv_periods_per_year(symbol, iv) for iv in ("15m", "1h", "4h", "1d")}
+    assert got == expected
+
+
+def test_unknown_prefix_is_not_treated_as_crypto_unlike_get_market_type():
+    from tradingview_mcp.core.utils.validators import get_market_type
+
+    assert get_market_type("someunknownexchange") == "crypto"  # the trap this avoids
+    assert tvs.tv_periods_per_year("SOMEUNKNOWNEXCHANGE:XYZ", "1d") == 252
+    assert tvs.tv_periods_per_year("TVC:DXY", "1d") == 260
+    assert get_market_type("tvc") == "crypto"                  # still the screener default; untouched
+
+
+def test_all_screener_crypto_venues_get_the_crypto_factor():
+    from tradingview_mcp.core.utils.validators import EXCHANGE_SCREENER
+
+    venues = [n for n, s in EXCHANGE_SCREENER.items() if s == "crypto" and n != "all"]
+    assert {"binance", "kucoin", "coinbase", "bybit", "okx"} <= set(venues)
+    for venue in venues:
+        assert tvs.tv_periods_per_year(f"{venue.upper()}:BTCUSDT", "1h") == 8760, venue
+    for name, screener in EXCHANGE_SCREENER.items():
+        if screener != "crypto":
+            assert tvs.tv_periods_per_year(f"{name.upper()}:X", "1d") == 252, name
+
+
+@pytest.mark.parametrize(
+    "symbol, interval, step, expected",
+    [
+        ("OANDA:EURUSD", "1h", 3600, 6240),
+        ("TVC:GOLD", "1d", 86400, 260),
+        ("FX_IDC:EURUSD", "4h", 14400, 1560),
+        ("SOMEUNKNOWNEXCHANGE:XYZ", "1h", 3600, 1638),
+    ],
+)
+def test_backtest_uses_forex_and_stock_factors_not_crypto(tv_stub, symbol, interval, step, expected):
+    tv_stub.replies["candles"] = _from_request(step, 400)
+    out = bt.run_backtest("X", "rsi", period="1mo", interval=interval,
+                          data_source="tradingview", tv_symbol=symbol)
+    assert out["sharpe_periods_per_year"] == expected
+    # compare_strategies and walk_forward_backtest pass the same factor to _calc_metrics.
+    seen = []
+    real = bt._calc_metrics
+
+    def spy(*args, **kwargs):
+        seen.append(kwargs.get("periods_per_year"))
+        return real(*args, **kwargs)
+
+    with mock.patch.object(bt, "_calc_metrics", spy):
+        bt.compare_strategies("X", period="1mo", interval=interval,
+                              data_source="tradingview", tv_symbol=symbol)
+        assert seen and set(seen) == {expected}
+        seen.clear()
+        bt.walk_forward_backtest("X", "rsi", period="1y", interval=interval, n_splits=2,
+                                 data_source="tradingview", tv_symbol=symbol)
+        assert seen and set(seen) == {expected}
+
+
+# ── Combo caps and bridge params for compare / walk-forward ────────────────
+
+@pytest.mark.parametrize("fn", ["compare_strategies", "walk_forward_backtest"])
+def test_combo_caps_are_enforced_before_any_call_for_all_three_tools(tv_stub, fn):
+    args = ("X", "rsi") if fn == "walk_forward_backtest" else ("X",)
+    out = getattr(bt, fn)(*args, period="1y", interval="15m",
+                          data_source="tradingview", tv_symbol="BINANCE:BTCUSDT")
+    assert "too long" in out["error"]
+    out = getattr(bt, fn)(*args, period="3y", interval="1h",
+                          data_source="tradingview", tv_symbol="BINANCE:BTCUSDT")
+    assert "Choose: 1mo, 3mo, 6mo, 1y, 2y" in out["error"]
+    assert tv_stub.calls == []
+
+
+@pytest.mark.parametrize("fn", ["compare_strategies", "walk_forward_backtest"])
+def test_compare_and_walk_forward_send_long_fetch_params(tv_stub, fn):
+    tv_stub.replies["candles"] = _from_request(86400, 300)
+    args = ("X", "rsi") if fn == "walk_forward_backtest" else ("X",)
+    period = "2y" if fn == "walk_forward_backtest" else "1y"
+    out = getattr(bt, fn)(*args, period=period, interval="1d",
+                          data_source="tradingview", tv_symbol="BINANCE:BTCUSDT")
+    assert "error" not in out, out
+    _, params, timeout_s = tv_stub.calls[0]
+    assert params["maxCount"] == 20000 and params["timeoutMs"] == 60000 and timeout_s == 60
+    assert "count" not in params
+
+
+@pytest.mark.parametrize("fn", ["compare_strategies", "walk_forward_backtest"])
+def test_yahoo_still_rejects_tv_only_values_for_compare_and_walk_forward(fn):
+    args = ("AAPL", "rsi") if fn == "walk_forward_backtest" else ("AAPL",)
+    assert getattr(bt, fn)(*args, period="5y")["error"].startswith("Invalid period '5y'.")
+    assert getattr(bt, fn)(*args, period="1y", interval="4h")["error"] == "Invalid interval '4h'. Choose: 1d or 1h"
+
+
+def test_every_allowed_combo_stays_under_the_bar_cap_for_24_7_markets():
+    """Worst case is crypto: bars per day = 24h / interval."""
+    bars_per_day = {"15m": 96, "1h": 24, "4h": 6, "1d": 1}
+    for interval, periods in bt._TV_PERIODS_BY_INTERVAL.items():
+        for period in periods:
+            assert bt._TV_PERIOD_DAYS[period] * bars_per_day[interval] <= bt._TV_MAX_BARS, (interval, period)
+
+
+# ── Truncation boundary ─────────────────────────────────────────────────────
+
+def _first_bar_at_fraction(fraction: float, step: int, n: int):
+    def reply(params):
+        span = time.time() - params["from"]
+        return _series(params["from"] + int(fraction * span), n, step)
+    return reply
+
+
+def test_truncation_threshold_is_ten_percent_of_the_span(tv_stub):
+    tv_stub.replies["candles"] = _first_bar_at_fraction(0.09, 86400, 60)
+    out = bt.run_backtest("X", "rsi", period="1y", interval="1d",
+                          data_source="tradingview", tv_symbol="BINANCE:BTCUSDT")
+    assert "truncated" not in out
+    tv_stub.replies["candles"] = _first_bar_at_fraction(0.11, 86400, 60)
+    out = bt.run_backtest("X", "rsi", period="1y", interval="1d",
+                          data_source="tradingview", tv_symbol="BINANCE:BTCUSDT")
+    assert out["truncated"] is True
+
+
+def test_truncation_flag_and_note_also_on_compare_and_walk_forward(tv_stub):
+    tv_stub.replies["candles"] = _first_bar_at_fraction(0.5, 86400, 300)
+    cmp_out = bt.compare_strategies("X", period="2y", interval="1d",
+                                    data_source="tradingview", tv_symbol="BINANCE:BTCUSDT")
+    wf = bt.walk_forward_backtest("X", "rsi", period="2y", interval="1d",
+                                  data_source="tradingview", tv_symbol="BINANCE:BTCUSDT")
+    for out in (cmp_out, wf):
+        assert out["truncated"] is True and "history starts" in out["note"], out
+
+
+# ── Bad bridge replies ──────────────────────────────────────────────────────
+
+def test_non_list_reply_is_the_normal_error_dict(tv_stub):
+    tv_stub.replies["candles"] = {"unexpected": True}
+    out = bt.run_backtest("X", "rsi", period="1y", interval="1d",
+                          data_source="tradingview", tv_symbol="BINANCE:BTCUSDT")
+    assert out == {"error": "Failed to fetch data for 'X': TradingView returned an unexpected candles reply"}
+
+
+def test_empty_reply_is_an_error_not_a_crash(tv_stub):
+    tv_stub.replies["candles"] = []
+    out = bt.run_backtest("X", "rsi", period="1y", interval="1d",
+                          data_source="tradingview", tv_symbol="BINANCE:BTCUSDT")
+    assert "error" in out
+
+
+def test_tv_candle_values_and_cookies_do_not_leak_into_results(tv_stub, monkeypatch):
+    monkeypatch.setenv("TRADINGVIEW_SESSION_ID", "SECRET-ID-111")
+    monkeypatch.setenv("TRADINGVIEW_SESSION_SIGN", "SECRET-SIGN-222")
+    tv_stub.has_creds = True
+    tv_stub.replies["candles"] = _from_request(86400, 300)
+    out = bt.compare_strategies("X", period="1y", interval="1d",
+                                data_source="tradingview", tv_symbol="BINANCE:BTCUSDT")
+    assert "SECRET" not in repr(out)

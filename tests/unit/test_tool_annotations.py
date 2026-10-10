@@ -45,3 +45,15 @@ def test_titles_are_unique_and_human_readable():
     for title in titles:
         assert title != title.lower(), f"title looks like an identifier, not a human title: {title!r}"
         assert "_" not in title, f"title contains underscores: {title!r}"
+
+
+_TV_TOOLS = ("tv_status", "tv_candles", "tv_quotes", "tv_indicator", "tv_symbol_search", "tv_hotlist")
+
+
+def test_tradingview_bridge_tools_are_registered_with_full_annotations():
+    by_name = {t.name: t for t in _all_tools()}
+    for name in _TV_TOOLS:
+        assert name in by_name, f"missing tool {name}"
+        ann = by_name[name].annotations
+        assert ann.readOnlyHint is True and ann.destructiveHint is False and ann.openWorldHint is True, name
+        assert (by_name[name].description or "").strip(), name
