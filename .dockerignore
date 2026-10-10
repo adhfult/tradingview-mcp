@@ -57,3 +57,6 @@ bridge/watcher.config.json
 **/watcher.config.json
 **/*.state.json
 **/paper-journal*
+**/*.env
+!**/*.env.example
+**/node_modules

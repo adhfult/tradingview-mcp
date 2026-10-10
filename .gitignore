@@ -252,3 +252,8 @@ watcher.config.json
 bridge/watcher.config.json
 *.state.json
 paper-journal*
+# Any env file variant (secrets), at any depth; the example file stays tracked
+.env.*
+*.env
+!.env.example
+!*.env.example

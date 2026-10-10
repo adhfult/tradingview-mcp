@@ -156,3 +156,46 @@ Add a job `bridge`:
 7. **`.env.example`** was already tracked. I extended it rather than creating it new, so the Marketaux and proxy settings are kept.
 8. The `bridge` CI job runs `npm audit` against the live registry. It passed here (0 vulnerabilities). A new advisory would fail the job by design.
 9. Not verified: live `tv_*` calls with real cookies (Adham only, per STATUS).
+
+## Review report (Sonnet)
+
+Docker daemon not reachable, so the Dockerfile was reviewed by reading only. Nothing committed. No `src/`, `tests/` or `bridge/` file edited.
+
+### Dockerfile: verdict, no functional defect
+- **Copy order is correct.** `COPY --from=builder /app /app` (Dockerfile ~line 41) comes before `COPY --from=bridge /bridge /app/bridge`. The builder's `/app/bridge` has source but no `node_modules` (`.dockerignore` excludes it). The later bridge-stage copy merges over it and adds `node_modules`. In the bridge stage, `COPY bridge/ ./` cannot delete the `npm ci` output, because `bridge/node_modules` is in `.dockerignore`.
+- **Non-root can read it.** `chown -R mcpuser /app` runs after both copies, so `/app/bridge` and `node_modules` are covered. `/usr/local/bin/node` is root-owned and executable by all.
+- **Node binary on glibc.** Built on bookworm (glibc 2.36), run on `python:3.11-slim` (glibc, newer or equal). Forward compatible. `RUN node --version` makes a missing shared library fail the build, not the run.
+- **No secrets.** `.env*`, `*.env`, watcher config and state files are excluded at any depth. `.env.example` (names only) is copied, which is harmless.
+- **Starts with no credentials.** The bridge is only spawned on the first `tv_*` call. `/health` is served by the Python server. `TRADINGVIEW_BRIDGE_PATH=/app/bridge/server.mjs` matches the copy target. Node is found through `shutil.which`, and `/usr/local/bin` is on PATH.
+- Change: comment only, saying the two bridge COPY lines must stay after the builder COPY.
+
+### Defects found and fixed
+1. `.gitignore` (end of file): only `.env` was ignored. `.env.local`, `.env.production` and `watcher.env` (the file `bridge/watcher.env.example` tells users to create) were NOT ignored. Added `.env.*`, `*.env`, `!.env.example`, `!*.env.example`. `git ls-files -ci --exclude-standard` is empty, so no tracked file is newly ignored.
+2. `.dockerignore`: `*.env` (for example `bridge/watcher.env`) and nested `node_modules` were not excluded. Added `**/*.env`, `!**/*.env.example`, `**/node_modules`.
+3. `README.md` "Use your TradingView account": it said Node is needed for everything. The logged-in scanner is done in Python (`screener_provider.session_cookies`) and needs only the cookies. Fixed. It also gave `cd bridge && npm ci` and `.env` steps without saying they only apply to a source checkout. A pip or uvx install has no `bridge/`, and the code says to set `TRADINGVIEW_BRIDGE_PATH`. Added that note, plus `env_file: .env` for Compose.
+4. `README.md` tool table intro and `CHANGELOG.md`: "each tool returns NOT_CONFIGURED without the bridge" was wrong for `tv_status`. It returns `configured: false` plus setup steps. The other five return the `NOT_CONFIGURED` error. Fixed in both.
+5. `README.md` lines 5 and 11 (alt text), the "Market Data" table row and the Yahoo bullet claimed "real-time". Rewritten without the claim, and the new section now says the plan and the exchange decide the delay, and that `data_freshness` is fetch time and not exchange delay.
+6. `SECURITY.md`: "bridge never reads cookies from requests, files or logs" was muddled (Python reads `.env`, then passes the two variables on). Reworded to match the code. Added a line that scanner calls with cookies run in Python, and added the impersonating-copies warning.
+7. `docs/tradingview-session.md`: the "restarting only the bridge keeps the old values" wording was confusing. Now just "restart the MCP server". Added: edit `.env` in an editor, not on the command line (shell history). Added the data-delay caveat, the scanner-needs-no-Node note, and the pip/uvx note.
+
+Checked and fine: `.github/workflows/test.yml` (valid, `test` job untouched, `bridge` job correct); `.env.example` (names and placeholders only, not ignored); `bridge/package-lock.json` (not ignored, resolves only to registry.npmjs.org, two packages: `@mathieuc/tradingview` 4.0.0 and `ws` 8.22.0); the README impersonation warning (kept, and now true: the only `package.json` in the repo is `bridge/package.json`, private); tool count 45 (39 + 6 `tv_*`), and the `tv_*` ranges (1 to 1000 bars, up to 50 quotes) match `server.py`.
+
+### Issue 5 (SECURITY.md dropping 0.9.x)
+Keep the file's existing policy ("Only the latest minor release receives security fixes"). The 0.10.x / `< 0.10` table follows it. No change.
+
+### Follow-ups (not done, out of my file list or unverifiable here)
+- Real `docker build` and `/health` on WSL. Also run it with and without `--env-file`.
+- `python:3.11-slim` is now a newer Debian than `node:22-bookworm-slim`. This is fine for glibc, and the `node --version` guard covers it. Pin both to the same suite if you want reproducible builds.
+- `docker-compose.yml` has no `env_file`. Docs now tell users to add it. Consider adding it (commented) to the file itself.
+- `README.md` lines 8 and 67 still say the hosted server has "all 37 tools". I cannot verify the hosted tool list.
+- `CHANGELOG.md` still has an `[Unreleased]` block above `[0.10.0]` that predates this work. Decide whether it belongs in 0.10.0 (Opus/Adham).
+- `docker-compose.yml`, `INSTALLATION.md` and `server.json`/`plugin.json` (already bumped to 0.10.0 in 2264f50) were not touched by me.
+- Bridge reviewer: at my first run, `node --test` on Node 20.18.0 had 2 failures (294/296): `state.test.mjs` "atomic write syncs the temp file before renaming" (extra trailing `fsync`) and `stream.test.mjs` "an auth error starts the auth cool-down". The bridge files were changing under me. On re-run they pass on Node 20.18.0 (322/322). Please re-check on Node 20 before pushing, since CI runs both 20 and 22.
+
+### Real check outputs
+- `uv run --frozen pytest tests/unit -q`: `777 passed in 11.43s`
+- YAML: `['test', 'bridge'] 5 {'node-version': ['20', '22']}`
+- `git check-ignore -v .env.example`: no output, rc=1 (not ignored)
+- `git check-ignore -v bridge/package-lock.json`: no output, rc=1 (not ignored)
+- `git check-ignore -v .env.local bridge/watcher.env`: ignored by `.gitignore:256 .env.*` and `.gitignore:257 *.env`
+- `bridge`: `node --test` on Node 22.22.0: `# pass 322 / # fail 0`. On Node 20.18.0 (installed in scratch): `# pass 322 / # fail 0`.

@@ -53,8 +53,9 @@ All notable changes to this project will be documented in this file.
 - **TradingView account tools (optional)**: `tv_status`, `tv_candles`,
   `tv_quotes`, `tv_indicator`, `tv_symbol_search` and `tv_hotlist`. They run
   through a read-only Node bridge in `bridge/` (Node 20+, one pinned npm
-  dependency, `@mathieuc/tradingview` 4.0.0). Without the bridge, each tool
-  returns a `NOT_CONFIGURED` error with setup steps.
+  dependency, `@mathieuc/tradingview` 4.0.0). Without the bridge, `tv_status`
+  reports `configured: false` with setup steps, and the other five tools return
+  a `NOT_CONFIGURED` error with the same steps.
 - **Session cookies**: `TRADINGVIEW_SESSION_ID` and `TRADINGVIEW_SESSION_SIGN`,
   from the environment or `.env`. Without them the bridge runs anonymously.
   `tv_status` reports whether they are present and never shows their values.
@@ -87,14 +88,15 @@ All notable changes to this project will be documented in this file.
 ### Infrastructure
 - **Docker image** includes the bridge and a Node 22 runtime. It starts with no
   credentials. Pass them at run time with `--env-file .env`.
-- **`.dockerignore`** excludes `.env` files, `bridge/node_modules/`, watcher
-  configs and state files at any depth, so none of them are baked into an
-  image.
+- **`.dockerignore`** excludes `.env` files, `*.env` files, `node_modules`,
+  watcher configs and state files at any depth, so none of them are baked into
+  an image.
 - **CI**: a `bridge` job runs the bridge tests and
   `npm audit --omit=dev --audit-level=high` on Node 20 and 22. The Python test
   job is unchanged and still runs without Node.
-- **`.gitignore`** ignores `bridge/node_modules/`, watcher configs, `*.state.json`
-  and `paper-journal*`.
+- **`.gitignore`** ignores `bridge/node_modules/`, watcher configs, `*.state.json`,
+  `paper-journal*` and every `.env.*` / `*.env` variant (`.env.example` stays
+  tracked).
 - **SECURITY.md** covers the bridge: its one pinned dependency, installs with
   `--ignore-scripts`, cookies from the environment only, redacted logs, an
   allowlisted child environment and read-only access.

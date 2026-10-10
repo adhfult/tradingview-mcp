@@ -36,7 +36,10 @@ COPY --from=builder /usr/local/bin/tradingview-mcp /usr/local/bin/tradingview-mc
 # Copy app source (needed for coinlist data files etc.)
 COPY --from=builder /app /app
 
-# Node runtime and the TradingView bridge. No credentials are baked in:
+# Node runtime and the TradingView bridge. These two COPY lines must stay AFTER
+# `COPY --from=builder /app /app` above: the bridge stage holds node_modules
+# (the builder's /app/bridge has none), and a later COPY merges over the earlier one.
+# No credentials are baked in:
 # pass TRADINGVIEW_SESSION_ID / TRADINGVIEW_SESSION_SIGN at run time (see docs/tradingview-session.md)
 COPY --from=bridge /usr/local/bin/node /usr/local/bin/node
 COPY --from=bridge /bridge /app/bridge

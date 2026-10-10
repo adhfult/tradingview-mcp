@@ -5,7 +5,7 @@ This page explains the optional TradingView session cookies. You do not need the
 With the cookies set, the server uses your TradingView account for:
 
 - the `tv_*` tools (`tv_status`, `tv_candles`, `tv_quotes`, `tv_indicator`, `tv_symbol_search`, `tv_hotlist`)
-- the screener and futures scanner requests (set `TRADINGVIEW_MCP_SCANNER_USE_SESSION=0` to stop this)
+- the screener and futures scanner requests (set `TRADINGVIEW_MCP_SCANNER_USE_SESSION=0` to stop this). These need only the cookies, not Node.
 - TradingView candles in backtests (`data_source="tradingview"` with `tv_symbol`)
 
 The `tradingview_ta` calls always stay anonymous. That library cannot send cookies.
@@ -29,7 +29,7 @@ Together they prove that a request comes from your logged-in browser. Treat them
 
 ## Where to put them
 
-Put them in a `.env` file in the repository root. The file is gitignored.
+Put them in a `.env` file in the repository root of a source checkout. The file is gitignored. Edit it in your editor. Do not paste the values into a terminal command, because the shell keeps a history.
 
 ```bash
 cp .env.example .env
@@ -44,9 +44,11 @@ You can also set them as environment variables. For Docker, pass the file at run
 docker run --env-file .env ...
 ```
 
+With Docker Compose, add `env_file: .env` to the service.
+
 To use a file in another place, set `TRADINGVIEW_ENV_FILE=/path/to/file`.
 
-The server reads the cookies once, when it starts. After you change `.env`, restart the MCP server. Restarting only the bridge keeps the old values.
+The server reads the cookies once, when it starts. **After you change `.env`, restart the MCP server.** The change does not take effect until you do.
 
 **Never paste the cookies into a chat, an issue, a commit, a screenshot or a log.** The server redacts them from its own logs and errors. That is a safety net, not a reason to share them.
 
@@ -59,7 +61,7 @@ The server reads the cookies once, when it starts. After you change `.env`, rest
 
 ## Check the data delay
 
-Open AAPL on https://www.tradingview.com while you are logged in. The chart's market data notice shows whether the data is real-time or delayed for your plan. Your plan decides this, not this server. Check the delay on the chart before you rely on a `tv_*` quote.
+Open AAPL on https://www.tradingview.com while you are logged in. The chart shows whether its data is real-time or delayed for your plan. Your plan and the exchange decide this, not this server. Many exchanges are delayed on free plans. Check the delay on the chart before you rely on a `tv_*` quote. The `data_freshness` field in results shows when the data was fetched, not whether the exchange data was delayed.
 
 ## Check the setup
 
@@ -75,12 +77,14 @@ Log out of all sessions in your TradingView account settings. That invalidates t
 
 ## Node.js
 
-The `tv_*` tools need Node.js 20 or newer on the host, and the bridge's dependencies installed once:
+The `tv_*` tools and TradingView backtest candles need Node.js 20 or newer on the host, and the bridge's dependencies installed once (from a source checkout):
 
 ```bash
 cd bridge
 npm ci --ignore-scripts
 ```
+
+If you installed with `pip` or `uvx`, `bridge/` is not included. Clone this repository and set `TRADINGVIEW_BRIDGE_PATH` to the full path of `bridge/server.mjs`.
 
 The Docker image already includes Node and the bridge. It does not include your cookies.
 

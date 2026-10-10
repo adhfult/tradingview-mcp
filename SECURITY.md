@@ -42,8 +42,10 @@ tools and TradingView candles in backtests. Its security properties:
   and by `bridge/.npmrc`. No install scripts run.
 - **`package.json` only under `bridge/`.** The repository root has no npm
   package. `bridge/package.json` is the only npm manifest in this project.
-- **Cookies come only from environment variables or `.env`.** The bridge never
-  reads them from requests, files or logs.
+- **Cookies come only from environment variables or `.env`.** The Python
+  server loads `.env` into its environment at start-up and passes the two
+  cookie variables to the bridge. The bridge reads them from its environment
+  only. No tool accepts cookies as an argument.
 - **Logs are redacted.** The bridge and the Python client scrub session cookies,
   secret variables, Telegram tokens, Discord webhook URLs and JWT-shaped tokens
   from every log line and error message, including output from the library.
@@ -53,5 +55,12 @@ tools and TradingView candles in backtests. Its security properties:
   secrets in the parent environment are not passed on.
 - **Read-only.** The bridge has no methods for orders, watchlists or account
   changes.
+- **Logged-in scanner calls** are made by the Python server itself, with the
+  same cookies. They do not use Node. They can be turned off with
+  `TRADINGVIEW_MCP_SCANNER_USE_SESSION=0`.
+- **Impersonating copies.** Other accounts have published copies of this
+  repository with a root `package.json` that installs malware. This repository
+  has no npm package at its root. Only install from the sources listed in the
+  README.
 
 Cookie handling, risks and revocation: [docs/tradingview-session.md](docs/tradingview-session.md).

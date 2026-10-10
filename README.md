@@ -2,13 +2,13 @@
 
 <a href="https://trendshift.io/repositories/25110" target="_blank"><img src="https://trendshift.io/api/badge/repositories/25110" alt="atilaahmettaner%2Ftradingview-mcp | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
 
-**TradingView MCP server** — real-time market data, technical indicators, screeners, and backtesting for Claude, ChatGPT, Cursor, Copilot, and any MCP client. Stocks, crypto, forex & futures across global exchanges.
+**TradingView MCP server** — market data, technical indicators, screeners, and backtesting for Claude, ChatGPT, Cursor, Copilot, and any MCP client. Stocks, crypto, forex & futures across global exchanges.
 Backtesting + live sentiment + Yahoo Finance + 45 tools, including technical analysis and optional TradingView account data — the most complete TradingView MCP toolkit, all in one server.
 
 **Don't want to install anything?** The [hosted server](https://pro.cryptosieve.com/?utm_source=github&utm_medium=readme&utm_content=top_cta) gives you all 37 tools as one connector URL for Claude, ChatGPT, Cursor and Copilot. From $9/mo with a 3-day free trial; self-hosting stays free.
 
 <p align="center">
-  <img src=".github/assets/tradingview-mcp-demo.gif" width="820" alt="TradingView MCP in an AI chat: ask for the top gainers on Binance and get ranked, real-time results — one of 45 tools" />
+  <img src=".github/assets/tradingview-mcp-demo.gif" width="820" alt="TradingView MCP in an AI chat: ask for the top gainers on Binance and get ranked results — one of 45 tools" />
 </p>
 
 **🆕 The [hosted server](https://pro.cryptosieve.com/?utm_source=github&utm_medium=readme&utm_content=charts) now draws.** Ask for a chart and an interactive candlestick view (1d / 1h / 15m, optional Bollinger overlay) renders live **inside the conversation** via MCP Apps — and the AI reads the band values back to you:
@@ -123,7 +123,7 @@ https://github-production-user-asset-6210df.s3.amazonaws.com/67838093/478689497-
 | **Cost** | Free & Open Source | Variable | $30k+/year |
 | **Backtesting** | ✅ 9 strategies + Walk-forward + Sharpe | ❌ Manual scripting | ✅ Proprietary |
 | **Live Sentiment** | ✅ Reddit + RSS news | ❌ Separate setup | ✅ Terminal |
-| **Market Data** | ✅ Live / Real-Time | Historical / Delayed | Live |
+| **Market Data** | ✅ Live. Delay depends on the exchange and your plan | Historical / Delayed | Live |
 | **API Keys** | **None required** | Multiple (OpenAI, etc.) | N/A |
 
 ---
@@ -173,12 +173,14 @@ other tools work normally.
 Without this, the server uses public data only. With your own TradingView session cookies, it also adds:
 
 - the `tv_*` tools: `tv_status`, `tv_candles`, `tv_quotes`, `tv_indicator`, `tv_symbol_search`, `tv_hotlist`
-- logged-in data for the screener and futures scanners
+- logged-in data for the screener and futures scanners (the cookies alone are enough for this, no Node needed)
 - TradingView candles in backtests: `backtest_strategy`, `compare_strategies` and `walk_forward_backtest_strategy` accept `data_source="tradingview"` with `tv_symbol="BINANCE:BTCUSDT"`
 
-**Setup**
+Your TradingView plan decides how fresh the data is. Many exchanges are delayed on free plans. Check the delay on a TradingView chart (see [docs/tradingview-session.md](docs/tradingview-session.md)). Each result's `data_freshness` says where the data came from and when it was fetched. It does not say whether the exchange data was delayed.
 
-1. Install Node.js 20 or newer. Node 22 is used in development.
+**Setup** (from a source checkout of this repository)
+
+1. Install Node.js 20 or newer. Node 22 is used in development. The `tv_*` tools and TradingView backtest candles need it.
 2. Install the bridge's dependencies once:
    ```bash
    cd bridge && npm ci --ignore-scripts
@@ -186,7 +188,11 @@ Without this, the server uses public data only. With your own TradingView sessio
 3. Copy `.env.example` to `.env`. Fill in `TRADINGVIEW_SESSION_ID` and `TRADINGVIEW_SESSION_SIGN`.
 4. Restart the MCP server, then call `tv_status`. It reports whether the bridge is set up and whether cookies are present. It does not check that they are valid.
 
-The bridge is read-only. It places no orders and changes nothing on your account. The Docker image includes the bridge but no cookies. Pass them at run time with `docker run --env-file .env ...`.
+The server reads `.env` once, when it starts. **Restart the MCP server after you edit `.env`.**
+
+Installed with `pip` or `uvx`? Those installs do not include `bridge/`. Clone this repository, install the bridge there, and set `TRADINGVIEW_BRIDGE_PATH` to the full path of `bridge/server.mjs`. Set the cookies as environment variables, or point `TRADINGVIEW_ENV_FILE` at your env file.
+
+The bridge is read-only. It places no orders and changes nothing on your account. The Docker image includes Node and the bridge but no cookies. Pass them at run time with `docker run --env-file .env ...` (or `env_file: .env` in Docker Compose).
 
 Risks, how to copy the cookies and how to revoke them: [docs/tradingview-session.md](docs/tradingview-session.md). Bridge details: [bridge/README.md](bridge/README.md).
 
@@ -422,7 +428,7 @@ Unlike basic screeners, this framework deploys **specialized AI agents** that de
 
 ### 📡 TradingView Account Tools (optional)
 
-These need the Node bridge and, for logged-in data, your cookies. See [Use your TradingView account](#use-your-tradingview-account-optional). Without the bridge, each one returns a `NOT_CONFIGURED` error with setup steps. Everything else works as before.
+These need the Node bridge and, for logged-in data, your cookies. See [Use your TradingView account](#use-your-tradingview-account-optional). Without the bridge, `tv_status` reports `configured: false` with setup steps, and the other five return a `NOT_CONFIGURED` error with the same steps. Everything else works as before.
 
 | Tool | Description |
 |------|-------------|
@@ -577,7 +583,7 @@ Every sponsor directly funds new features like Walk-Forward Backtesting, Twitter
 - [x] Multi-exchange screener (Binance, KuCoin, MEXC, EGX, US, European, Canadian, Indian and Indonesian stocks)
 - [x] Reddit sentiment analysis
 - [x] Live financial news (Yahoo / MarketWatch / CNBC / CoinDesk / CoinTelegraph)
-- [x] Yahoo Finance real-time prices
+- [x] Yahoo Finance prices (exchange delay applies)
 - [x] Backtesting engine (9 strategies + Sharpe / Calmar / Expectancy)
 - [x] Walk-forward backtesting (overfitting detection)
 - [x] Resilience layer (retry + TTL cache) on screener provider
