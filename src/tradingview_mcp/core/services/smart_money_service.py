@@ -20,6 +20,7 @@ fetcher. EGX symbols map to Yahoo's ``.CA`` suffix (COMI -> COMI.CA).
 """
 from __future__ import annotations
 
+import contextvars
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -397,7 +398,11 @@ def scan_egx_smart_money(
         }
 
     with ThreadPoolExecutor(max_workers=8) as pool:
-        futures = [pool.submit(one, s) for s in symbols]
+        # ThreadPoolExecutor does not copy the context (unlike asyncio.to_thread),
+        # so run each task in its own copy to keep data-freshness records
+        # flowing into this tool call's collector. One copy per task: a Context
+        # can only be entered by one thread at a time.
+        futures = [pool.submit(contextvars.copy_context().run, one, s) for s in symbols]
         for f in as_completed(futures):
             row = f.result()
             if row is not None and row["composite_score"] >= min_score:

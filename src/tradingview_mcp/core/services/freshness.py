@@ -14,6 +14,7 @@ not market time.
 from __future__ import annotations
 
 import contextvars
+import copy
 import threading
 import time
 from datetime import datetime, timezone
@@ -101,19 +102,34 @@ def summarize(records: list[dict], now: Optional[float] = None) -> Optional[dict
 
 
 def attach(result: Any, records: list[dict], now: Optional[float] = None) -> Any:
-    """Add ``data_freshness`` to a tool result. Mutates and returns ``result``.
+    """Return ``result`` with ``data_freshness`` added (never mutating the input).
 
     Dict results always get the key (unless they already have one). List
     results get it per dict row only when the data is stale, so fresh list
     results are returned exactly as they are today.
+
+    Tools may hand back an object that is also held in a module-level cache;
+    writing the key into it would leak this call's freshness (possibly
+    ``stale: true``) into every later response. So the key goes on a shallow
+    copy (dict) or a new list of shallow-copied rows (list), and the caller's
+    object is left untouched. When nothing is added, ``result`` itself is
+    returned.
     """
     summary = summarize(records, now=now)
     if summary is None:
         return result
     if isinstance(result, dict):
-        result.setdefault("data_freshness", summary)
-    elif isinstance(result, list) and summary["stale"]:
+        if "data_freshness" in result:
+            return result
+        out = copy.copy(result)
+        out["data_freshness"] = summary
+        return out
+    if isinstance(result, list) and summary["stale"]:
+        rows: list = []
         for row in result:
-            if isinstance(row, dict):
-                row.setdefault("data_freshness", summary)
+            if isinstance(row, dict) and "data_freshness" not in row:
+                row = copy.copy(row)
+                row["data_freshness"] = dict(summary)
+            rows.append(row)
+        return rows
     return result

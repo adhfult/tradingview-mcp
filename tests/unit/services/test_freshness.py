@@ -264,8 +264,8 @@ def test_scan_with_retry_stale_fallback_records_stale(ta_env, monkeypatch):
 def test_attach_adds_key_to_dict_result():
     result = {"symbol": "X"}
     out = freshness.attach(result, [_rec()], now=NOW)
-    assert out is result
-    assert result["data_freshness"]["sources"] == ["tradingview_scanner"]
+    assert out["symbol"] == "X"
+    assert out["data_freshness"]["sources"] == ["tradingview_scanner"]
 
 
 def test_attach_leaves_dict_without_records_alone():
@@ -293,8 +293,8 @@ def test_attach_stale_list_adds_key_per_row():
 
 def test_attach_never_overwrites_existing_key():
     result = {"data_freshness": "mine"}
-    freshness.attach(result, [_rec()], now=NOW)
-    assert result["data_freshness"] == "mine"
+    out = freshness.attach(result, [_rec()], now=NOW)
+    assert out["data_freshness"] == "mine"
 
 
 def test_server_wrapper_installed_on_every_tool():
@@ -347,3 +347,220 @@ def test_server_stale_list_tool_gets_rows_marked(monkeypatch):
     assert len(out) == 1
     assert out[0]["data_freshness"]["stale"] is True
     assert out[0]["data_freshness"]["age_seconds"] >= 90
+
+
+# ── 6. Review additions (Sonnet): isolation, non-mutation, record-once ──────
+
+def test_attach_does_not_mutate_dict_result():
+    cached = {"symbol": "X", "nested": {"a": 1}}
+    out = freshness.attach(cached, [_rec(stale=True, cache_hit=True)], now=NOW)
+    assert "data_freshness" not in cached
+    assert out is not cached
+    assert out["data_freshness"]["stale"] is True
+    assert out["nested"] is cached["nested"]  # shallow copy only
+
+
+def test_attach_does_not_mutate_stale_list_rows():
+    rows = [{"symbol": "A"}, {"symbol": "B"}]
+    out = freshness.attach(rows, [_rec(stale=True, cache_hit=True)], now=NOW)
+    assert all("data_freshness" not in r for r in rows)
+    assert all("data_freshness" in r for r in out)
+    assert out[0]["data_freshness"] is not out[1]["data_freshness"]
+
+
+def test_stale_freshness_does_not_leak_into_later_response_via_cached_dict(monkeypatch):
+    """A tool that returns the same (cached) dict object on every call must not
+    carry call 1's stale marker into call 2."""
+    from tradingview_mcp import server
+
+    shared = {"symbol": "X"}
+    state = {"stale": True}
+
+    async def fake_quote(symbol):
+        if state["stale"]:
+            freshness.record("tradingview_scanner", time.time() - 100, cache_hit=True, stale=True)
+        else:
+            freshness.record("tradingview_scanner", time.time())
+        return shared
+
+    monkeypatch.setattr(server, "get_price_async", fake_quote)
+    tool = next(t for t in server.mcp._tool_manager.list_tools() if t.name == "yahoo_price")
+    first = asyncio.run(tool.fn(symbol="X"))
+    assert first["data_freshness"]["stale"] is True
+    state["stale"] = False
+    second = asyncio.run(tool.fn(symbol="X"))
+    assert second["data_freshness"]["stale"] is False
+    assert "data_freshness" not in shared
+
+
+def test_concurrent_tool_calls_get_only_their_own_records(monkeypatch):
+    """Two overlapping tool invocations (one fanning out via to_thread and
+    gather) must each see only the records produced on their own behalf."""
+    from tradingview_mcp import server
+
+    async def fake_quote(symbol):
+        async def sub(tag):
+            await asyncio.sleep(0.01)
+            await asyncio.to_thread(freshness.record, f"{symbol}-{tag}", time.time())
+
+        await asyncio.gather(sub("a"), sub("b"))
+        freshness.record(f"{symbol}-direct", time.time())
+        return {"symbol": symbol}
+
+    monkeypatch.setattr(server, "get_price_async", fake_quote)
+    tool = next(t for t in server.mcp._tool_manager.list_tools() if t.name == "yahoo_price")
+
+    async def main():
+        return await asyncio.gather(*(tool.fn(symbol=f"S{i}") for i in range(5)))
+
+    outs = asyncio.run(main())
+    for i, out in enumerate(outs):
+        assert out["data_freshness"]["sources"] == sorted([f"S{i}-a", f"S{i}-b", f"S{i}-direct"])
+    assert freshness._COLLECTOR.get() is None
+
+
+def test_collector_cleared_after_tool_raises(monkeypatch):
+    from tradingview_mcp import server
+
+    async def boom(symbol):
+        freshness.record("yahoo", time.time())
+        raise RuntimeError("x")
+
+    monkeypatch.setattr(server, "get_price_async", boom)
+    tool = next(t for t in server.mcp._tool_manager.list_tools() if t.name == "yahoo_price")
+    with pytest.raises(Exception):
+        asyncio.run(tool.fn(symbol="X"))
+    assert freshness._COLLECTOR.get() is None
+
+
+def test_wrapper_preserves_signature_for_validation():
+    import inspect
+    from tradingview_mcp import server
+
+    tool = next(t for t in server.mcp._tool_manager.list_tools() if t.name == "top_losers")
+    assert hasattr(tool.fn, "__wrapped__")
+    assert "exchange" in inspect.signature(tool.fn).parameters
+    assert inspect.iscoroutinefunction(tool.fn) and tool.is_async
+
+
+def test_ta_non_transient_error_records_nothing(ta_env, monkeypatch):
+    def bad(screener, interval, symbols, **kw):
+        raise ValueError("invalid symbol")
+
+    _fake_ta(monkeypatch, bad)
+    records, token = freshness.start_collection()
+    try:
+        with pytest.raises(ValueError):
+            sp.resilient_get_multiple_analysis("egypt", "1D", ["EGX:ASCM"])
+    finally:
+        freshness.stop_collection(token)
+    assert records == []
+
+
+def test_ta_exhausted_retries_without_stale_records_nothing(ta_env, monkeypatch):
+    def always_empty(screener, interval, symbols, **kw):
+        raise _empty_body_error()
+
+    _fake_ta(monkeypatch, always_empty)
+    records, token = freshness.start_collection()
+    try:
+        with pytest.raises(RuntimeError):
+            sp.resilient_get_multiple_analysis("egypt", "1D", ["EGX:ASCM"])
+    finally:
+        freshness.stop_collection(token)
+    assert records == []
+
+
+def test_ta_retry_then_success_records_exactly_once(ta_env, monkeypatch):
+    calls = {"n": 0}
+
+    def flaky(screener, interval, symbols, **kw):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise _empty_body_error()
+        return {"EGX:ASCM": "ok"}
+
+    _fake_ta(monkeypatch, flaky)
+    _, recs = _collect(sp.resilient_get_multiple_analysis, "egypt", "1D", ["EGX:ASCM"])
+    assert calls["n"] == 3
+    assert len(recs) == 1 and recs[0]["stale"] is False
+
+
+def test_scan_with_retry_non_transient_error_records_nothing(ta_env):
+    class FakeQuery:
+        def get_scanner_data(self, cookies=None):
+            raise ValueError("bad column")
+
+    records, token = freshness.start_collection()
+    try:
+        with pytest.raises(ValueError):
+            sp._scan_with_retry(FakeQuery())
+    finally:
+        freshness.stop_collection(token)
+    assert records == []
+
+
+def test_scan_with_retry_retry_then_success_records_once(ta_env):
+    state = {"n": 0}
+
+    class FakeQuery:
+        def get_scanner_data(self, cookies=None):
+            state["n"] += 1
+            if state["n"] < 2:
+                raise _empty_body_error()
+            return (1, "df")
+
+    _, recs = _collect(lambda: sp._scan_with_retry(FakeQuery()))
+    assert len(recs) == 1 and recs[0]["stale"] is False
+
+
+def test_ta_stale_fallback_age_is_entry_age(ta_env, monkeypatch):
+    monkeypatch.setenv("TRADINGVIEW_MCP_CACHE_TTL", "0")
+    key = ("ta_multi_v1", "egypt", "1D", ("EGX:ASCM",))
+    sp._cache_set(key, {"EGX:ASCM": "old"})
+    with sp._SCREENER_CACHE_LOCK:
+        ts, payload = sp._SCREENER_CACHE[key]
+        sp._SCREENER_CACHE[key] = (ts - 200.0, payload)
+
+    def always_empty(screener, interval, symbols, **kw):
+        raise _empty_body_error()
+
+    _fake_ta(monkeypatch, always_empty)
+    out, recs = _collect(sp.resilient_get_multiple_analysis, "egypt", "1D", ["EGX:ASCM"])
+    assert out == {"EGX:ASCM": "old"}
+    assert len(recs) == 1 and recs[0]["stale"] is True
+    summary = freshness.summarize(recs)
+    assert 199 <= summary["age_seconds"] <= 205
+    assert f"{summary['age_seconds']}s old" in summary["note"]
+
+
+def test_fresh_cache_hit_records_entry_timestamp(ta_env, monkeypatch):
+    key = ("ta_multi_v1", "egypt", "1D", ("EGX:ASCM",))
+    sp._cache_set(key, {"EGX:ASCM": "cached"})
+    with sp._SCREENER_CACHE_LOCK:
+        ts, payload = sp._SCREENER_CACHE[key]
+        sp._SCREENER_CACHE[key] = (ts - 10.0, payload)
+    _fake_ta(monkeypatch, lambda *a, **k: pytest.fail("must not hit upstream"))
+    _, recs = _collect(sp.resilient_get_multiple_analysis, "egypt", "1D", ["EGX:ASCM"])
+    assert len(recs) == 1 and recs[0]["cache_hit"] is True
+    assert 9 <= time.time() - recs[0]["fetched_at"] <= 15
+
+
+def test_smart_money_thread_pool_propagates_collector(monkeypatch):
+    """scan_egx_smart_money uses ThreadPoolExecutor, which does not copy the
+    context by itself; Yahoo records from its workers must still be collected."""
+    from tradingview_mcp.core.services import smart_money_service as sm
+
+    monkeypatch.setattr(
+        sm, "analyze_smart_money",
+        lambda sym, exch, period, interval: (
+            freshness.record("yahoo", time.time()) or {"error": {"message": "skip"}}
+        ),
+    )
+    records, token = freshness.start_collection()
+    try:
+        sm.scan_egx_smart_money("EGX30", limit=3)
+    finally:
+        freshness.stop_collection(token)
+    assert len(records) >= 2
+    assert {r["source"] for r in records} == {"yahoo"}

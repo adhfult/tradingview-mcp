@@ -423,9 +423,12 @@ def resilient_get_multiple_analysis(screener, interval, symbols):
 
     sym_key = tuple(sorted(symbols)) if symbols else ()
     cache_key = ('ta_multi_v1', screener, interval, sym_key)
-    cached = _cache_get(cache_key)
+    # RLock: hold it across both reads so a concurrent eviction/refresh can't
+    # make the recorded timestamp disagree with the payload we return.
+    with _SCREENER_CACHE_LOCK:
+        cached = _cache_get(cache_key)
+        entry_ts = _cache_entry_ts(cache_key) if cached is not None else None
     if cached is not None:
-        entry_ts = _cache_entry_ts(cache_key)
         freshness.record(
             "tradingview_scanner",
             entry_ts if entry_ts is not None else _time.time(),

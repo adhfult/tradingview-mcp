@@ -144,3 +144,58 @@ async def _with_freshness(*args, __fn=_fn, **kwargs):
 407 passed in 6.60s
 ```
 Baseline before changes was 382 passed. 382 + 25 new = 407. `git diff --stat` touches only the brief's files plus the two new files.
+
+## Review report (Sonnet)
+
+### Verified correct (no change needed)
+- Collector: a tool call's list is bound in the tool's own task context. `asyncio.to_thread` and `asyncio.gather` copy that context, so worker records land in that call's list. Overlapping tool calls each hold their own list. A new test runs 5 concurrent wrapped calls, each fanning out through `gather` and `to_thread`, and each sees only its own sources. Module-level helper calls (for example inside `combined_analysis`) do not re-enter the wrapper, so nothing nests. The collector is reset to `None` after both success and raise.
+- Every success path in `_scan_with_retry` and `resilient_get_multiple_analysis` records exactly once: fresh fetch, retry-then-success, fresh cache hit, stale fallback. Raised errors (non-transient, or retries exhausted with no stale entry) record nothing. The stale record's `fetched_at` is `now - age`, so `age_seconds` matches the entry age (tested).
+- Wrapper: uses `functools.wraps`, so `__wrapped__` and the signature are preserved. FastMCP validates against `fn_metadata`, which was built earlier, so validation is unaffected. All tools stay async and `is_async` is True. The wrapper is applied after `_offload_sync_tools`. A fresh list result is returned unchanged.
+- `summarize`: ISO `...Z` string from the oldest `fetched_at`, int `age_seconds` of at least 0, sorted sources, auth aggregation of session, anonymous or mixed, and `note` only when stale. All as briefed.
+- No existing output changes other than the added `data_freshness` key.
+
+### Defects found and fixed
+1. **Shared-object mutation** (`freshness.py`, `attach`, was lines ~104-122). `attach` used `setdefault` on the object the tool returned. If a tool returns a dict that is also held in a cache, a stale marker from one call would stay in it and appear in later fresh responses. Fix: `attach` now returns a shallow copy of a dict result, or a new list of shallow-copied rows with a per-row copy of the summary. The caller's object is never mutated. If nothing is added, `result` is returned as is. I did not find a tool that returns a screener-cache object directly. The screener cache holds TA objects and `(total, df)` tuples, which tools reshape. This is a defensive fix, but the failure it prevents is silent and a stale marker would be wrong data.
+2. **Records lost in a thread pool** (`smart_money_service.py:405`, `scan_egx_smart_money`). `ThreadPoolExecutor.submit` does not copy the context, unlike `asyncio.to_thread`. Yahoo fetches in its 8 workers recorded nothing, so `scan_egx_smart_money` never got `data_freshness`. Fix: submit via `contextvars.copy_context().run`, one copy per task, and add `import contextvars`. I checked that the new test fails without the fix. This is the only thread-pool use in `src`.
+3. **Cache-hit timestamp race** (`screener_provider.py:428`). `_cache_get` and `_cache_entry_ts` were two separate lock acquisitions. A concurrent eviction between them made the cache-hit record use `time.time()`, which reports age 0 for old data. Fix: hold `_SCREENER_CACHE_LOCK` (an RLock) across both reads. Behaviour is otherwise unchanged.
+
+### Files touched beyond Haiku's list
+- `smart_money_service.py`, for fix 2 only. This is a justified out-of-brief edit.
+
+### Tests added (14, all hermetic, in `tests/unit/services/test_freshness.py`)
+- `attach` does not mutate a dict result.
+- `attach` does not mutate stale list rows.
+- A stale marker does not leak through a shared returned dict across two wrapped calls.
+- Concurrent wrapped calls with gather and to_thread fan-out each get only their own records.
+- The collector is cleared after a tool raises.
+- The wrapper preserves `__wrapped__`, the signature and async.
+- A non-transient TA error records nothing.
+- TA retries exhausted with no stale entry records nothing.
+- TA retry-then-success records once.
+- `_scan_with_retry` non-transient error records nothing.
+- `_scan_with_retry` retry-then-success records once.
+- TA stale fallback age and note match the entry age.
+- A fresh cache hit records the entry timestamp.
+- The smart-money thread pool propagates the collector.
+- Two existing `attach` tests were adjusted, because they asserted the old in-place mutation (`out is result`).
+
+### Follow-ups, not done
+- `_COLLECTOR` has no per-call size cap. A tool that makes thousands of fetches grows the list. It is bounded per call, so this is low risk.
+- Any future code that uses raw threads or `ThreadPoolExecutor` must copy the context the same way as fix 2. Consider a small `freshness.submit_in_context` helper if more sites appear.
+- `data_freshness.auth` is hard-coded to `"anonymous"` in `resilient_get_multiple_analysis`. Phase 3 should change this alongside cookie support.
+- Error-envelope dicts also get `data_freshness` when a fetch happened before the failure. I think that is fine and arguably useful.
+
+### Test runs (real last lines)
+`uv run pytest tests/unit -q`:
+```
+........................................................................ [ 85%]
+.............................................................            [100%]
+421 passed in 6.62s
+```
+`PATH=/usr/bin:/bin /root/.local/bin/uv run pytest tests/unit -q` (Node hidden):
+```
+........................................................................ [ 85%]
+.............................................................            [100%]
+421 passed in 6.59s
+```
+Not committed or pushed.
