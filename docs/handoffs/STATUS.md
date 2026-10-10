@@ -15,8 +15,8 @@
 | Phase | Status | Commits | Unit tests | Notes |
 |---|---|---|---|---|
 | 0: data freshness | **done** | 82ef2f8, ae1b011, (advisor fixes) | 422 pass (with and without Node) | Fable: no must-fix |
-| 1: Node bridge | in progress (Haiku implementing) | – | – | – |
-| 2: Python bridge client | not started | – | – | – |
+| 1: Node bridge | review done, Fable advising | db46a6f, 073a9ff | bridge 65/65 | Sonnet fixed stdout leaks, dead-client reuse, hung calls, validation |
+| 2: Python bridge client | implemented, Sonnet reviewing | 0e3430e | 483 pass (with and without Node) | – |
 | 3: tv_* tools + wiring | not started | – | – | – |
 | 4: packaging/Docker/CI/docs | not started | – | – | – |
 | 5: watcher | not started | – | – | – |
@@ -27,7 +27,10 @@
 | 7c: PyneCore | not started | – | – | – |
 
 ## Current step
-Phase 1, step 2: Haiku implements `docs/handoffs/phase-1.md` (brief committed). Phase 2 brief is already written (`docs/handoffs/phase-2.md`).
+- Phase 1: waiting for Fable's advice, then apply must/should-fix.
+- Phase 2: Sonnet review in progress, then Fable.
+- Next: Phase 3 (Haiku), brief at `docs/handoffs/phase-3.md`.
+- Briefs already written: phases 3, 4, 5, 6a.
 
 ## Approved dependencies
 - `@mathieuc/tradingview` 4.0.0 (ISC)
@@ -49,6 +52,7 @@ Phase 1, step 2: Haiku implements `docs/handoffs/phase-1.md` (brief committed). 
 - Phase 5: the watcher opens one freshness collection per tick, never one for the whole loop.
 
 ## Checks only Adham can run (not possible in the cloud session)
+- The Docker daemon is not reachable in the cloud session, so Docker build checks are deferred to WSL.
 - Live `tv_*` calls with TradingView cookies in `.env`.
 - Discord / Telegram delivery (`node bridge/watcher.mjs --test-notify`).
 - Raspberry Pi deployment and the systemd restart test.
