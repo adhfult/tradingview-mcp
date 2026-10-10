@@ -150,3 +150,40 @@ Add `data_source: str = "yahoo"` and `tv_symbol: Optional[str] = None` to `run_b
 
    Anything else gets an error listing the allowed periods. If the first candle is more than 10% of the span later than `from`, the result gets `truncated: true` and a note.
 3. `AUTH_FAILED` wording: "Update TRADINGVIEW_SESSION_ID / TRADINGVIEW_SESSION_SIGN in .env, then restart the MCP server." (A bridge restart alone keeps the old cookies.)
+
+## Implementation report (Haiku)
+
+### Files changed
+- **New:** `src/tradingview_mcp/core/services/tv_data_service.py` (tv_status, get_candles, get_quotes, get_indicator, search_symbols, get_hotlist; shared helpers `is_tv_symbol`, `bridge_error_message`, `AUTH_RESTART_HINT`, `tv_periods_per_year`).
+- **Modified:** `core/services/freshness.py` (auth rolled up over `tradingview*` sources only; new `auth_by_source`), `core/services/screener_provider.py` (`session_cookies()`, `scanner_get_data()`, auth-aware `_scan_with_retry` and cache key, TA sources renamed to `tradingview_ta`), `core/services/futures_service.py` and `core/services/stock_screener_service.py` (6 direct scanner calls go through `scanner_get_data`), `core/services/backtest_service.py` (`data_source` / `tv_symbol` on run_backtest, compare_strategies, walk_forward_backtest; `_fetch_ohlcv_tv`, period×interval combo rules, `maxCount`/`timeoutMs`, truncation flag, TV annualization), `server.py` (6 `tv_*` tools, backtest tool params, instructions, yahoo_price/stock_prices docstrings).
+- **New tests:** `tests/unit/services/conftest.py` (StubClient + `tv_stub` fixture), `test_tv_data_service.py`, `test_backtest_tv_source.py`, `test_scanner_session.py`.
+- **Updated Phase 0 / Phase 2-era tests:** `test_freshness.py` (exact-dict test gets `auth_by_source`; TA source expectation `tradingview_ta`; stale-fallback key now stored under `key + (("auth","anonymous"),)`; ta_env fixture clears session env), `test_screener_provider_resilience.py` (same cache-key change; fast_retry fixture clears session env).
+- **Not touched:** `bridge/`, `tv_bridge_client.py`, `env_file.py`.
+
+### Quote field names (from `bridge/node_modules/@mathieuc/tradingview/dist/quote/fields.d.ts`)
+All ten names in the brief exist in the `QuoteField` union: `lp`, `ch`, `chp`, `volume`, `bid`, `ask`, `current_session`, `update_mode`, `description`, `currency_code`. Note: `current_session` and `update_mode` appear only in the union, not in the typed `QuoteData` interface (they pass through its index signature). `getQuotes` returns `Record<symbol, QuoteData>`; the bridge passes that through unchanged, so `get_quotes` unwraps it by symbol.
+
+### Mismatches and decisions
+1. **Brief line 140** still reads "or the bridge restarts on its next crash". That is superseded by correction 3, and the code uses the correction 3 text: "Update TRADINGVIEW_SESSION_ID / TRADINGVIEW_SESSION_SIGN in .env, then restart the MCP server."
+2. **`timeout_s=60` alone is not enough.** The bridge's default `timeoutMs` is 15 s, so `_fetch_tv_candles` also sends `timeoutMs: 60000` and `maxCount: 20000` (corrections 1 and 2). `from` is sent with no `count`, as the bridge requires.
+3. **Combo rules** (correction 2): 15m up to 6mo, 1h up to 2y, 4h and 1d up to 5y. Other combinations are rejected before any call, with the allowed periods listed. `truncated: true` and a `note` are added only when the first candle is more than 10% of the span after `from`.
+4. **Annualization gap, not fixed:** `get_market_type` defaults unknown prefixes to `crypto`, so `TVC:*` (CFD) and `OANDA:*` (forex) get the crypto factor. I followed the brief's rule; flagging it for review.
+5. **Output shapes the brief left open:**
+   - `get_candles.change_pct_over_range` is the first bar's open to the last bar's close.
+   - `get_quotes` also returns `missing` (requested symbols with no data).
+   - `tv_status.setup` is `null` when configured.
+   - `tv_status` records no freshness, since it returns no market data.
+   - `tv_symbol_search` returns `{query, count, results}`.
+   - `tv_hotlist` and `tv_indicator` return the bridge result plus `kind`/`market` and `symbol`/`timeframe`/`indicator`.
+6. **Technical `null` advisory:** not applicable, because no `technical` tool is in this phase.
+7. **Library cap:** a `from` fetch returns the most recent 20,000 bars, so intraday history can be truncated at the old end. The combo rules and truncation flag address this.
+8. **Phase 0 test changes** are the four listed under "Updated". Each keeps its original intent.
+9. **Futures and stock tool outputs** now carry `data_freshness` (source `tradingview_scanner`). This is the only change to existing tool output, as the brief allows.
+10. **Repo state:** HEAD moved to `07ef6fe` ("WIP snapshot: phases 3 and 5 implementation..."), committed by another agent. It contains my in-progress edits. I did not commit, push, stash, or reset. `backtest_service.py` and `STATUS.md` were also changed on disk by someone else during my work; I kept the disk version, and the suite passes.
+11. **Lint:** no linter is installed. An AST check of touched files found only a pre-existing unused `get_market_type` import in `screener_provider.py`, which I left alone.
+12. **Not run:** live `tv_*` calls (per STATUS, Adham-only). All tests are hermetic: stub client, the existing fake bridge process, or patched Query objects.
+
+### Verification
+- `cd bridge && npm test`: `# tests 207 / # pass 207 / # fail 0`
+- `uv run pytest tests/unit -q`: last line `658 passed in 11.15s`
+- `PATH=/usr/bin:/bin /root/.local/bin/uv run pytest tests/unit -q`: last line `658 passed in 11.07s`

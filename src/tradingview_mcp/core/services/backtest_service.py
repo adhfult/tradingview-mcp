@@ -1117,13 +1117,13 @@ def walk_forward_backtest(
     else:
         verdict = "OVERFITTED — strategy fails out-of-sample, do not trade live"
 
-    return {
+    out = {
         "symbol":                  symbol.upper(),
         "strategy":                strategy,
         "strategy_label":          _STRATEGY_LABELS[strategy],
         "period":                  period,
         "interval":                interval,
-        "timeframe":               "Hourly (1h)" if interval == "1h" else "Daily (1d)",
+        "timeframe":               _TIMEFRAME_LABELS[interval],
         "total_candles":           len(candles),
         "n_splits":                n_splits,
         "train_ratio":             train_ratio,
@@ -1149,7 +1149,13 @@ def walk_forward_backtest(
         "initial_capital":         round(initial_capital, 2),
         "commission_pct":          commission_pct,
         "slippage_pct":            slippage_pct,
-        "data_source":             "Yahoo Finance",
+        "data_source":             source_meta.get("data_source", "Yahoo Finance"),
         "disclaimer":              "Past performance does not guarantee future results. For educational use only.",
         "timestamp":               datetime.now(timezone.utc).isoformat(),
     }
+    if data_source == "tradingview":
+        out["tv_symbol"] = tv_symbol
+        if source_meta["truncated"]:
+            out["truncated"] = True
+            out["note"] = _truncation_note(period, source_meta)
+    return out
