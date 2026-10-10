@@ -133,3 +133,9 @@ Add `data_source: str = "yahoo"` and `tv_symbol: Optional[str] = None` to `run_b
 - the real quote field names you found
 - mismatches
 - the real last lines of both pytest runs
+
+### Additions from the Phase 1 advisor (Fable), required
+- **`technical`:** the bridge returns `null` on HTTP 429/403 as well as when there's no rating. If you add a tool for it, treat `null` as "unknown, possibly rate-limited", never as "no rating", and never cache it.
+- **`tv_status`** reports `bridge_ok` from `health`, but `health` says ok even with bad cookies. Don't claim the cookies are valid. Phrase it as "credentials present: yes/no", and add a note that `AUTH_FAILED` on a real call means the cookies need refreshing.
+- **Credentials are read once** when the bridge process starts. If `tv_status` or a call returns `AUTH_FAILED`, the message must say: "after updating .env, restart the MCP server (or the bridge restarts on its next crash)". Phase 3 doesn't need a hot reload.
+- **Auth cool-down:** the bridge blocks new connections for 60s after `AUTH_ERROR` (added after the Phase 1 advisor review). Don't retry `AUTH_FAILED` automatically anywhere.

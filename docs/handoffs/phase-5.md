@@ -283,3 +283,8 @@ It needs neither the MCP server nor Claude. **It never places trades.**
 - any type mismatches
 - the real last lines of `npm test`
 - the `--check-config` output
+
+### Additions from the Phase 1 advisor (Fable), required
+- **Re-use `bridge/lib/client.mjs`** (the shared-client lifecycle extracted from `server.mjs`: closed-client replacement, connection-error drop, 60s auth cool-down) for the watcher's single shared `TradingViewClient`. Don't write a second lifecycle.
+- **One client with N streams:** an inactivity close or disconnect kills all streams together. Add **random jitter (0–30%)** to the restart backoff in `stream.mjs`, so N streams don't reconnect at the same instant.
+- **Unknown:** whether TradingView drops one of two authenticated websockets that use the same cookie (Pi watcher plus desktop MCP at once). Log every disconnect with its time, and keep a counter in `/health` so Adham can spot it. Record it in the report as an open question for live testing.
