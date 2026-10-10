@@ -34,6 +34,8 @@ export function discordPayload(message) {
   const description = truncate(message.lines.join('\n'), DISCORD_DESCRIPTION_LIMIT);
   return {
     content: truncate(message.title, DISCORD_CONTENT_LIMIT),
+    // Text from the local API or from TradingView must never be able to ping @everyone or a role.
+    allowed_mentions: { parse: [] },
     embeds: [{
       title,
       ...(description === '' ? {} : { description }),
@@ -60,9 +62,16 @@ export function telegramPayload(message, chatId) {
   };
 }
 
-async function postJson({ label, url, body, fetch, redact, timeoutMs, pickRetryAfter }) {
-  // Scrub the URL out of anything the transport reports. Node's fetch errors may echo it.
-  const scrub = (text) => redact(String(text).split(url).join('[url]'));
+async function postJson({ label, url, body, fetch, redact, timeoutMs, pickRetryAfter, secrets = [] }) {
+  // Scrub the URL (and any other secret part of it) out of anything the transport reports.
+  // Node's fetch errors may echo it.
+  const scrub = (text) => {
+    let out = String(text).split(url).join('[url]');
+    for (const secret of secrets) {
+      if (typeof secret === 'string' && secret.length >= 4) out = out.split(secret).join('[secret]');
+    }
+    return redact(out);
+  };
   let res;
   try {
     res = await fetch(url, {
@@ -101,6 +110,8 @@ export function createDiscordNotifier({
   timeoutMs = REQUEST_TIMEOUT_MS,
 }) {
   if (!isDiscordWebhookUrl(url)) throw new TypeError('Discord notifier needs a Discord webhook URL');
+  // The last path segment is the webhook secret; scrub it on its own too.
+  const webhookToken = new URL(url).pathname.split('/').filter(Boolean).pop();
   return {
     name: 'discord',
     send(message) {
@@ -112,6 +123,7 @@ export function createDiscordNotifier({
         redact,
         timeoutMs,
         pickRetryAfter: (data) => data?.retry_after,
+        secrets: [webhookToken],
       });
     },
   };
@@ -139,6 +151,7 @@ export function createTelegramNotifier({
         redact,
         timeoutMs,
         pickRetryAfter: (data) => data?.parameters?.retry_after,
+        secrets: [token],
       });
     },
   };

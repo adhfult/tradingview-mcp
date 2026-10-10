@@ -17,14 +17,24 @@
  * 0 to 30% random jitter, so N streams do not reconnect in the same instant. The
  * backoff goes back to the start after 10 minutes of healthy data. A connection
  * failure drops the shared client (via clients.reportFailure), so the next start
- * creates a new one.
+ * creates a new one. An AUTH_ERROR (bad or expired cookies) backs off much longer
+ * (5, 15, 30, then 60 minutes), so the watcher never hammers TradingView with a
+ * login that cannot work.
+ *
+ * Catch-up: a bar that closes while a stream is reconnecting would otherwise be
+ * missed for good. On the first snapshot after a (re)start, bars that closed after
+ * the persisted `lastEvaluatedTime` are evaluated once, but only recent ones (within
+ * two bar lengths, at least 5 minutes), so a long outage never replays old bars.
  */
 import { errorMessage } from './errors.mjs';
+import { timeframeSeconds } from './format.mjs';
 
 export const CANDLE_COUNT = 300;
 export const RESTART_BACKOFF_MS = Object.freeze([5000, 10000, 30000, 60000]);
 export const JITTER_RATIO = 0.3;
 export const BACKOFF_RESET_MS = 10 * 60_000;
+export const AUTH_BACKOFF_MS = Object.freeze([5 * 60_000, 15 * 60_000, 30 * 60_000, 60 * 60_000]);
+export const CATCHUP_MIN_SECONDS = 300;
 
 /**
  * `streams`: [{key, symbol, timeframe, market}]. `lib.watchCandles` and the
@@ -63,6 +73,7 @@ export function createStreams({
     healthySince: null,
     restartTimer: null,
     disconnects: 0,
+    authFailures: 0,
   }));
 
   const iso = () => new Date(clock.now()).toISOString();
@@ -75,40 +86,66 @@ export function createStreams({
     }
   };
 
-  const nextDelay = (s) => {
+  const nextDelay = (s, code) => {
     if (s.healthySince !== null && clock.now() - s.healthySince >= BACKOFF_RESET_MS) s.attempt = 0;
-    const base = RESTART_BACKOFF_MS[Math.min(s.attempt, RESTART_BACKOFF_MS.length - 1)];
+    let base = RESTART_BACKOFF_MS[Math.min(s.attempt, RESTART_BACKOFF_MS.length - 1)];
     s.attempt += 1;
+    if (code === 'AUTH_ERROR') {
+      s.authFailures += 1;
+      base = Math.max(base, AUTH_BACKOFF_MS[Math.min(s.authFailures - 1, AUTH_BACKOFF_MS.length - 1)]);
+    }
     return Math.round(base * (1 + JITTER_RATIO * random()));
   };
+
+  /** Evaluates the closed bar at index `i` of `candles` (never the last, forming, bar). */
+  function evaluateBar(s, candles, i) {
+    const bar = candles[i];
+    const done = evaluated.get(s.key);
+    if (done !== undefined && bar.time <= done) return;
+    evaluated.set(s.key, bar.time);
+    try {
+      onClosedBar(s, candles.slice(0, i + 1), candles[i + 1].time);
+    } catch (err) {
+      logger.error(`rule evaluation failed on ${s.key}: ${errorMessage(err)}`);
+    }
+  }
+
+  /** First snapshot after a (re)start: evaluate recent bars that closed while we were away. */
+  function catchUp(s, candles) {
+    const done = evaluated.get(s.key);
+    if (done === undefined) return;
+    const seconds = timeframeSeconds(s.timeframe) ?? 0;
+    const windowMs = Math.max(2 * seconds, CATCHUP_MIN_SECONDS) * 1000;
+    const now = clock.now();
+    for (let i = 0; i < candles.length - 1; i += 1) {
+      if (candles[i].time <= done) continue;
+      if (now - candles[i + 1].time * 1000 > windowMs) continue;
+      evaluateBar(s, candles, i);
+    }
+  }
 
   function handleData(s, candles) {
     const t = clock.now();
     s.lastDataAt = t;
     if (s.healthySince === null) s.healthySince = t;
     s.status = 'healthy';
+    s.authFailures = 0;
     if (!Array.isArray(candles) || candles.length === 0) return;
 
     const last = candles[candles.length - 1].time;
     if (s.lastBarTime === null) {
-      // First snapshot after start or restart: record only, evaluate nothing.
+      // First snapshot after start or restart: record the forming bar. Only bars that
+      // closed very recently while we were away are evaluated (see catchUp).
       s.lastBarTime = last;
+      catchUp(s, candles);
       return;
     }
     if (last <= s.lastBarTime) return;
 
     // Bars before the forming one that were still forming at our last snapshot are now closed.
     for (let i = 0; i < candles.length - 1; i += 1) {
-      const bar = candles[i];
-      if (bar.time < s.lastBarTime) continue;
-      const done = evaluated.get(s.key);
-      if (done !== undefined && bar.time <= done) continue;
-      evaluated.set(s.key, bar.time);
-      try {
-        onClosedBar(s, candles.slice(0, i + 1), candles[i + 1].time);
-      } catch (err) {
-        logger.error(`rule evaluation failed on ${s.key}: ${errorMessage(err)}`);
-      }
+      if (candles[i].time < s.lastBarTime) continue;
+      evaluateBar(s, candles, i);
     }
     s.lastBarTime = last;
   }
@@ -132,7 +169,7 @@ export function createStreams({
       clients.reportFailure(err, client);
     }
 
-    const delay = nextDelay(s);
+    const delay = nextDelay(s, code);
     s.status = 'restarting';
     logger.info(`${s.key} restarting in ${Math.round(delay / 1000)}s (attempt ${s.attempt})`);
     s.restartTimer = clock.setTimeout(() => {

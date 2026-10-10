@@ -16,9 +16,20 @@
  */
 import { parseHHMM } from './config.mjs';
 import { localMinutes, renderDigest } from './format.mjs';
+import { prune } from './state.mjs';
 
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
+/** Most summaries a digest buffer keeps. The oldest are dropped first, so a long outage cannot grow it. */
+export const DIGEST_BUFFER_LIMIT = 500;
+
+/** True when `at` is in the past and less than `windowMs` ago. A time in the future (clock jump) never counts. */
+const within = (now, at, windowMs) => now >= at && now - at < windowMs;
+
+function pushBounded(list, item) {
+  list.push(item);
+  if (list.length > DIGEST_BUFFER_LIMIT) list.splice(0, list.length - DIGEST_BUFFER_LIMIT);
+}
 
 /**
  * `alerts` is the config alerts section, `timezone` the config timezone, `store`
@@ -41,16 +52,16 @@ export function createAlerts({ alerts, timezone, store, clock, queue, log = () =
       : minutes >= quiet.start || minutes < quiet.end;
   };
 
-  let wasQuiet = inQuiet(clock.now());
-
   const sendsInLastHour = (now) => {
     const s = store.state;
     s.sends = s.sends.filter((t) => now - t < HOUR_MS);
     return s.sends.length;
   };
 
-  const deliver = (message, now) => {
-    store.state.sends.push(now);
+  // Critical (health) messages are not counted against the hourly cap, so a burst of
+  // "stream down" alerts can never starve the rule alerts that follow.
+  const deliver = (message, now, { counted = true } = {}) => {
+    if (counted) store.state.sends.push(now);
     queue.enqueue(message);
     store.touch();
   };
@@ -68,12 +79,12 @@ export function createAlerts({ alerts, timezone, store, clock, queue, log = () =
       const { message, summary } = item;
 
       if (item.dedupeKey !== undefined && s.seen[item.dedupeKey] !== undefined
-        && now - s.seen[item.dedupeKey] < DAY_MS) {
+        && within(now, s.seen[item.dedupeKey], DAY_MS)) {
         log(`alert duplicate, dropped: ${item.dedupeKey}`);
         return 'duplicate';
       }
       if (item.cooldownKey !== undefined && s.cooldowns[item.cooldownKey] !== undefined
-        && now - s.cooldowns[item.cooldownKey] < cooldownMs) {
+        && within(now, s.cooldowns[item.cooldownKey], cooldownMs)) {
         log(`alert in cooldown, dropped: ${item.cooldownKey}`);
         return 'cooldown';
       }
@@ -95,12 +106,12 @@ export function createAlerts({ alerts, timezone, store, clock, queue, log = () =
       if (s.alerts.length > 500) s.alerts.splice(0, s.alerts.length - 500);
 
       if (status === 'sent') {
-        deliver(message, now);
+        deliver(message, now, { counted: item.critical !== true });
       } else if (status === 'held') {
-        s.digest.held.push({ summary, at: now });
+        pushBounded(s.digest.held, { summary, at: now });
         store.touch();
       } else {
-        s.digest.overflow.push({ summary, at: now });
+        pushBounded(s.digest.overflow, { summary, at: now });
         store.touch();
       }
       return status;
@@ -112,18 +123,21 @@ export function createAlerts({ alerts, timezone, store, clock, queue, log = () =
       const s = store.state;
       const quietNow = inQuiet(now);
 
-      if (wasQuiet && !quietNow && s.digest.held.length > 0) {
+      // Not tied to the quiet -> not quiet edge seen in this process: held alerts that were
+      // saved before a restart (e.g. the watcher was down when quiet hours ended) go out too.
+      if (!quietNow && s.digest.held.length > 0) {
         const held = s.digest.held;
         s.digest.held = [];
         if (alerts.digest_after_quiet) {
-          s.digest.overflow.push(...held.map((item) => ({ ...item, reason: 'quiet' })));
+          for (const item of held) pushBounded(s.digest.overflow, { ...item, reason: 'quiet' });
           log(`quiet hours ended: ${held.length} held alert(s) queued for one digest`);
         } else {
           log(`quiet hours ended: ${held.length} held alert(s) dropped (digest_after_quiet is off)`);
         }
         store.touch();
       }
-      wasQuiet = quietNow;
+
+      prune(s, now);
 
       if (!quietNow && s.digest.overflow.length > 0 && sendsInLastHour(now) < cap) {
         const items = s.digest.overflow;

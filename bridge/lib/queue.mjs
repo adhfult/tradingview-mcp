@@ -4,6 +4,7 @@
  *
  * A failed attempt is retried: 3 attempts in total, with backoff 2s then 5s. On
  * HTTP 429 the wait is the server's retry_after (seconds, capped at 60s) instead.
+ * A permanent client error (4xx other than 408 and 429) is dropped at once.
  * After the last failure the job is logged (redacted by the logger) and dropped.
  *
  * Notifiers are `{name, send(message)}`. A failing send throws an error with an
@@ -35,6 +36,10 @@ export function createQueue({
     return backoffMs[Math.min(attempt - 1, backoffMs.length - 1)];
   };
 
+  // A 4xx other than 408 and 429 (bad payload, revoked webhook, wrong chat) will fail the same way again.
+  const permanent = (err) => typeof err?.status === 'number'
+    && err.status >= 400 && err.status < 500 && err.status !== 408 && err.status !== 429;
+
   const describe = (err) => {
     if (typeof err?.status === 'number') return `HTTP ${err.status}`;
     return err?.code ?? err?.name ?? 'error';
@@ -46,6 +51,10 @@ export function createQueue({
         await notifier.send(message);
         return true;
       } catch (err) {
+        if (permanent(err)) {
+          log(`${notifier.name}: alert dropped, not retried (${describe(err)})`);
+          return false;
+        }
         if (attempt >= attempts) {
           log(`${notifier.name}: alert dropped after ${attempts} attempts (${describe(err)})`);
           return false;

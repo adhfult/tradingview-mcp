@@ -42,6 +42,13 @@ export function createHealth({
     return perStream.get(key);
   };
 
+  /** Streams with data flowing that are not currently flagged as silent. */
+  const healthyCount = () => {
+    // A silent stream keeps status "healthy" (its connection is up), so take it out here.
+    const silent = streams.list().filter((s) => s.status === 'healthy' && stateFor(s.key).down).length;
+    return Math.max(0, streams.healthyCount() - silent);
+  };
+
   const checkStream = (s, now) => {
     const st = stateFor(s.key);
     const label = { symbol: s.symbol, timeframe: s.timeframe };
@@ -87,7 +94,7 @@ export function createHealth({
     if (localMinutes(now, timezone) < heartbeatMinutes || store.state.heartbeatDate === date) return;
     store.state.heartbeatDate = date;
     store.touch();
-    const healthy = streams.healthyCount();
+    const healthy = healthyCount();
     alerts.submit({
       kind: 'heartbeat',
       critical: true,
@@ -114,7 +121,7 @@ export function createHealth({
 
     /** Counts for /health and the heartbeat. */
     summary() {
-      return { healthy: streams.healthyCount(), total: streams.total };
+      return { healthy: healthyCount(), total: streams.total };
     },
   };
 }
