@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createStreams, RESTART_BACKOFF_MS, BACKOFF_RESET_MS, AUTH_BACKOFF_MS } from '../../lib/stream.mjs';
+import { createStreams, RESTART_BACKOFF_MS, BACKOFF_RESET_MS, AUTH_BACKOFF_MS, LONG_BACKOFF_MS } from '../../lib/stream.mjs';
 import { createClientManager } from '../../lib/client.mjs';
 import { createFakeClock, createFakeLib, settle, snapshot } from './support.mjs';
 
@@ -490,4 +490,45 @@ test('many streams that fail together restart spread over the jitter window, on 
   const firstRestart = started.findIndex((count) => count > 5);
   const lastRestart = started.findIndex((count) => count === 10);
   assert.ok(lastRestart > firstRestart, 'restarts are spread out, not simultaneous');
+});
+
+// --- long backoff: codes a quick retry cannot fix ---
+
+test('SYMBOL_ERROR waits 5 minutes, then 15 minutes, instead of retrying every minute', async () => {
+  const { lib, streams, clock } = setup({ random: () => 0 });
+  streams.start();
+  await settle();
+  lib.watchers[0].fail('SYMBOL_ERROR', 'unknown symbol');
+  await settle();
+  clock.advance(LONG_BACKOFF_MS[0] - 1000);
+  await settle();
+  assert.equal(lib.watchers.length, 1, 'no retry inside 5 minutes');
+  clock.advance(1000);
+  await settle();
+  assert.equal(lib.watchers.length, 2, 'one retry after 5 minutes');
+  // the retry fails the same way: the next wait is 15 minutes
+  lib.watchers.at(-1).fail('SYMBOL_ERROR', 'unknown symbol');
+  await settle();
+  clock.advance(LONG_BACKOFF_MS[1] - 1000);
+  await settle();
+  assert.equal(lib.watchers.length, 2, 'still waiting at 15 minutes minus 1 s');
+  clock.advance(1000);
+  await settle();
+  assert.equal(lib.watchers.length, 3, 'retry after 15 minutes');
+  assert.equal(lib.clients.length, 1, 'a symbol error keeps the shared connection');
+});
+
+test('a plain connection error keeps the short backoff: the restart comes after 5 s, not minutes', async () => {
+  const { lib, streams, clock, log } = setup({ random: () => 0 });
+  streams.start();
+  await settle();
+  lib.watchers[0].fail('CONNECTION_ERROR');
+  await settle();
+  clock.advance(RESTART_BACKOFF_MS[0] - 1000);
+  await settle();
+  assert.equal(lib.watchers.length, 1, 'no restart before 5 s');
+  clock.advance(1000);
+  await settle();
+  assert.equal(lib.watchers.length, 2, 'restarted after 5 s');
+  assert.ok(log.lines.some((line) => line.includes('restarting in 5s')), 'the log says 5s, not minutes');
 });

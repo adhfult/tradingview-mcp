@@ -442,17 +442,69 @@ warning: WATCHER_LOCAL_TOKEN is not set; the local API stays disabled
 exit=0
 ```
 
-## Advisor fixes (Sonnet): PARTIAL, stopped at the handoff (Opus note)
-The session stopped while this was in progress. **Bridge tests: 338/338 pass at the stop point.** By grep, these advisor fixes appear to be in:
-- the must-fix (batched health alerts with `lastError`)
-- (a) silent seeding of trending
-- (b) direction in the cooldown key
-- (c) `stock_stream_down_minutes` / `us_holidays` / early closes
-- (d) crypto `SILENT` self-restart
-- (f) long backoff for `SYMBOL_ERROR` and similar codes
+## Advisor fixes (Sonnet): done
 
-**Still to do or verify:**
-- (e) serial FIFO per notifier, with a 200-job cap, in `queue.mjs`: verify.
-- (g) `watcher.service.example`: `Restart=always`, `MemoryMax=512M`, `After=systemd-time-wait-sync.service`, plus a README journald note. **Not done.**
-- Tests for each item.
-- The review report for this section.
+Scope: tests, `bridge/README.md`, `bridge/watcher.service.example`, this file. No change to `bridge/lib/*.mjs` or `watcher.mjs` was needed (no real bug found in review). No commit, push, stash or reset.
+
+### Status per item
+- Must-fix, batched health alerts with `lastError`: done.
+- (a) silent seeding of trending: done.
+- (b) direction in the cooldown key: done; test added.
+- (c) `stock_stream_down_minutes` / `us_holidays` / early closes: done.
+- (d) crypto `SILENT` self-restart: done.
+- (e) serial FIFO per notifier, 200 cap: done and verified in `queue.mjs`; tests added.
+- (f) long backoff for `SYMBOL_ERROR` and similar codes: done; test added.
+- (g) service file + README: done. `Restart=always`, `MemoryMax=512M`, `systemd-time-wait-sync.service` in `After=`/`Wants=`, a journald note.
+
+### Fixed in review
+- README said "After= on a disabled unit does nothing" and told the reader to `enable systemd-time-wait-sync`. That is inaccurate: `Wants=` already pulls the service in when the watcher starts. Removed the enable step and added a "Clock sync" paragraph. It notes that the service only waits when `systemd-timesyncd` is the time daemon (Raspberry Pi OS default, as far as I know; hedged, check with `systemctl is-active systemd-timesyncd`).
+
+### Tests added in this pass (6 new; 338 at the stop point to 344)
+- `queue.test.mjs`: "a 429 on message 1 holds message 2 in the same lane...in order"; "a full lane (maxQueued 3) drops the oldest non-critical message, keeps critical ones, and logs it"; "when every waiting message is critical, a full lane drops the oldest one and says so".
+- `watcher.test.mjs`: "the cooldown is per direction: a move down is sent right after a move up, and a second move up is held".
+- `stream.test.mjs`: "SYMBOL_ERROR waits 5 minutes, then 15 minutes, instead of retrying every minute"; "a plain connection error keeps the short backoff...".
+
+### Mutation check (on a copy in the scratchpad; repo files untouched)
+- (a) drop `|${hit.direction}` from the cooldownKey: `watcher.test.mjs` FAILS (the per-direction test).
+- (b) remove `SYMBOL_ERROR` from `LONG_BACKOFF_CODES`: `stream.test.mjs` FAILS (SYMBOL_ERROR test).
+- (c) overflow ignores `critical` (always `splice(0, 1)`): `queue.test.mjs` FAILS (full lane, non-critical test).
+- (d) ignore `retryAfterSec` on 429: `queue.test.mjs` FAILS (the new ordering test, plus two older 429 tests).
+- Not caught by a mutation: the plain-error short-backoff test and the all-critical test are guards for the opposite case; (c) did not fail the all-critical test, which is expected (index -1 gives splice 0 either way).
+
+### Design note (not changed)
+`volume_spike`'s direction is the candle colour, so a green spike and a red spike within the cooldown both alert (separate cooldown keys).
+
+### Pi verify
+- `systemctl is-active systemd-time-wait-sync`
+- `systemctl is-active systemd-timesyncd` (the wait service only really waits with timesyncd)
+- `cat /sys/fs/cgroup/system.slice/tradingview-watcher.service/memory.max` prints `536870912`, and `grep memory /proc/cgroups` shows it enabled. `systemctl show -p MemoryMax` only echoes the config, it does not prove enforcement. If it is off, add `cgroup_enable=memory cgroup_memory=1` to `/boot/firmware/cmdline.txt`.
+- `command -v node` is `/usr/bin/node` (else `203/EXEC` restart loop)
+
+## Advisory review (Fable)
+Verdict: ship after one README fix. Re-ran 344/344; `systemd-analyze verify` on a copy shows no unknown directives.
+- MUST-FIX, applied: README step 1 now says to install Node from NodeSource so it is at `/usr/bin/node`, or to edit `ExecStart=`. With nvm the unit fails `203/EXEC`, and `Restart=always` loops every 10 s.
+- Applied: clock-sync wording (with chrony/ntpd the wait relies on an unreliable kernel flag, it does not return at once; no timeout at boot is intended); the MemoryMax caveat moved into the README with an enforcement check; "any exit" became "any unexpected exit".
+- Confirmed: `Restart=always` is right (`watcher.mjs` exits 0 on a stdout error, which `on-failure` would not restart); no test passes for the wrong reason; `ReadWritePaths` + `ProtectSystem=strict` is the documented pattern; the 15 s shutdown grace is well under the 90 s `TimeoutStopSec`.
+- Not changed: `SystemMaxUse` covers only the persistent journal, which is what the paragraph sets up.
+- Existing items: `systemctl stop` should log "stopped" and exit 0; watch `connection_drops` and `disconnects` in `GET /health`.
+
+### Real output: `npm test --prefix bridge | tail -9`
+```
+✔ the chat id, local token, cookies, webhook and bot token never reach a log, even when Telegram fails (32.080399ms)
+ℹ tests 344
+ℹ suites 0
+ℹ pass 344
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 2911.747692
+```
+
+### Real output: `node bridge/watcher.mjs --config bridge/watcher.config.example.json --check-config; echo exit=$?`
+```
+OK
+warning: no notification channel is configured; alerts are only logged
+warning: WATCHER_LOCAL_TOKEN is not set; the local API stays disabled
+exit=0
+```

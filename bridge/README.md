@@ -77,7 +77,7 @@ The other secret names known to the redactor (`DISCORD_WEBHOOK_URL`, `TELEGRAM_B
 
 ### Raspberry Pi setup
 
-1. Use Raspberry Pi OS (64-bit) with Node 22. Check with `node -v`.
+1. Use Raspberry Pi OS (64-bit) with Node 22, installed system-wide from NodeSource (the apt `nodejs` package on Bookworm is Node 18). Check with `node -v` and `command -v node`. The unit runs `/usr/bin/node`, so with nvm or any other path, edit `ExecStart=` to match, or the service fails with `203/EXEC` and restarts every 10 seconds.
 2. Clone the repo and install the bridge dependencies. `--ignore-scripts` is required:
    ```sh
    git clone <repo> ~/code/tradingview-mcp
@@ -110,7 +110,13 @@ The other secret names known to the redactor (`DISCORD_WEBHOOK_URL`, `TELEGRAM_B
    journalctl -u tradingview-watcher -f
    ```
 
-The unit runs as `pi`, reads the env file through `EnvironmentFile=`, restarts on failure after 10 seconds, and uses `NoNewPrivileges`, `ProtectSystem=strict`, `ProtectHome=read-only` and `PrivateTmp`. Its only writable path is the state directory.
+The unit runs as `pi`, reads the env file through `EnvironmentFile=`, restarts after any unexpected exit (10 seconds later; `systemctl stop` stays stopped), caps memory at 512 MB (see below), waits for the clock sync (see below), and uses `NoNewPrivileges`, `ProtectSystem=strict`, `ProtectHome=read-only` and `PrivateTmp`. Its only writable path is the state directory.
+
+**Clock sync.** The unit has `Wants=` and `After=` on `systemd-time-wait-sync.service`, so starting the watcher pulls that service in even if it is not enabled; no extra `enable` step is needed. That service only blocks until the clock is synchronized when `systemd-timesyncd` is the time daemon (the default on Raspberry Pi OS, as far as I know; check with `systemctl is-active systemd-timesyncd`). With chrony or ntpd it falls back to the kernel sync flag, which systemd calls unreliable; use chrony's own wait service there instead. The wait has no timeout, so with no network at boot the watcher stays in "activating" until the clock syncs. That is intended: it cannot send alerts without a network anyway.
+
+**Memory cap.** `MemoryMax=` is silently ignored when the kernel's memory cgroup is off, which is the case on some Raspberry Pi OS kernels unless `cgroup_enable=memory cgroup_memory=1` is in `/boot/firmware/cmdline.txt` (`/boot/cmdline.txt` on older releases). Check after starting: `cat /sys/fs/cgroup/system.slice/tradingview-watcher.service/memory.max` should print `536870912`.
+
+**Logs.** journald keeps logs across reboots only if `/var/log/journal` exists, or if `Storage=persistent` is set in `/etc/systemd/journald.conf`. To limit wear on the SD card, set `SystemMaxUse=50M` under `[Journal]` in that file, then run `sudo systemctl restart systemd-journald`.
 
 ### Discord webhook
 

@@ -19,24 +19,18 @@
 | 2: Python bridge client | **done** | 0e3430e, de65a73, (advisor fixes) | 541 pass + 16 advisor tests | .dockerignore .env leak fixed |
 | 3: tv_* tools + wiring | **done** | 002d8dd, 8a1afef, bb32bcc | 812 pass | Yahoo parity pinned; in-flight cap; backtest follow-ups carried into the 6a review |
 | 4: packaging/Docker/CI/docs | **done** | 2264f50, 154dbfc, d6b5509 | 812 pass | .env.example safe defaults; Docker build deferred to WSL |
-| 5: watcher | advisor fixes PARTIAL | 83e48a1, review + advisor WIP | bridge 338 pass | see the end of phase-5.md: (e) verify, (g) service file not done, report missing |
+| 5: watcher | **done** | 83e48a1, WIP snapshots, (advisor fixes) | bridge 344 pass | Fable: one README must-fix (Node path) applied; Pi-only checks below |
 | 6a: gauntlet | PARTIAL (steps 0–4 and 6 done) | WIP | 812 pass | next: gauntlet_service, tools/prompts, tests; see the end of phase-6a.md |
 | 6b: paper trader | not started | – | – | – |
 | 7a: dashboard | not started | – | – | – |
 | 7b: alert images | not started | – | – | – |
 | 7c: PyneCore | not started | – | – | – |
 
-## Current step (session stopped here, 2026-10-10)
-Everything is committed and pushed. Unit tests: **812 Python pass** and **338 bridge pass** at the stop point.
-1. **Phase 5:** finish the advisor fixes listed at the end of `docs/handoffs/phase-5.md`:
-   - (e) verify the serial queue
-   - (g) the service-file hardening
-   - the missing tests and the report
-
-   Then commit.
-2. **Phase 6a:** finish steps 5, 7 and 8 of `docs/handoffs/phase-6a.md` (see "Status at the handoff" at its end). Then a Sonnet review, which must also do the "Carried in from the Phase 3 advisor" items, then Fable.
-3. **Then** 6b (`phase-6b.md`), 7a, 7b, 7c (`phase-7.md`), each with the same loop: Haiku → Sonnet → Fable → verify, commit, push.
-4. **Finally:** the checks in "Checks only Adham can run" and the Pi checklist.
+## Current step (2026-10-11)
+Phase 5 is done (bridge 344 pass, Python 812 pass).
+1. **Phase 6a:** finish steps 5, 7 and 8 of `docs/handoffs/phase-6a.md` (see "Status at the handoff" at its end). Then a Sonnet review, which must also do the "Carried in from the Phase 3 advisor" items, then Fable.
+2. **Then** 6b (`phase-6b.md`), 7a, 7b, 7c (`phase-7.md`), each with the same loop: Haiku → Sonnet → Fable → verify, commit, push.
+3. **Finally:** the checks in "Checks only Adham can run" and the Pi checklist.
 
 ## Approved dependencies
 - `@mathieuc/tradingview` 4.0.0 (ISC)
@@ -73,6 +67,8 @@ Everything is committed and pushed. Unit tests: **812 Python pass** and **338 br
 - For day one, set `alerts.max_per_hour` to 10 and `trending.enabled=false`.
 - Run `sudo systemctl stop tradingview-watcher` once and confirm the "stopped" log line and exit 0.
 - After a night, check `curl 127.0.0.1:8787/health` shows `healthy == total`.
+- `systemctl is-active systemd-timesyncd` (the clock-sync wait only really waits with timesyncd).
+- `cat /sys/fs/cgroup/system.slice/tradingview-watcher.service/memory.max` prints `536870912`; if not, the memory cgroup is off: add `cgroup_enable=memory cgroup_memory=1` to `/boot/firmware/cmdline.txt` and reboot.
 
 ## Resume in WSL
 ```bash

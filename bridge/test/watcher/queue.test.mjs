@@ -195,3 +195,81 @@ test('408 and 5xx are still retried', async () => {
     assert.equal(flaky.calls.length, 2, `HTTP ${status} is retried`);
   }
 });
+
+// --- rate limit order and lane overflow ---
+
+const titled = (title) => ({ ...message, title });
+
+test('a 429 on message 1 holds message 2 in the same lane: 2 is sent only after 1 succeeds, in order', async () => {
+  const clock = createFakeClock();
+  const limited = notifier('telegram', (n) => (n === 1 ? httpError(429, 7) : null));
+  const queue = createQueue({ notifiers: [limited], clock });
+  queue.enqueue(titled('1'));
+  queue.enqueue(titled('2'));
+  await settle();
+  assert.equal(limited.calls.length, 1, 'message 1 is rate limited, message 2 waits behind it');
+  clock.advance(6999);
+  await settle();
+  assert.equal(limited.calls.length, 1, 'still inside the 7 s retry_after');
+  clock.advance(1);
+  await settle();
+  assert.deepEqual(limited.calls.map((m) => m.title), ['1', '1', '2'], 'message 1 retried, then message 2');
+  await queue.idle();
+});
+
+test('a full lane (maxQueued 3) drops the oldest non-critical message, keeps critical ones, and logs it', async (t) => {
+  const clock = createFakeClock();
+  const logs = [];
+  const sent = [];
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  t.after(() => release());
+  // The first send hangs, so every later message waits in the lane.
+  const blocked = {
+    name: 'discord',
+    async send(msg) {
+      sent.push(msg.title);
+      if (sent.length === 1) await gate;
+    },
+  };
+  const queue = createQueue({ notifiers: [blocked], clock, maxQueued: 3, log: (line) => logs.push(line) });
+  queue.enqueue(titled('busy'));
+  queue.enqueue(titled('a'));
+  queue.enqueue(titled('b'), { critical: true });
+  queue.enqueue(titled('c'));
+  queue.enqueue(titled('d'));   // lane is full: 'a' is the oldest non-critical, so it goes
+  queue.enqueue(titled('e'));   // full again: 'b' is critical, so 'c' goes
+  release();
+  await queue.idle();
+  assert.deepEqual(sent, ['busy', 'b', 'd', 'e'], 'critical b survives, a and c were dropped');
+  assert.equal(logs.length, 2);
+  assert.match(logs[0], /discord: queue is full \(3\), the oldest non-critical alert was dropped/);
+  assert.match(logs[1], /discord: queue is full \(3\), the oldest non-critical alert was dropped/);
+});
+
+test('when every waiting message is critical, a full lane drops the oldest one and says so', async (t) => {
+  const clock = createFakeClock();
+  const logs = [];
+  const sent = [];
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  t.after(() => release());
+  const blocked = {
+    name: 'telegram',
+    async send(msg) {
+      sent.push(msg.title);
+      if (sent.length === 1) await gate;
+    },
+  };
+  const queue = createQueue({ notifiers: [blocked], clock, maxQueued: 2, log: (line) => logs.push(line) });
+  queue.enqueue(titled('busy'));
+  queue.enqueue(titled('a'), { critical: true });
+  queue.enqueue(titled('b'), { critical: true });
+  queue.enqueue(titled('c'), { critical: true });   // lane full, all critical: 'a' (the oldest) goes
+  release();
+  await queue.idle();
+  assert.deepEqual(sent, ['busy', 'b', 'c']);
+  assert.equal(logs.length, 1);
+  assert.match(logs[0], /telegram: queue is full \(2\), the oldest alert was dropped/);
+  assert.doesNotMatch(logs[0], /non-critical/);
+});

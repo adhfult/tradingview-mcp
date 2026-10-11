@@ -4,17 +4,19 @@
 # Logs:    journalctl -u tradingview-watcher -f
 [Unit]
 Description=TradingView market watcher (alerts only, never trades)
-# A Pi has no battery clock: wait for the time sync, or cooldowns and quiet hours start from a wrong time.
-After=network-online.target time-sync.target
-Wants=network-online.target time-sync.target
+# A Pi has no battery clock: wait until the clock is synced (systemd-time-wait-sync, see the README),
+# or cooldowns and quiet hours start from a wrong time.
+After=network-online.target time-sync.target systemd-time-wait-sync.service
+Wants=network-online.target time-sync.target systemd-time-wait-sync.service
 
 [Service]
 User=pi
 WorkingDirectory=/home/pi/code/tradingview-mcp
 EnvironmentFile=/etc/tradingview-watcher.env
 ExecStart=/usr/bin/node bridge/watcher.mjs --config /home/pi/.config/tradingview-watcher/config.json
-Restart=on-failure
+Restart=always
 RestartSec=10
+MemoryMax=512M
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=read-only

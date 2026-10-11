@@ -86,6 +86,21 @@ test('the same rule on the same stream is held by the cooldown for the next bar'
   await watcher.stop();
 });
 
+test('the cooldown is per direction: a move down is sent right after a move up, and a second move up is held', async (t) => {
+  const { watcher, lib, calls } = await build(t, { configOverrides: { local_api: { enabled: false, port: 8787 } } });
+  await watcher.start();
+  const w = lib.watchers[0];
+  w.feed(snapshot([100, 101]));
+  w.feed(snapshot([100, 101, 102]));               // up 1.00%: sent
+  w.feed(snapshot([100, 101, 102, 100]));          // up 0.99% again: same |up cooldown key, held
+  w.feed(snapshot([100, 101, 102, 100, 100]));     // down 1.96%: |down key, sent
+  await settle();
+  assert.equal(calls.length, 2, 'one up and one down, the second up is held');
+  assert.match(calls[0].body.embeds[0].description, /Up 1\.00% over 1 bar\n/);
+  assert.match(calls[1].body.embeds[0].description, /Down 1\.96% over 1 bar\n/);
+  await watcher.stop();
+});
+
 test('evaluated bars are saved to state, and a restart does not alert again for them', async (t) => {
   const first = await build(t, { configOverrides: { local_api: { enabled: false, port: 8787 } } });
   await first.watcher.start();
