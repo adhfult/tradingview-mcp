@@ -646,12 +646,12 @@ test('all_of sends one combined alert, in addition to the members\' own alerts',
   const { watcher, lib, calls } = await build(t, { configOverrides: composites() });
   await watcher.start();
   lib.watchers[0].feed(snapshot([100, 101]));
-  lib.watchers[0].feed(snapshot([100, 101, 102]));      // +0.99%: a (0.5) and b (0.9) both fire
+  lib.watchers[0].feed(snapshot([100, 101, 102]));      // the 101 bar is +1.00%: a (0.5) and b (0.9) both fire
   await settle();
   assert.equal(calls.length, 3, 'a, b and the combination');
   const combined = fromType(calls, 'all_of');
   assert.equal(combined.length, 1);
-  assert.match(combined[0].body.embeds[0].description, /a: Up 0\.99% over 1 bar \| b: Up 0\.99% over 1 bar/);
+  assert.match(combined[0].body.embeds[0].description, /a: Up 1\.00% over 1 bar \| b: Up 1\.00% over 1 bar/);
   assert.match(combined[0].body.embeds[0].description, /Rule: both/);
   await watcher.stop();
 });

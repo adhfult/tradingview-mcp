@@ -10,7 +10,7 @@ import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import * as v from './validate.mjs';
-import { RULE_TYPES, barsNeeded, normalizeRule, ruleExpired, validateRuleParams } from './rules.mjs';
+import { RULE_ID, RULE_TYPES, barsNeeded, isComposite, normalizeRule, ruleApplies, ruleExpired, validateRuleParams } from './rules.mjs';
 import { CANDLE_COUNT } from './stream.mjs';
 import { DEFAULT_US_EARLY_CLOSES, DEFAULT_US_HOLIDAYS } from './scanner.mjs';
 import { localDate } from './format.mjs';
@@ -29,7 +29,6 @@ export const HARD_MAX_STREAMS = 25;
 export const MIN_TREND_EVERY_MINUTES = 5;
 const MAX_TOP_N = 200;
 const DEFAULT_STATE_DIR = '~/.local/state/tradingview-watcher';
-const RULE_ID = /^[A-Za-z0-9_-]{1,64}$/;
 const HHMM = /^([01]\d|2[0-3]):([0-5]\d)$/;
 
 /** Minutes after midnight for "HH:MM", or null when the text is not in that form. */
@@ -199,6 +198,8 @@ function parseRules(input, watchlist, errors, warnings, { timezone, now }) {
     return [];
   }
   const ids = new Set();
+  const compositeIds = new Set();
+  const composites = [];
   const rules = [];
   input.rules.forEach((raw, index) => {
     const path = `rules[${index}]`;
@@ -208,7 +209,7 @@ function parseRules(input, watchlist, errors, warnings, { timezone, now }) {
     }
     const before = errors.length;
     const allowed = ['id', 'type', 'symbol', 'timeframes', 'bars', 'threshold_pct', 'multiple', 'lookback',
-      'period', 'levels', 'stddev', 'level', 'max_per_day', 'expires', 'calendar'];
+      'period', 'levels', 'stddev', 'level', 'max_per_day', 'expires', 'calendar', 'rules'];
     checkKeys(raw, allowed, path, errors);
 
     if (typeof raw.id !== 'string' || !RULE_ID.test(raw.id)) {
@@ -220,6 +221,7 @@ function parseRules(input, watchlist, errors, warnings, { timezone, now }) {
       errors.push(`${path}.id: "${raw.id}" is already used by another rule`);
     } else {
       ids.add(raw.id);
+      if (isComposite(raw)) compositeIds.add(raw.id);
     }
     if (!RULE_TYPES.includes(raw.type)) {
       errors.push(`${path}.type: must be one of ${RULE_TYPES.join(', ')}`);
@@ -284,9 +286,36 @@ function parseRules(input, watchlist, errors, warnings, { timezone, now }) {
         warnings.push(`${path} "${raw.id}": expired on ${raw.expires}, so it will never fire`);
       }
       rules.push(normalized);
+      if (isComposite(normalized)) composites.push({ rule: normalized, path, streams });
     }
   });
+  resolveComposites(composites, rules, ids, compositeIds, errors);
   return rules;
+}
+
+/**
+ * Attaches each composite's member rules (all_of / any_of). Members must be plain rules, so a composite inside a
+ * composite is an error, which also rules out self-reference and cycles. A member with an error of its own is left
+ * to that error. Members keep their own symbol and timeframes filters, so an all_of whose members never apply to
+ * the same watched stream (or an any_of where none apply) could never fire.
+ */
+function resolveComposites(composites, rules, ids, compositeIds, errors) {
+  const byId = new Map(rules.map((rule) => [rule.id, rule]));
+  for (const { rule, path, streams } of composites) {
+    const before = errors.length;
+    rule.rules.forEach((id, i) => {
+      if (!ids.has(id)) errors.push(`${path}.rules[${i}]: "${id}" is not the id of a rule in this config`);
+      else if (compositeIds.has(id)) errors.push(`${path}.rules[${i}]: "${id}" is a composite; composites cannot contain composites`);
+    });
+    const members = rule.rules.map((id) => byId.get(id));
+    if (errors.length > before || members.includes(undefined)) continue;
+    rule.members = members;
+    const applies = (member, stream) => ruleApplies(member, { symbol: stream.symbol, timeframe: stream.timeframe });
+    const fires = streams.some((stream) => (rule.type === 'all_of' ? members.every((m) => applies(m, stream)) : members.some((m) => applies(m, stream))));
+    if (streams.length > 0 && !fires) {
+      errors.push(`${path}: no watched stream where ${rule.type === 'all_of' ? 'all' : 'any'} of its member rules apply, so it could never fire`);
+    }
+  }
 }
 
 function parseTrending(input, errors) {
