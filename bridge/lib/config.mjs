@@ -498,7 +498,11 @@ function parseLocalApi(input, errors) {
 function parseDashboard(input, errors, localApiPort) {
   const path = 'dashboard';
   const defaults = { enabled: true, host: '127.0.0.1', port: 8788 };
-  if (input.dashboard === undefined) return defaults;
+  const clash = `${path}.port: must differ from local_api.port (${localApiPort})`;
+  if (input.dashboard === undefined) {
+    if (defaults.port === localApiPort) errors.push(clash); // the default port clashes too
+    return defaults;
+  }
   if (!isPlainObject(input.dashboard)) {
     errors.push(`${path}: must be an object`);
     return defaults;
@@ -511,7 +515,7 @@ function parseDashboard(input, errors, localApiPort) {
     else host = d.host.trim();
   }
   const port = readNumber(d, 'port', path, errors, { min: 1024, max: 65535, integer: true, fallback: defaults.port });
-  if (port === localApiPort) errors.push(`${path}.port: must differ from local_api.port (${localApiPort})`);
+  if (port === localApiPort) errors.push(clash);
   return { enabled: readBoolean(d, 'enabled', path, errors, true), host, port };
 }
 

@@ -157,13 +157,20 @@ export function createStreams({
     evaluateSnapshot(s, candles);
     // Last, so the stored candles are current when a listener asks for them. A listener bug (the
     // dashboard) must never stop closed-bar evaluation.
-    if (fresh && !sameCandle(previous, newest)) {
+    if (!fresh) return;
+    const notify = (candle) => {
       try {
-        onBar(s, newest);
+        onBar(s, candle);
       } catch (err) {
         logger.error(`onBar failed on ${s.key}: ${errorMessage(err)}`);
       }
+    };
+    // On a rollover the candle that just closed may have final values we never reported: send those first.
+    if (previous !== undefined && newest.time > previous.time) {
+      const closed = candles.find((c) => c.time === previous.time);
+      if (closed !== undefined && !sameCandle(previous, closed)) notify(closed);
     }
+    if (!sameCandle(previous, newest)) notify(newest);
   }
 
   function evaluateSnapshot(s, candles) {

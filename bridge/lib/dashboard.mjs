@@ -118,14 +118,21 @@ function publicAlert(entry) {
   };
 }
 
-/** Text of a small regular file, or null. O_NOFOLLOW refuses a symlink even if it appears after a listing. */
+/**
+ * Text of a small regular file, or null. O_NOFOLLOW refuses a symlink even if it appears after a listing.
+ * O_NONBLOCK makes opening a FIFO return at once (isFile() then rejects it); a blocking open would pin one of
+ * libuv's 4 threads, which state flushes and DNS share. The read is capped too: a file can grow after stat().
+ */
 async function readSmallFile(path) {
   let handle;
   try {
-    handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     const info = await handle.stat();
     if (!info.isFile() || info.size > MAX_FILE_BYTES) return null;
-    return await handle.readFile({ encoding: 'utf8' });
+    const buffer = Buffer.allocUnsafe(MAX_FILE_BYTES + 1);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    if (bytesRead > MAX_FILE_BYTES) return null;
+    return buffer.toString('utf8', 0, bytesRead);
   } catch {
     return null;
   } finally {
@@ -307,12 +314,15 @@ export function createDashboard({
     broadcast('bar', { symbol: stream.symbol, timeframe: stream.timeframe, candle: pickCandle(candle) });
   }
 
-  /** First bar of a second goes out at once; later ones in that second leave only the newest, sent when the second ends. */
+  /**
+   * First bar of a second goes out at once; later ones in that second wait and leave when the second ends, the
+   * newest version of each candle time (a correction replaces its candle, a new candle gets its own entry).
+   */
   function onBar(stream, candle) {
     if (clients.size === 0) return;
     let slot = bars.get(stream.key);
     if (slot === undefined) {
-      slot = { sentAt: -Infinity, timer: null, pending: null };
+      slot = { sentAt: -Infinity, timer: null, pending: new Map() };
       bars.set(stream.key, slot);
     }
     const since = clock.now() - slot.sentAt;
@@ -320,13 +330,13 @@ export function createDashboard({
       sendBar(slot, stream, candle);
       return;
     }
-    slot.pending = { stream, candle };
+    slot.pending.set(candle.time, { stream, candle });
     if (slot.timer === null) {
       slot.timer = clock.setTimeout(() => {
         slot.timer = null;
-        const { stream: s, candle: c } = slot.pending;
-        slot.pending = null;
-        if (clients.size > 0) sendBar(slot, s, c);
+        const waiting = [...slot.pending.values()].sort((a, b) => a.candle.time - b.candle.time);
+        slot.pending.clear();
+        if (clients.size > 0) for (const { stream: s, candle: c } of waiting) sendBar(slot, s, c);
       }, COALESCE_MS - since);
     }
   }
@@ -394,8 +404,13 @@ export function createDashboard({
   });
   server.requestTimeout = 30_000;
   server.headersTimeout = 20_000;
+  // Node answers an unknown Expect value with its own bare 417; this one carries the security headers.
+  server.on('checkExpectation', (req, res) => sendError(res, 417, 'expectation failed'));
   server.on('clientError', (err, socket) => {
     if (!socket.writable) return socket.destroy();
+    // A second response on a socket that already answered (a 405 to a POST whose body never came, then the
+    // request timeout) would be garbage to the client. _httpMessage is Node-internal: the response bound to the socket.
+    if (socket._httpMessage?.headersSent) return socket.destroy();
     const lines = Object.entries(SECURITY_HEADERS).map(([name, value]) => `${name}: ${value}\r\n`).join('');
     return socket.end(`HTTP/1.1 400 Bad Request\r\n${lines}content-length: 0\r\nconnection: close\r\n\r\n`);
   });
