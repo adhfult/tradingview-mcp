@@ -10,6 +10,7 @@
     "test": "node --test"
   },
   "dependencies": {
-    "@mathieuc/tradingview": "4.0.0"
+    "@mathieuc/tradingview": "4.0.0",
+    "lightweight-charts": "5.2.1"
   }
 }
