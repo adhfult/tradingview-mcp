@@ -240,3 +240,29 @@ The session stopped mid-implementation. **812 unit tests pass at the stop point*
   - step 8, most tests: `test_no_lookahead.py`, gates, fingerprint, reports
   - then the Sonnet review, **including the items carried in from Phase 3** (listed above), then Fable
 - **Parked reference code from Haiku** (not active; may be partly applied already): `docs/handoffs/parked-6a/*.py.txt`. Compare it against the current `backtest_service.py` before re-using anything.
+
+## Completion report (Sonnet 5.5, regime 3, 2026-10-12)
+Steps 5, 7 and 8 are done, plus the four Phase 3 advisor carry-ins. **943 Python unit tests pass** (812 at the stop point), also with Node hidden; bridge 344 pass and untouched. Commits: `8406891`, `5d88359`, `9d7fcab`, `d736b48`.
+
+### What was built
+- **Step 5, `core/services/gauntlet_service.py`:** `run_gauntlet`, `gauntlet_stats`, `verify_report`.
+  - Gates follow the spec table. All fills are `next_open`; the cost profile is applied; thresholds live in `GAUNTLET_THRESHOLDS` and are read at call time.
+  - If `honest_settings` fails, the run stops there (verdict `FAIL: honest_settings`, one gate). Later gates would run on too little data.
+  - The edge check runs before any fetch. Input errors (unknown strategy, profile, period, params) return `{"error": ...}`, not a verdict.
+  - The fingerprint hashes the inputs plus the package version and a hash of `backtest_service.py` + `gauntlet_service.py`. The hypothesis text is stored in the report but is **not** part of the fingerprint (as the brief lists it).
+  - Reports go to `$TRADINGVIEW_MCP_HOME/gauntlet/<fingerprint>.json` (dir 0700, file 0600, atomic replace) plus one line in `log.jsonl`. If the home is unwritable the result is still returned, with `report_path: null` and `report_error`.
+  - `profit_factor` is `inf` when a run has no losing trades; reports store it as `null` so the JSON is strict.
+  - `verify_report` accepts only 64 lowercase hex characters, so a fingerprint cannot be a path.
+- **Step 7, `server.py`:** tools `strategy_gauntlet`, `gauntlet_stats`; prompts `strategy_builder`, `strategy_reviewer`; `backtest_strategy` gains `params`/`fill`/`cost_profile`; the walk-forward tool gains `params`/`fill`. `verify_report` is **not** an MCP tool (the brief lists it for Phase 6b's code only).
+- **Step 8, tests:** `test_backtest_engine.py` (params validation, `next_open` maths, cost profiles/warnings, tradability, no-lookahead for all 9 strategies), `test_gauntlet.py` (edge check, every gate, verdicts, fingerprint, storage, stats, verify), `test_gauntlet_tools.py` (routing, prompts).
+- **Carry-ins from the Phase 3 advisor:** (1) truncation flag now `len(bars) >= 20000` or a first-bar gap over `max(10% of span, 5 days)`; (2) the fetch error and `result["symbol"]` use `tv_symbol` on the TradingView path; (3) pure `tv_bars_to_candles` plus a `time` key on TradingView candles; (4) the gauntlet drops a still-forming last TradingView bar.
+
+### Findings along the way
+- **Real bug caught by a test:** the generic-phrase check deleted punctuation instead of turning it into a space, so `Trend-Following` became `trendfollowing` and passed. Fixed.
+- **The no-lookahead check was vacuous for `triple_ema` on 400 bars** (no trades at all). The two 200-bar-warm-up strategies now use 600 bars, and a deliberately cheating strategy proves the check catches a peek.
+- **Existing tests changed:** the exact-dict TradingView conversion test gains the `time` key, and three tests that pinned the Yahoo symbol on the TradingView path now expect the `tv_symbol` label. Both follow directly from the carry-ins.
+
+### Not verified
+- Live TradingView and Yahoo runs (the cloud-style tests use synthetic candles).
+- The `strategy_builder` / `strategy_reviewer` prompts have never been used by a real model. Try them once.
+- With `period` left at the default `2y`, a TradingView daily run is upgraded to `5y`; a caller who passes `2y` explicitly gets the same upgrade (the default cannot be told apart).

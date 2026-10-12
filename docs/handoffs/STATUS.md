@@ -20,7 +20,7 @@
 | 3: tv_* tools + wiring | **done** | 002d8dd, 8a1afef, bb32bcc | 812 pass | Yahoo parity pinned; in-flight cap; backtest follow-ups carried into the 6a review |
 | 4: packaging/Docker/CI/docs | **done** | 2264f50, 154dbfc, d6b5509 | 812 pass | .env.example safe defaults; Docker build deferred to WSL |
 | 5: watcher | **done** | 83e48a1, WIP snapshots, (advisor fixes) | bridge 344 pass | Fable: one README must-fix (Node path) applied; Pi-only checks below |
-| 6a: gauntlet | PARTIAL (steps 0–4 and 6 done) | WIP | 812 pass | next: gauntlet_service, tools/prompts, tests; see the end of phase-6a.md |
+| 6a: gauntlet | **built, review in progress** | 8406891, 5d88359, 9d7fcab, d736b48 | 943 pass | steps 5, 7, 8 and the Phase 3 carry-ins done; wrap-up review (Fable + Luna) pending |
 | 6b: paper trader | not started | – | – | – |
 | 7a: dashboard | not started | – | – | – |
 | 7b: alert images | not started | – | – | – |
