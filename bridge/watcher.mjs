@@ -22,7 +22,7 @@ import { createQueue } from './lib/queue.mjs';
 import { buildNotifiers, createStdoutNotifier } from './lib/notifiers.mjs';
 import { createLogger, renderNotify, renderRuleAlert, renderTest } from './lib/format.mjs';
 import { evaluateRules, ruleExpired } from './lib/rules.mjs';
-import { buildUsCalendar, createScanner } from './lib/scanner.mjs';
+import { buildUsCalendar, createScanner, isUsRegularHours } from './lib/scanner.mjs';
 import { createStateStore } from './lib/state.mjs';
 import { createStreams } from './lib/stream.mjs';
 import { makeRedactor } from './lib/redact.mjs';
@@ -106,9 +106,15 @@ export function createWatcher({
 
   const maxPerDay = new Map(config.rules.map((rule) => [rule.id, rule.max_per_day]));
 
+  const usCalendar = buildUsCalendar({ holidays: config.health.us_holidays, earlyCloses: config.health.us_early_closes });
+
   const onClosedBar = (stream, closed, closeTime) => {
-    // An expired rule is skipped before it is evaluated, so it costs nothing.
-    const active = config.rules.filter((rule) => !ruleExpired(rule, clock.now(), config.timezone));
+    // Expired and out-of-session rules are skipped before they are evaluated, so they cost nothing.
+    // A bar is in session if its last instant is: the bar ending at 16:00:00 ended at 15:59:59. The bar's own
+    // time is used, not the clock, so a late delivery cannot drop the last bar of the day.
+    const inSession = isUsRegularHours((closeTime - 1) * 1000, usCalendar);
+    const active = config.rules.filter((rule) => !ruleExpired(rule, clock.now(), config.timezone)
+      && (rule.calendar !== 'us_session' || inSession));
     const hits = evaluateRules(active, stream, closed);
     for (const hit of hits) {
       const message = renderRuleAlert(hit, {
@@ -161,7 +167,7 @@ export function createWatcher({
     clock,
     alerts,
     logger,
-    usCalendar: buildUsCalendar({ holidays: config.health.us_holidays, earlyCloses: config.health.us_early_closes }),
+    usCalendar,
   });
 
   const health = createHealth({

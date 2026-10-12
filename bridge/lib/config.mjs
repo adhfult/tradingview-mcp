@@ -13,6 +13,7 @@ import * as v from './validate.mjs';
 import { RULE_TYPES, barsNeeded, normalizeRule, ruleExpired, validateRuleParams } from './rules.mjs';
 import { CANDLE_COUNT } from './stream.mjs';
 import { DEFAULT_US_EARLY_CLOSES, DEFAULT_US_HOLIDAYS } from './scanner.mjs';
+import { localDate } from './format.mjs';
 
 /** Timeframes the watcher accepts (a narrower set than the library's). */
 export const WATCH_TIMEFRAMES = Object.freeze(['1', '3', '5', '15', '30', '45', '60', '120', '180', '240', 'D', 'W', 'M']);
@@ -179,6 +180,18 @@ function isCalendarDate(value) {
   return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
 }
 
+/** The watched (symbol, timeframe) pairs a rule applies to. A missing `symbol` or `timeframes` matches all of them. */
+function matchedStreams(watchlist, symbol, timeframes) {
+  const streams = [];
+  for (const entry of watchlist) {
+    if (symbol !== undefined && entry.symbol !== symbol) continue;
+    for (const timeframe of entry.timeframes) {
+      if (timeframes === undefined || timeframes.includes(timeframe)) streams.push({ symbol: entry.symbol, timeframe });
+    }
+  }
+  return streams;
+}
+
 function parseRules(input, watchlist, errors, warnings, { timezone, now }) {
   if (input.rules === undefined) return [];
   if (!Array.isArray(input.rules)) {
@@ -195,7 +208,7 @@ function parseRules(input, watchlist, errors, warnings, { timezone, now }) {
     }
     const before = errors.length;
     const allowed = ['id', 'type', 'symbol', 'timeframes', 'bars', 'threshold_pct', 'multiple', 'lookback',
-      'period', 'levels', 'stddev', 'level', 'max_per_day', 'expires'];
+      'period', 'levels', 'stddev', 'level', 'max_per_day', 'expires', 'calendar'];
     checkKeys(raw, allowed, path, errors);
 
     if (typeof raw.id !== 'string' || !RULE_ID.test(raw.id)) {
@@ -245,12 +258,20 @@ function parseRules(input, watchlist, errors, warnings, { timezone, now }) {
     if (raw.expires !== undefined && !isCalendarDate(raw.expires)) {
       errors.push(`${path}.expires: must be a date like 2026-12-31 (YYYY-MM-DD)`);
     }
+    if (raw.calendar !== undefined && !['any', 'us_session'].includes(raw.calendar)) {
+      errors.push(`${path}.calendar: must be "any" or "us_session"`);
+    }
 
     // A rule that can never match is a config mistake, so report it.
     if (errors.length === before && RULE_TYPES.includes(raw.type)) {
-      const matches = watchlist.some((entry) => (symbol === undefined || entry.symbol === symbol)
-        && (timeframes === undefined || entry.timeframes.some((tf) => timeframes.includes(tf))));
-      if (!matches) errors.push(`${path}: matches no watched symbol and timeframe`);
+      const streams = matchedStreams(watchlist, symbol, timeframes);
+      if (streams.length === 0) errors.push(`${path}: matches no watched symbol and timeframe`);
+      // us_session is an hour-of-day gate, and a daily or longer bar closes at a day boundary, so the rule would never fire.
+      // Timeframes the rule names count even if the watchlist lacks them, so the mistake shows up now, not when W is added.
+      const checked = timeframes ?? streams.map((s) => s.timeframe);
+      if (raw.calendar === 'us_session' && checked.some((tf) => ['D', 'W', 'M'].includes(tf))) {
+        errors.push(`${path}.calendar: "us_session" needs intraday timeframes only (not D, W or M); set "timeframes" on the rule`);
+      }
       const rule = { ...raw, symbol, timeframes };
       const normalized = normalizeRule(Object.fromEntries(Object.entries(rule).filter(([, value]) => value !== undefined)));
       // Each stream keeps CANDLE_COUNT bars. A rule that needs more could never fire.
@@ -477,6 +498,11 @@ export function parseConfig(input, { home = homedir(), now = Date.now() } = {}) 
   const trending = parseTrending(input, errors);
   const alerts = parseAlerts(input, errors);
   const health = parseHealth(input, errors);
+  // Past the last listed date the scanner treats holidays as trading days, so warn well before that.
+  const latestHoliday = health.us_holidays.reduce((a, b) => (b > a ? b : a), '');
+  if (isValidTimezone(timezone) && latestHoliday && latestHoliday < localDate(now + 30 * 86_400_000, timezone)) {
+    warnings.push(`health.us_holidays: the latest date is ${latestHoliday}, less than 30 days ahead; add next year's holidays`);
+  }
   const localApi = parseLocalApi(input, errors);
 
   let stateDir = DEFAULT_STATE_DIR;

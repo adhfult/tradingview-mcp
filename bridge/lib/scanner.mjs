@@ -24,9 +24,17 @@ const US_OPEN_MINUTES = 9 * 60 + 30;
 const US_CLOSE_MINUTES = 16 * 60;
 const DEADLINE_GRACE_MS = 5000;
 
-/** US market holidays and early closes (13:00 ET) known to the watcher. Update them each year. */
-export const DEFAULT_US_HOLIDAYS = Object.freeze(['2026-11-26', '2026-12-25']);
-export const DEFAULT_US_EARLY_CLOSES = Object.freeze(['2026-11-27', '2026-12-24']);
+/**
+ * US market holidays and early closes (13:00 ET) known to the watcher. Source: NYSE Group release of
+ * 2025-12-23 (2026 to 2028 calendar). Update them each year; --check-config warns when they run low.
+ * 2027-12-24 is a full closure (Christmas observed), so it is a holiday and not an early close.
+ */
+export const DEFAULT_US_HOLIDAYS = Object.freeze([
+  '2026-11-26', '2026-12-25',
+  '2027-01-01', '2027-01-18', '2027-02-15', '2027-03-26', '2027-05-31', '2027-06-18',
+  '2027-07-05', '2027-09-06', '2027-11-25', '2027-12-24',
+]);
+export const DEFAULT_US_EARLY_CLOSES = Object.freeze(['2026-11-27', '2026-12-24', '2027-11-26']);
 const US_EARLY_CLOSE_MINUTES = 13 * 60;
 
 /** Sets of YYYY-MM-DD dates for isUsRegularHours. Missing lists use the defaults. */

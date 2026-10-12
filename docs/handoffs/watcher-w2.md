@@ -31,8 +31,9 @@ The **last instant of the bar** `(closeTime - 1) * 1000`, not `clock.now()`.
 never evaluated and touches no state (no `seen`, no `cooldowns`, no daily count), same as an expired rule.
 
 ### Intraday only
-`us_session` is rejected at config time unless every watched (symbol, timeframe) the rule matches is intraday (not `D`, `W`,
-`M`). A daily bar closes at a day boundary, where an hour-of-day gate is meaningless and the rule would silently never fire.
+`us_session` is rejected at config time if the rule's own `timeframes` name `D`, `W` or `M` (even one the watchlist lacks, so
+the mistake shows now and not when it is added), or, with no `timeframes` on the rule, if any watched (symbol, timeframe) it
+matches is `D`, `W` or `M`. A daily bar closes at a day boundary, where an hour-of-day gate is meaningless and the rule would silently never fire.
 Config already treats "a rule that can never match" as an error, so this follows the same rule. The fix for the user is to set
 `timeframes` on the rule.
 
