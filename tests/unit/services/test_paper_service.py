@@ -28,7 +28,7 @@ def utc(y, m, d, h=0, mi=0, s=0) -> float:
     return datetime(y, m, d, h, mi, s, tzinfo=timezone.utc).timestamp()
 
 
-def daily_bars(n=30, start=date(2024, 1, 1)) -> list[dict]:
+def daily_bars(n=30, start=date(2024, 1, 3)) -> list[dict]:
     """Raw bridge bars: one per UTC day, `time` is the bar's open in unix seconds."""
     out = []
     for i in range(n):
@@ -38,7 +38,7 @@ def daily_bars(n=30, start=date(2024, 1, 1)) -> list[dict]:
 
 
 BARS = daily_bars()
-LAST_CLOSED_NOW = BARS[-1]["time"] + DAY + 100        # the last bar has closed, the next has barely begun
+LAST_CLOSED_NOW = BARS[-1]["time"] + DAY + 100        # the last bar (a Thursday) has closed; mid-week, so no summary is due
 
 
 class StubClient:
@@ -465,6 +465,12 @@ def test_summary_time_follows_daylight_saving():
 
 def test_no_summary_with_an_empty_journal():
     assert ps.summary_due(utc(2024, 1, 8, 13, 5), [], "America/New_York") is None
+
+
+def test_a_journal_that_began_this_week_waits_for_next_monday():
+    journal = journal_exits([1.0], utc(2024, 1, 9))                              # first event is after Monday 08:00
+    assert ps.summary_due(utc(2024, 1, 10, 15), journal, "America/New_York") is None
+    assert ps.summary_due(utc(2024, 1, 15, 14), journal, "America/New_York") == "2024-01-15"
 
 
 def test_process_once_sends_the_summary_once_and_records_it(monkeypatch, closed):
