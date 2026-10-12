@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import http from 'node:http';
+import net from 'node:net';
 import { createWatcher, parseArgs, readCredentials, runCheckConfig, runTestNotify } from '../../watcher.mjs';
 import { parseConfig } from '../../lib/config.mjs';
 import { makeRedactor } from '../../lib/redact.mjs';
@@ -31,6 +33,7 @@ async function build(t, { env = {}, fetch, dryRun = false, configOverrides = {},
   assert.deepEqual(errors, []);
   // Ephemeral port for tests: the validated config keeps 8787, the real one.
   config.local_api = { ...config.local_api, port: 0 };
+  config.dashboard = { ...config.dashboard, port: configOverrides.dashboard?.port ?? 0 };
   const fakeLib = lib ?? createFakeLib();
   const clock = createFakeClock(Date.UTC(2026, 9, 10, 12, 0, 0));
   const { fetch: fakeFetch, calls } = createFakeFetch(() => new Response(null, { status: 204 }));
@@ -41,6 +44,7 @@ async function build(t, { env = {}, fetch, dryRun = false, configOverrides = {},
     WATCHER_LOCAL_TOKEN: TOKEN,
     TRADINGVIEW_SESSION_ID: TV_SESSION,
     TRADINGVIEW_SESSION_SIGN: TV_SIGN,
+    TRADINGVIEW_MCP_HOME: dir,
     ...env,
   };
   const watcher = createWatcher({
@@ -772,4 +776,126 @@ test('a rule alert is recorded with its meta: rule, symbol, timeframe, bar, dire
   assert.match(entry.meta.message, /^Up 1\.00% over 1 bar/);
   assert.equal(entry.meta.values.close, 101); // the closed bar; 102 is still forming
   await watcher.stop();
+});
+
+// ---------------------------------------------------------------- dashboard wiring
+
+const DASH_TOKEN = 'SECRET_DASHBOARD_TOKEN_VALUE_1234';
+const dashPort = (watcher) => watcher.dashboard.server.address().port;
+const getFrom = (watcher, path, init) => globalThis.fetch(`http://127.0.0.1:${dashPort(watcher)}${path}`, init);
+
+function listen(port, path) {
+  return new Promise((resolve, reject) => {
+    const req = http.get({ host: '127.0.0.1', port, path, agent: false }, (res) => {
+      let text = '';
+      res.setEncoding('utf8');
+      res.on('data', (c) => { text += c; });
+      resolve({
+        text: () => text,
+        async waitFor(needle) {
+          for (let i = 0; i < 400 && !text.includes(needle); i += 1) await new Promise((r) => setTimeout(r, 5));
+          assert.ok(text.includes(needle), `waited for ${needle}, got ${text}`);
+        },
+        close: () => req.destroy(),
+      });
+    });
+    req.on('error', (err) => { if (err.code !== 'ECONNRESET') reject(err); });
+  });
+}
+
+test('the dashboard starts with the watcher on its own port, serves the API, and stop() frees the port', async (t) => {
+  const { watcher, logs } = await build(t, { configOverrides: NO_API });
+  await watcher.start();
+  const port = dashPort(watcher);
+  assert.ok(logs.some((l) => l.includes(`dashboard listening on 127.0.0.1:${port}`)));
+  const res = await getFrom(watcher, '/api/streams');
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), [{ symbol: 'BINANCE:BTCUSDT', timeframe: '15', healthy: false, lastBarTime: null }]);
+  await watcher.stop();
+  await assert.rejects(globalThis.fetch(`http://127.0.0.1:${port}/api/streams`));
+});
+
+test('dashboard.enabled false: no server is created, and the log says so', async (t) => {
+  const { watcher, logs } = await build(t, { configOverrides: { ...NO_API, dashboard: { enabled: false } } });
+  await watcher.start();
+  assert.equal(watcher.dashboard, null);
+  assert.ok(logs.some((l) => /dashboard disabled/.test(l)));
+  await watcher.stop();
+});
+
+test('a non-loopback dashboard without a usable token is refused with the reason, and the watcher still alerts', async (t) => {
+  for (const env of [{}, { WATCHER_DASHBOARD_TOKEN: 'short' }]) {
+    const { watcher, logs, lib, calls, clock } = await build(t, { env, configOverrides: { ...NO_API, dashboard: { host: '0.0.0.0' } } });
+    await watcher.start();
+    assert.equal(watcher.dashboard, null);
+    assert.ok(logs.some((l) => l.includes('dashboard not started') && l.includes('WATCHER_DASHBOARD_TOKEN')), logs.join('\n'));
+    lib.watchers[0].feed(snapshot([100, 101]));
+    lib.watchers[0].feed(snapshot([100, 101, 102]));
+    clock.advance(1);
+    await settle();
+    assert.equal(calls.length, 1, 'the rule alert is still sent');
+    await watcher.stop();
+  }
+});
+
+test('a dashboard port that is already taken is logged, and the watcher carries on without it', async (t) => {
+  const taken = net.createServer();
+  await new Promise((resolve) => taken.listen(0, '127.0.0.1', resolve));
+  t.after(() => taken.close());
+  const { watcher, logs, lib } = await build(t, { configOverrides: { ...NO_API, dashboard: { port: taken.address().port } } });
+  await watcher.start();
+  assert.ok(logs.some((l) => l.includes('dashboard not started') && l.includes('EADDRINUSE')), logs.join('\n'));
+  assert.equal(lib.watchers.length, 1, 'the streams started anyway');
+  await watcher.stop();
+});
+
+test('bars, alerts and health from the watcher reach the bus', async (t) => {
+  const { watcher, lib, clock } = await build(t, { configOverrides: { ...NO_API, dashboard: { enabled: false } } });
+  const seen = { bar: [], alert: [], health: [] };
+  for (const name of Object.keys(seen)) watcher.bus.on(name, (...args) => seen[name].push(args));
+  await watcher.start();
+  lib.watchers[0].feed(snapshot([100, 101]));
+  lib.watchers[0].feed(snapshot([100, 101, 102]));
+  clock.advance(1);
+  await watcher.tick();
+  assert.equal(seen.bar.length, 2);
+  assert.equal(seen.bar[0][0].key, 'BINANCE:BTCUSDT|15');
+  assert.equal(seen.bar[1][1].close, 102);
+  assert.equal(seen.alert.length, 1);
+  assert.equal(seen.alert[0][0].meta.ruleId, 'move');
+  assert.equal(seen.health.length, 1);
+  assert.equal(seen.health[0][0][0].symbol, 'BINANCE:BTCUSDT');
+  await watcher.stop();
+});
+
+test('end to end: a rule alert reaches a browser on /events and then /api/alerts, with its meta', async (t) => {
+  const { watcher, lib, clock } = await build(t, { configOverrides: NO_API });
+  await watcher.start();
+  const events = await listen(dashPort(watcher), '/events');
+  t.after(() => events.close());
+  lib.watchers[0].feed(snapshot([100, 101]));
+  lib.watchers[0].feed(snapshot([100, 101, 102]));
+  clock.advance(1);
+  await events.waitFor('event: alert');
+  const alertData = JSON.parse(events.text().split('event: alert\ndata: ')[1].split('\n')[0]);
+  assert.equal(alertData.ruleId, 'move');
+  assert.equal(alertData.symbol, 'BINANCE:BTCUSDT');
+  assert.equal(alertData.direction, 'up');
+  const history = await (await getFrom(watcher, '/api/alerts')).json();
+  assert.equal(history.length, 1);
+  assert.equal(history[0].ruleId, 'move');
+  assert.equal(history[0].timeframe, '15');
+  const candles = await (await getFrom(watcher, '/api/candles?symbol=BINANCE:BTCUSDT&tf=15')).json();
+  assert.equal(candles.length, 3);
+  await watcher.stop();
+});
+
+test('the dashboard token never reaches a log, even through a ?token= visit', async (t) => {
+  const { watcher, logs } = await build(t, { env: { WATCHER_DASHBOARD_TOKEN: DASH_TOKEN }, configOverrides: NO_API });
+  await watcher.start();
+  assert.equal((await getFrom(watcher, '/api/streams')).status, 401, 'a token that is set is required, even on loopback');
+  const visit = await getFrom(watcher, `/?token=${DASH_TOKEN}`, { redirect: 'manual' });
+  assert.equal(visit.status, 302);
+  await watcher.stop();
+  assert.ok(!logs.join('\n').includes(DASH_TOKEN));
 });
