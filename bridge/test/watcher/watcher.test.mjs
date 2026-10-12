@@ -630,3 +630,61 @@ for (const [name, openIso, nextIso, fires] of GAP_CASES) {
     await watcher.stop();
   });
 }
+
+// ---- W3: all_of / any_of, through the whole watcher ---------------------------------------
+const composites = (extra = {}) => ({
+  rules: [
+    { id: 'a', type: 'pct_move', bars: 1, threshold_pct: 0.5 },
+    { id: 'b', type: 'pct_move', bars: 1, threshold_pct: 0.9 },
+    { id: 'both', type: 'all_of', rules: ['a', 'b'], ...extra },
+  ],
+  ...NO_API,
+});
+const fromType = (calls, type) => calls.filter((c) => c.body.content.endsWith(`· ${type}`));
+
+test('all_of sends one combined alert, in addition to the members\' own alerts', async (t) => {
+  const { watcher, lib, calls } = await build(t, { configOverrides: composites() });
+  await watcher.start();
+  lib.watchers[0].feed(snapshot([100, 101]));
+  lib.watchers[0].feed(snapshot([100, 101, 102]));      // +0.99%: a (0.5) and b (0.9) both fire
+  await settle();
+  assert.equal(calls.length, 3, 'a, b and the combination');
+  const combined = fromType(calls, 'all_of');
+  assert.equal(combined.length, 1);
+  assert.match(combined[0].body.embeds[0].description, /a: Up 0\.99% over 1 bar \| b: Up 0\.99% over 1 bar/);
+  assert.match(combined[0].body.embeds[0].description, /Rule: both/);
+  await watcher.stop();
+});
+
+test('a composite that needs every member stays quiet when one member does not fire', async (t) => {
+  const { watcher, lib, calls } = await build(t, { configOverrides: composites() });
+  await watcher.start();
+  lib.watchers[0].feed(snapshot([100, 100.7]));
+  lib.watchers[0].feed(snapshot([100, 100.7, 101]));    // +0.7%: a fires, b does not
+  await settle();
+  assert.equal(fromType(calls, 'all_of').length, 0);
+  assert.equal(calls.length, 1, 'only a');
+  await watcher.stop();
+});
+
+test('the direction is part of the composite cooldown, and max_per_day counts the composite on its own', async (t) => {
+  const run = async (extra) => {
+    const rules = [
+      { id: 'a', type: 'pct_move', bars: 1, threshold_pct: 0.5 },
+      { id: 'b', type: 'pct_move', bars: 1, threshold_pct: 0.6 },
+      { id: 'either', type: 'any_of', rules: ['a', 'b'], ...extra },
+    ];
+    const built = await build(t, { configOverrides: { rules, ...NO_API } });
+    await built.watcher.start();
+    const w = built.lib.watchers[0];
+    w.feed(snapshot([100, 101]));
+    w.feed(snapshot([100, 101, 102]));              // up: sent
+    w.feed(snapshot([100, 101, 102, 100]));         // up again: cooldown
+    w.feed(snapshot([100, 101, 102, 100, 100]));    // down: a different cooldown key
+    await settle();
+    await built.watcher.stop();
+    return fromType(built.calls, 'any_of');
+  };
+  assert.equal((await run({})).length, 2, 'one up, one down');
+  assert.equal((await run({ max_per_day: 1 })).length, 1, 'the cap stops the second');
+});

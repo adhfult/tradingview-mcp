@@ -215,3 +215,86 @@ test('ruleExpired: the end of the day is local midnight in the given timezone', 
   assert.equal(rulesLib.ruleExpired(rule, Date.UTC(2026, 9, 10, 3, 59, 59), 'America/New_York'), false);   // 23:59:59 EDT on the 9th
   assert.equal(rulesLib.ruleExpired(rule, Date.UTC(2026, 9, 10, 4, 0, 0), 'America/New_York'), true);      // 00:00 EDT on the 10th
 });
+
+// ---- W3: all_of / any_of ------------------------------------------------------------------
+const leaf = (id, extra = {}) => ({ id, type: 'pct_move', bars: 1, threshold_pct: 1, ...extra });
+const combo = (type, members, extra = {}) => ({ id: 'c', type, rules: members.map((m) => m.id), members, ...extra });
+// On [100, 90, 95]: bars 1 is +5.56% (up) and bars 2 is -5% (down), two opposite signals on one bar.
+const OPPOSED = [leaf('a'), leaf('b', { bars: 2 })];
+
+test('all_of fires once when every member fires in the same direction, with one joined message', () => {
+  const hits = run(combo('all_of', [leaf('a'), leaf('b', { threshold_pct: 3 })]), bars([100, 105]));
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].ruleId, 'c');
+  assert.equal(hits[0].type, 'all_of');
+  assert.equal(hits[0].direction, 'up');
+  assert.equal(hits[0].barTime, T0 + 3600);
+  assert.equal(hits[0].message, 'a: Up 5.00% over 1 bar | b: Up 5.00% over 1 bar');
+  assert.equal(hits[0].values['a.pct'], 5);
+  assert.equal(hits[0].values['b.ref_close'], 100);
+});
+
+test('all_of does not fire when one member does not', () => {
+  assert.deepEqual(run(combo('all_of', [leaf('a'), leaf('b', { threshold_pct: 3 })]), bars([100, 102])), []);
+});
+
+test('all_of does not fire when members fire in opposite directions', () => {
+  assert.deepEqual(run(combo('all_of', OPPOSED), bars([100, 90, 95])), []);
+});
+
+test('any_of fires when one member fires, and reports only the members that fired', () => {
+  const hits = run(combo('any_of', [leaf('a'), leaf('b', { threshold_pct: 3 })]), bars([100, 102]));
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].type, 'any_of');
+  assert.equal(hits[0].message, 'a: Up 2.00% over 1 bar');
+  assert.deepEqual(Object.keys(hits[0].values).filter((k) => k.startsWith('b.')), []);
+});
+
+test('any_of with two members agreeing is one hit, not two', () => {
+  const hits = run(combo('any_of', [leaf('a'), leaf('b', { threshold_pct: 3 })]), bars([100, 105]));
+  assert.equal(hits.length, 1);
+  assert.match(hits[0].message, /^a: .* \| b: /);
+});
+
+test('any_of with members in opposite directions gives one hit per direction', () => {
+  const hits = run(combo('any_of', OPPOSED), bars([100, 90, 95]));
+  assert.deepEqual(hits.map((h) => [h.direction, h.message]), [
+    ['up', 'a: Up 5.56% over 1 bar'],
+    ['down', 'b: Down 5.00% over 2 bars'],
+  ]);
+});
+
+test('a composite gives no hit when there are not enough bars for its members', () => {
+  assert.deepEqual(run(combo('any_of', [leaf('a'), leaf('b')]), bars([100])), []);
+});
+
+test('all_of needs every member to apply to the stream; any_of only needs one', () => {
+  const elsewhere = leaf('b', { symbol: 'BINANCE:ETHUSDT' });
+  assert.deepEqual(run(combo('all_of', [leaf('a'), elsewhere]), bars([100, 105])), [], 'b never applies to BTC');
+  const hits = run(combo('any_of', [leaf('a'), elsewhere]), bars([100, 105]));
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].message, 'a: Up 5.00% over 1 bar');
+});
+
+test('a composite honours its own symbol and timeframes filters', () => {
+  const members = [leaf('a'), leaf('b')];
+  assert.deepEqual(run(combo('any_of', members, { symbol: 'BINANCE:ETHUSDT' }), bars([100, 105])), []);
+  assert.deepEqual(run(combo('any_of', members, { timeframes: ['15'] }), bars([100, 105])), []);
+  assert.equal(run(combo('any_of', members, { timeframes: ['60'] }), bars([100, 105])).length, 1);
+});
+
+test('barsNeeded for a composite is the most any member needs', () => {
+  const members = [leaf('a', { bars: 4 }), { id: 'b', type: 'new_extreme', lookback: 50 }];
+  assert.equal(rulesLib.barsNeeded(combo('all_of', members)), 51);
+});
+
+test('all_of and any_of are rule types, and their rules list is validated', () => {
+  assert.ok(rulesLib.RULE_TYPES.includes('all_of') && rulesLib.RULE_TYPES.includes('any_of'));
+  const check = (rules) => validateRuleParams({ type: 'all_of', rules }, 'r');
+  assert.deepEqual(check(['a', 'b']), []);
+  assert.deepEqual(check(Array.from({ length: 10 }, (_, i) => `r${i}`)), []);
+  for (const bad of [undefined, 'a', ['a'], Array.from({ length: 11 }, (_, i) => `r${i}`), ['a', 'a'], ['a', 2], ['a', '']]) {
+    const errors = check(bad);
+    assert.ok(errors.length > 0 && errors.every((e) => e.startsWith('r.rules')), `${JSON.stringify(bad)} gave ${errors}`);
+  }
+});

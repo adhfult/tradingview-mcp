@@ -397,3 +397,74 @@ test('holiday and early-close dates must be real dates, so a typo cannot silentl
   }
   assert.deepEqual(parseConfig(base({ health: { us_holidays: ['2028-02-29'] } }), { home: HOME }).errors, [], 'a leap day is real');
 });
+
+// ---- W3: all_of / any_of -----------------------------------------------------------------
+const NOW = Date.UTC(2026, 9, 10, 12, 0, 0);
+const A = { id: 'a', type: 'pct_move', bars: 1, threshold_pct: 1 };
+const B = { id: 'b', type: 'rsi_cross', period: 14, levels: [30, 70] };
+const parseRules = (rules, extra = {}) => parseConfig({ ...base(), ...extra, rules }, { home: HOME, now: NOW });
+const joined = (r) => r.errors.join('\n');
+
+test('a composite resolves its members, which may be defined after it', () => {
+  for (const rules of [[A, B, { id: 'c', type: 'all_of', rules: ['a', 'b'] }], [{ id: 'c', type: 'any_of', rules: ['b', 'a'] }, A, B]]) {
+    const r = parseRules(rules);
+    assert.deepEqual(r.errors, []);
+    const c = r.config.rules.find((x) => x.id === 'c');
+    assert.deepEqual(c.members.map((m) => m.id), c.rules);
+    assert.equal(c.members.find((m) => m.id === 'b').period, 14);
+    assert.deepEqual(c.members.find((m) => m.id === 'b').levels, [30, 70]);
+  }
+});
+
+test('a composite with an unknown member id is an error that names the id', () => {
+  const r = parseRules([A, { id: 'c', type: 'all_of', rules: ['a', 'zzz'] }]);
+  assert.match(joined(r), /^rules\[1\]\.rules\[1\]: "zzz" is not the id of a rule in this config$/m);
+});
+
+test('composites cannot contain composites, which also rules out self-reference and cycles', () => {
+  const nested = parseRules([A, B, { id: 'c1', type: 'all_of', rules: ['a', 'b'] }, { id: 'c2', type: 'any_of', rules: ['c1', 'a'] }]);
+  assert.match(joined(nested), /^rules\[3\]\.rules\[0\]: .*composites cannot contain composites/m);
+  const self = parseRules([A, { id: 'c', type: 'all_of', rules: ['a', 'c'] }]);
+  assert.match(joined(self), /^rules\[1\]\.rules\[1\]: .*composites cannot contain composites/m);
+  const cycle = parseRules([A, { id: 'x', type: 'all_of', rules: ['a', 'y'] }, { id: 'y', type: 'any_of', rules: ['a', 'x'] }]);
+  assert.match(joined(cycle), /^rules\[1\]\.rules\[1\]: .*composites cannot contain composites/m);
+  assert.match(joined(cycle), /^rules\[2\]\.rules\[1\]: .*composites cannot contain composites/m);
+});
+
+test('the size and repeat limits of a rules list are reported at the composite', () => {
+  assert.match(joined(parseRules([A, { id: 'c', type: 'all_of', rules: ['a'] }])), /^rules\[1\]\.rules: /m);
+  assert.match(joined(parseRules([A, { id: 'c', type: 'all_of', rules: ['a', 'a'] }])), /^rules\[1\]\.rules: /m);
+  assert.match(joined(parseRules([A, { id: 'c', type: 'all_of' }])), /^rules\[1\]\.rules: is required/m);
+});
+
+test('an all_of whose members never apply to the same stream could never fire, and is an error', () => {
+  const two = { watchlist: [{ symbol: 'BINANCE:BTCUSDT', timeframes: ['15', '60'] }] };
+  const rules = (type) => [{ ...A, timeframes: ['15'] }, { ...B, timeframes: ['60'] }, { id: 'c', type, rules: ['a', 'b'] }];
+  assert.match(joined(parseRules(rules('all_of'), two)), /^rules\[2\]: .*could never fire/m);
+  assert.deepEqual(parseRules(rules('any_of'), two).errors, [], 'either member alone is enough for any_of');
+  // Same idea with symbols.
+  const pair = { watchlist: [{ symbol: 'BINANCE:BTCUSDT', timeframes: ['60'] }, { symbol: 'BINANCE:ETHUSDT', timeframes: ['60'] }] };
+  const bySymbol = [{ ...A, symbol: 'BINANCE:BTCUSDT' }, { ...B, symbol: 'BINANCE:ETHUSDT' }, { id: 'c', type: 'all_of', rules: ['a', 'b'] }];
+  assert.match(joined(parseRules(bySymbol, pair)), /^rules\[2\]: .*could never fire/m);
+});
+
+test('an any_of none of whose members apply where the composite does could never fire', () => {
+  const pair = { watchlist: [{ symbol: 'BINANCE:BTCUSDT', timeframes: ['60'] }, { symbol: 'BINANCE:ETHUSDT', timeframes: ['60'] }] };
+  const rules = [{ ...A, symbol: 'BINANCE:ETHUSDT' }, { ...B, symbol: 'BINANCE:ETHUSDT' },
+    { id: 'c', type: 'any_of', rules: ['a', 'b'], symbol: 'BINANCE:BTCUSDT' }];
+  assert.match(joined(parseRules(rules, pair)), /^rules\[2\]: .*could never fire/m);
+});
+
+test('a member with its own error is reported once, without a second error on the composite', () => {
+  const r = parseRules([{ ...A, bars: 0 }, B, { id: 'c', type: 'all_of', rules: ['a', 'b'] }]);
+  assert.match(joined(r), /^rules\[0\]\.bars: /m);
+  assert.doesNotMatch(joined(r), /rules\[2\]/);
+});
+
+test('a composite takes the generic rule keys: max_per_day, expires, calendar, symbol and timeframes', () => {
+  const r = parseRules([A, B, { id: 'c', type: 'any_of', rules: ['a', 'b'], max_per_day: 3, expires: '2026-12-31',
+    calendar: 'us_session', symbol: 'BINANCE:BTCUSDT', timeframes: ['60'] }]);
+  assert.deepEqual(r.errors, []);
+  assert.equal(r.config.rules[2].max_per_day, 3);
+  assert.equal(r.config.rules[2].calendar, 'us_session');
+});
