@@ -11,9 +11,13 @@ import { bollinger, rsi } from './indicators.mjs';
 const int = (min, max) => ({ kind: 'int', min, max });
 const num = (min, max, { exclusiveMin = false } = {}) => ({ kind: 'number', min, max, exclusiveMin });
 const numList = (minItems, maxItems, min, max) => ({ kind: 'numberList', minItems, maxItems, min, max });
+const idList = (minItems, maxItems) => ({ kind: 'idList', minItems, maxItems });
+
+export const RULE_ID = /^[A-Za-z0-9_-]{1,64}$/;
 
 /**
  * Parameter specs per rule type. `required: false` params take the default.
+ * all_of / any_of combine other rules: the config resolves their ids into `members` (plain rules only, one level).
  * Ranges are the "sensible" bounds checked by config validation.
  */
 export const RULE_SPECS = Object.freeze({
@@ -51,7 +55,11 @@ export const RULE_SPECS = Object.freeze({
       level: { ...num(0, Number.MAX_SAFE_INTEGER, { exclusiveMin: true }), required: true },
     },
   },
+  all_of: { params: { rules: { ...idList(2, 10), required: true } } },
+  any_of: { params: { rules: { ...idList(2, 10), required: true } } },
 });
+
+export const isComposite = (rule) => rule.type === 'all_of' || rule.type === 'any_of';
 
 export const RULE_TYPES = Object.freeze(Object.keys(RULE_SPECS));
 
@@ -78,6 +86,15 @@ function checkValue(spec, value, path) {
       const message = checkValue({ kind: 'number', min: spec.min, max: spec.max }, value[i], `${path}[${i}]`);
       if (message) return message;
     }
+    return null;
+  }
+  if (spec.kind === 'idList') {
+    if (!Array.isArray(value) || value.length < spec.minItems || value.length > spec.maxItems) {
+      return `${path}: must be a list of ${spec.minItems} to ${spec.maxItems} rule ids`;
+    }
+    const bad = value.findIndex((id) => typeof id !== 'string' || !RULE_ID.test(id));
+    if (bad !== -1) return `${path}[${bad}]: must be a rule id (1 to 64 letters, digits, "-" or "_")`;
+    if (new Set(value).size !== value.length) return `${path}: must not repeat an id`;
     return null;
   }
   return `${path}: unknown parameter type`;
@@ -134,6 +151,8 @@ export function barsNeeded(rule) {
     case 'bollinger_break': return rule.period;
     case 'new_extreme': return rule.lookback + 1;
     case 'price_cross': return 2;
+    case 'all_of':
+    case 'any_of': return Math.max(0, ...(rule.members ?? []).map(barsNeeded));
     default: return 0;
   }
 }
@@ -267,6 +286,29 @@ export function ruleApplies(rule, stream) {
 }
 
 /**
+ * all_of / any_of: runs the member rules on the same closed bar and groups their hits by direction.
+ * any_of gives one result per direction with a hit. all_of gives one only if every member applies to
+ * the stream and all hit in that direction (members in opposite directions disagree, so no result).
+ * Messages are joined `ruleId: message`, and each value is named `ruleId.valueName`.
+ */
+function evaluateComposite(rule, stream, closedCandles) {
+  const members = rule.members ?? [];
+  if (rule.type === 'all_of' && !members.every((member) => ruleApplies(member, stream))) return [];
+  const hits = evaluateRules(members, stream, closedCandles);
+  const results = [];
+  for (const direction of new Set(hits.map((hit) => hit.direction))) {
+    const group = hits.filter((hit) => hit.direction === direction);
+    if (rule.type === 'all_of' && group.length !== members.length) continue;
+    results.push({
+      direction,
+      values: Object.fromEntries(group.flatMap((hit) => Object.entries(hit.values ?? {}).map(([name, value]) => [`${hit.ruleId}.${name}`, value]))),
+      message: group.map((hit) => `${hit.ruleId}: ${hit.message}`).join(' | '),
+    });
+  }
+  return results;
+}
+
+/**
  * Evaluates every applicable rule on one stream. `closedCandles` must end at the
  * bar that just closed. Returns an array of hits (possibly empty).
  */
@@ -276,20 +318,22 @@ export function evaluateRules(rules, stream, closedCandles) {
   for (const raw of rules) {
     if (!ruleApplies(raw, stream)) continue;
     const evaluate = EVALUATORS[raw.type];
-    if (!evaluate) continue;
+    if (!evaluate && !isComposite(raw)) continue;
     const rule = normalizeRule(raw);
-    const result = evaluate(rule, closedCandles);
-    if (result === null) continue;
-    hits.push({
-      ruleId: rule.id,
-      type: rule.type,
-      symbol: stream.symbol,
-      timeframe: stream.timeframe,
-      barTime: closedCandles[closedCandles.length - 1].time,
-      direction: result.direction,
-      values: result.values,
-      message: result.message,
-    });
+    const results = isComposite(rule) ? evaluateComposite(rule, stream, closedCandles) : [evaluate(rule, closedCandles)];
+    for (const result of results) {
+      if (result === null) continue;
+      hits.push({
+        ruleId: rule.id,
+        type: rule.type,
+        symbol: stream.symbol,
+        timeframe: stream.timeframe,
+        barTime: closedCandles[closedCandles.length - 1].time,
+        direction: result.direction,
+        values: result.values,
+        message: result.message,
+      });
+    }
   }
   return hits;
 }
