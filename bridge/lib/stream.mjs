@@ -26,6 +26,10 @@
  * missed for good. On the first snapshot after a (re)start, bars that closed after
  * the persisted `lastEvaluatedTime` are evaluated once, but only recent ones (within
  * two bar lengths, at least 5 minutes), so a long outage never replays old bars.
+ *
+ * For the dashboard each stream also keeps the latest snapshot (`candles(key)`, a reference to the
+ * library's frozen array, no copy) and reports changes to the newest candle through `onBar`. The
+ * snapshot survives a reconnect, so a chart shows stale data instead of going blank.
  */
 import { errorMessage } from './errors.mjs';
 import { timeframeSeconds } from './format.mjs';
@@ -57,6 +61,7 @@ export function createStreams({
   random = Math.random,
   count = CANDLE_COUNT,
   onConnection = () => {},
+  onBar = () => {},
 }) {
   let stopping = false;
   let lastIssued = null;
@@ -73,6 +78,7 @@ export function createStreams({
     gen: 0,
     watcher: null,
     lastBarTime: null,
+    candles: [],
     lastDataAt: null,
     attempt: 0,
     healthySince: null,
@@ -131,6 +137,9 @@ export function createStreams({
     }
   }
 
+  const sameCandle = (a, b) => a !== undefined
+    && a.time === b.time && a.open === b.open && a.high === b.high && a.low === b.low && a.close === b.close && a.volume === b.volume;
+
   function handleData(s, candles) {
     const t = clock.now();
     s.lastDataAt = t;
@@ -140,6 +149,24 @@ export function createStreams({
     s.silentRestarted = false;
     if (!Array.isArray(candles) || candles.length === 0) return;
 
+    // An older snapshot (out of order) is ignored for storage too, like it is for evaluation.
+    const newest = candles[candles.length - 1];
+    const previous = s.candles.at(-1);
+    const fresh = s.lastBarTime === null || newest.time >= s.lastBarTime;
+    if (fresh) s.candles = candles;
+    evaluateSnapshot(s, candles);
+    // Last, so the stored candles are current when a listener asks for them. A listener bug (the
+    // dashboard) must never stop closed-bar evaluation.
+    if (fresh && !sameCandle(previous, newest)) {
+      try {
+        onBar(s, newest);
+      } catch (err) {
+        logger.error(`onBar failed on ${s.key}: ${errorMessage(err)}`);
+      }
+    }
+  }
+
+  function evaluateSnapshot(s, candles) {
     const last = candles[candles.length - 1].time;
     if (s.lastBarTime === null) {
       // First snapshot after start or restart: record the forming bar. Only bars that
@@ -265,11 +292,18 @@ export function createStreams({
         timeframe: s.timeframe,
         market: s.market,
         status: s.status,
+        lastBarTime: s.candles.at(-1)?.time ?? null,
         lastDataAt: s.lastDataAt,
         attempt: s.attempt,
         disconnects: s.disconnects,
         lastError: s.lastError,
       }));
+    },
+
+    /** A copy of the latest snapshot of one stream, oldest first: [] before the first data, null for an unknown key. */
+    candles(key) {
+      const s = list.find((entry) => entry.key === key);
+      return s === undefined ? null : s.candles.slice();
     },
 
     /**
