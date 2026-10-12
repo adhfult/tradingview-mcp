@@ -21,10 +21,15 @@ It is defined by time, not by symbol: a crypto rule with `us_session` fires only
 ("BTC moves while the US is open").
 
 ### Which instant is tested
-The **last instant of the bar** `(closeTime - 1) * 1000`, not `clock.now()`.
-- `closeTime` (the next candle's open, seconds, see `bridge/lib/stream.mjs:114`) is the exclusive end of the bar. The bar that
-  ends at 16:00:00 ends at 15:59:59, which is inside the session. The bar that ends at 09:30 ends at 09:29:59, outside.
-- `clock.now()` would drop the last bar of the day whenever delivery lags by a second.
+The **open time of the closed bar** (`closed.at(-1).time`), not `clock.now()` and not `closeTime`.
+- First design was `closeTime - 1`. Both reviewers showed it is wrong: `closeTime` is the next *received* candle's open
+  (`bridge/lib/stream.mjs:114`), which equals the bar's end only on a 24/7 stream. A stock stream has no bars overnight, so
+  the day's last bar (15:45) got the next morning's 09:30 as its "end" and was dropped. `open + timeframe` is also wrong:
+  TradingView aligns stock bars to 09:30, so the 15:30 hourly bar is 30 minutes long.
+- The bar's open is correct for stocks on every timeframe (09:30 in, 15:45 in, 16:00 out, 12:45 in and 13:00 out on an early
+  close) and needs no knowledge of the bar length. Cost: a crypto hourly bar opening 09:00 (closing 10:00) is out, because it
+  opened before the session. Chosen on purpose.
+- `clock.now()` would drop the last bar of the day whenever delivery lags.
 
 ### Where it runs
 `onClosedBar` in `bridge/watcher.mjs`, in the same filter as the W1 expiry check, before `evaluateRules`. A gated rule is

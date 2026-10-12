@@ -604,3 +604,29 @@ test('gating one rule leaves the other rules on the same stream alone', async (t
   assert.equal(calls.length, 1);
   await watcher.stop();
 });
+
+// A stock stream has no bars between the close and the next open, so the candle after the closed one opens the next
+// morning. The gate must judge the closed bar by its own open time, not by that next candle (review finding, W2).
+const GAP_CASES = [
+  ['the 15:45 bar before the overnight gap', '2026-10-09T19:45:00Z', '2026-10-12T13:30:00Z', true],
+  ['a 15:30 hourly bar (30 minutes long) before the gap', '2026-10-09T19:30:00Z', '2026-10-12T13:30:00Z', true],
+  ['the 12:45 bar on an early-close day, before the long weekend gap', '2026-11-27T17:45:00Z', '2026-11-30T14:30:00Z', true],
+  ['an after-hours 16:00 bar before the gap is still out', '2026-10-09T20:00:00Z', '2026-10-12T13:30:00Z', false],
+  ['a 13:00 bar on an early-close day is out', '2026-11-27T18:00:00Z', '2026-11-30T14:30:00Z', false],
+];
+
+for (const [name, openIso, nextIso, fires] of GAP_CASES) {
+  test(`calendar us_session on a gapped stream: ${name} ${fires ? 'fires' : 'is skipped'}`, async (t) => {
+    const { watcher, lib, calls } = await build(t, { configOverrides: ruleWith({ calendar: 'us_session' }) });
+    await watcher.start();
+    const candles = snapshot([100, 101, 102], { step: 900 });
+    candles[0].time = Date.parse(openIso) / 1000 - 900;
+    candles[1].time = Date.parse(openIso) / 1000;
+    candles[2].time = Date.parse(nextIso) / 1000;
+    lib.watchers[0].feed(candles.slice(0, 2));
+    lib.watchers[0].feed(candles);
+    await settle();
+    assert.equal(calls.length, fires ? 1 : 0);
+    await watcher.stop();
+  });
+}

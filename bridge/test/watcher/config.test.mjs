@@ -389,3 +389,11 @@ test('a holiday list with no date 30 or more days ahead is a warning, not an err
   assert.deepEqual(empty.errors, []);
   assert.deepEqual(stale(empty), []);
 });
+
+test('holiday and early-close dates must be real dates, so a typo cannot silently leave a holiday ungated', () => {
+  for (const key of ['us_holidays', 'us_early_closes']) {
+    const { errors } = parseConfig(base({ health: { [key]: ['2027-11-31'] } }), { home: HOME });
+    assert.ok(errors.some((e) => e.startsWith(`health.${key}[0]: must be`)), `${key} gave ${errors}`);
+  }
+  assert.deepEqual(parseConfig(base({ health: { us_holidays: ['2028-02-29'] } }), { home: HOME }).errors, [], 'a leap day is real');
+});

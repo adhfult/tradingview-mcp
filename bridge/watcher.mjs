@@ -110,9 +110,10 @@ export function createWatcher({
 
   const onClosedBar = (stream, closed, closeTime) => {
     // Expired and out-of-session rules are skipped before they are evaluated, so they cost nothing.
-    // A bar is in session if its last instant is: the bar ending at 16:00:00 ended at 15:59:59. The bar's own
-    // time is used, not the clock, so a late delivery cannot drop the last bar of the day.
-    const inSession = isUsRegularHours((closeTime - 1) * 1000, usCalendar);
+    // A bar is in session if it opens in session, judged by the bar's own time and not the clock, so a late
+    // delivery cannot drop it. Not by closeTime: that is the next candle's open, which for a stock stream is the
+    // next morning, and not by open + timeframe either, because the last bar of the day can be shorter.
+    const inSession = isUsRegularHours(closed.at(-1).time * 1000, usCalendar);
     const active = config.rules.filter((rule) => !ruleExpired(rule, clock.now(), config.timezone)
       && (rule.calendar !== 'us_session' || inSession));
     const hits = evaluateRules(active, stream, closed);

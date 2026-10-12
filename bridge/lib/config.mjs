@@ -413,7 +413,7 @@ function readDateList(object, key, path, errors, fallback) {
   }
   const out = [];
   value.forEach((date, index) => {
-    if (typeof date !== 'string' || !ISO_DATE.test(date)) errors.push(`${path}.${key}[${index}]: must be YYYY-MM-DD`);
+    if (typeof date !== 'string' || !ISO_DATE.test(date) || !isCalendarDate(date)) errors.push(`${path}.${key}[${index}]: must be YYYY-MM-DD`);
     else if (!out.includes(date)) out.push(date);
   });
   return out;
