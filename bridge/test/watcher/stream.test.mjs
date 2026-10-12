@@ -14,7 +14,7 @@ function logger() {
 }
 
 /** Builds the streams under test with a fake library, clock and evaluated-state map. */
-function setup({ credentials = null, random = () => 0, onClosedBar = () => {}, evaluatedInit = {} } = {}) {
+function setup({ credentials = null, random = () => 0, onClosedBar = () => {}, onBar, evaluatedInit = {} } = {}) {
   const clock = createFakeClock();
   const lib = createFakeLib();
   const log = logger();
@@ -33,6 +33,7 @@ function setup({ credentials = null, random = () => 0, onClosedBar = () => {}, e
     logger: log,
     evaluated,
     random,
+    onBar,
     onClosedBar: (s, closed, closeTime) => {
       evaluations.push({ barTime: closed.at(-1).time, length: closed.length, closeTime });
       onClosedBar(s, closed, closeTime);
@@ -531,4 +532,87 @@ test('a plain connection error keeps the short backoff: the restart comes after 
   await settle();
   assert.equal(lib.watchers.length, 2, 'restarted after 5 s');
   assert.ok(log.lines.some((line) => line.includes('restarting in 5s')), 'the log says 5s, not minutes');
+});
+
+test('candles(key): null for an unknown key, [] before the first snapshot, then a copy of the latest snapshot', async () => {
+  const { lib, streams } = setup();
+  assert.equal(streams.candles('NOPE|1'), null);
+  streams.start();
+  await settle();
+  assert.deepEqual(streams.candles(KEY), []);
+  lib.watchers[0].feed(snapshot([10, 11, 12]));
+  const first = streams.candles(KEY);
+  assert.deepEqual(first, snapshot([10, 11, 12]));
+  first.push('junk');
+  assert.equal(streams.candles(KEY).length, 3, 'changing the returned array must not change the stream');
+  lib.watchers[0].feed(snapshot([10, 11, 12, 13]));
+  assert.equal(streams.candles(KEY).length, 4);
+});
+
+test('an older, out-of-order snapshot does not replace the stored candles', async () => {
+  const { lib, streams } = setup();
+  streams.start();
+  await settle();
+  lib.watchers[0].feed(snapshot([10, 11, 12, 13]));
+  lib.watchers[0].feed(snapshot([10, 11]));
+  assert.equal(streams.candles(KEY).length, 4);
+});
+
+test('candles stay readable while a stream is reconnecting, so a chart is stale rather than blank', async () => {
+  const { lib, streams, clock } = setup();
+  streams.start();
+  await settle();
+  lib.watchers[0].feed(snapshot([10, 11, 12]));
+  lib.watchers[0].fail('WS_ERROR');
+  assert.equal(streams.list()[0].status, 'restarting');
+  assert.equal(streams.candles(KEY).length, 3);
+  assert.equal(streams.list()[0].lastBarTime, snapshot([10, 11, 12]).at(-1).time);
+  clock.advance(5000);
+  await settle();
+  assert.equal(streams.candles(KEY).length, 3);
+});
+
+test('list() reports lastBarTime: null before data, then the time of the newest candle', async () => {
+  const { lib, streams } = setup();
+  streams.start();
+  await settle();
+  assert.equal(streams.list()[0].lastBarTime, null);
+  lib.watchers[0].feed(snapshot([10, 11, 12]));
+  assert.equal(streams.list()[0].lastBarTime, snapshot([10, 11, 12]).at(-1).time);
+});
+
+test('onBar fires for the first snapshot, a changed forming bar and a new bar, not for an identical repeat or an older snapshot', async () => {
+  const bars = [];
+  const { lib, streams } = setup({ onBar: (stream, bar) => bars.push({ stream: stream.key, bar }) });
+  streams.start();
+  await settle();
+  const w = lib.watchers[0];
+  w.feed(snapshot([10, 11, 12]));
+  assert.equal(bars.length, 1);
+  assert.equal(bars[0].stream, KEY);
+  assert.equal(bars[0].bar.close, 12);
+  w.feed(snapshot([10, 11, 12]));            // identical repeat
+  assert.equal(bars.length, 1);
+  w.feed(snapshot([10, 11, 12.5]));          // forming bar moved
+  assert.equal(bars.length, 2);
+  assert.equal(bars[1].bar.close, 12.5);
+  w.feed(snapshot([10, 11, 12.5, 13]));      // new bar
+  assert.equal(bars.length, 3);
+  w.feed(snapshot([10, 11]));                // older snapshot
+  assert.equal(bars.length, 3);
+});
+
+test('onBar sees the stored candles already updated, and a throwing onBar is logged without stopping closed-bar evaluation', async () => {
+  let seen = null;
+  const { lib, streams, log, evaluations } = setup({
+    onBar: (stream) => { seen = streams.candles(stream.key).length; throw new Error('dashboard bug'); },
+  });
+  streams.start();
+  await settle();
+  const w = lib.watchers[0];
+  w.feed(snapshot([10, 11, 12]));
+  w.feed(snapshot([10, 11, 12, 13]));
+  assert.equal(seen, 4);
+  assert.equal(evaluations.length, 1);
+  assert.ok(log.lines.some((l) => l.startsWith('error') && l.includes('dashboard bug')));
 });
