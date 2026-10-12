@@ -22,7 +22,7 @@ test('the valid example config passes with no errors', async () => {
   const { config, errors } = await loadConfig(EXAMPLE, { home: HOME });
   assert.deepEqual(errors, []);
   assert.equal(config.streams.length, 7);
-  assert.equal(config.rules.length, 6);
+  assert.equal(config.rules.length, 7);
   assert.equal(config.state_dir, '/home/tester/.local/state/tradingview-watcher');
 });
 

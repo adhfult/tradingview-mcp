@@ -11,6 +11,7 @@
     {"id": "rsi", "type": "rsi_cross", "period": 14, "levels": [30, 70]},
     {"id": "bb", "type": "bollinger_break", "period": 20, "stddev": 2},
     {"id": "breakout", "type": "new_extreme", "lookback": 50},
+    {"id": "rsi-volume", "type": "all_of", "rules": ["rsi", "volspike"], "timeframes": ["15"]},
     {"id": "btc100k", "type": "price_cross", "symbol": "BINANCE:BTCUSDT", "level": 100000}
   ],
   "trending": {
