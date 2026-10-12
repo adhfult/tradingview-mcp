@@ -136,7 +136,6 @@ async function start(t, over = {}) {
     getAlerts: () => state.alerts,
     rules: RULES,
     timezone: 'UTC',
-    now: clock.now,
     home,
     assets,
     clock,
@@ -440,10 +439,34 @@ test('loopback Host check: only the host name counts (not the port), so an SSH t
   for (const host of ['127.0.0.1', '127.0.0.1:8788', '127.0.0.1:9000', 'localhost', 'localhost:9000', 'LOCALHOST:9000', '[::1]', '[::1]:9000']) {
     assert.equal((await get('/api/streams', { headers: { host } })).status, 200, host);
   }
-  for (const host of ['evil.example', 'evil.example:8788', '127.0.0.1.evil.example', 'localhost.evil.example:8788', '192.168.1.5', '0.0.0.0', 'evil.example#@127.0.0.1', '']) {
+  for (const host of ['evil.example', 'evil.example:8788', '127.0.0.1.evil.example', 'localhost.evil.example:8788', '192.168.1.5', '0.0.0.0', 'evil.example#@127.0.0.1']) {
     const res = await get('/api/streams', { headers: { host } });
     assert.equal(res.status, 403, JSON.stringify(host));
     assert.deepEqual(json(res), { error: 'forbidden host' });
+  }
+});
+
+/** Sends raw bytes and returns everything the server writes back (the client library would fix up a bad Host). */
+async function rawRequest(port, text) {
+  const socket = net.connect(port, '127.0.0.1');
+  let received = '';
+  socket.setEncoding('utf8');
+  socket.on('data', (c) => { received += c; });
+  await new Promise((resolve) => socket.on('connect', resolve));
+  socket.write(text);
+  await eventually(() => received.includes('\r\n\r\n'));
+  socket.destroy();
+  return received;
+}
+
+test('loopback Host check: an empty Host and a missing Host are both 403, with the security headers', async (t) => {
+  const { port } = await start(t);
+  const empty = await rawRequest(port, 'GET /api/streams HTTP/1.1\r\nHost: \r\nConnection: close\r\n\r\n');
+  assert.match(empty, /^HTTP\/1\.1 403 /);
+  const missing = await rawRequest(port, 'GET /api/streams HTTP/1.1\r\nConnection: close\r\n\r\n');
+  assert.match(missing, /^HTTP\/1\.1 403 /);
+  for (const text of [empty, missing]) {
+    for (const [name, value] of Object.entries(SECURITY_HEADERS)) assert.ok(text.includes(`${name}: ${value}`), name);
   }
 });
 
@@ -477,6 +500,9 @@ test('?token= once: a right token sets the cookie and redirects to the same URL 
   assert.equal((await get(`/?token=${TOKEN}`)).headers.location, '/');
   assert.equal((await get(`/api/alerts?limit=5&token=${TOKEN}&token=${TOKEN}`)).headers.location, '/api/alerts?limit=5', 'every token parameter goes');
   assert.equal((await get(`/?token=${TOKEN}&x=1`)).headers.location, '/?x=1');
+  assert.equal((await get(`/?t%6Fken=${TOKEN}&x=1`)).headers.location, '/?x=1', 'an encoded parameter name is removed too');
+  assert.equal((await get(`//evil.example/x?token=${TOKEN}`)).headers.location, '/', 'never a protocol-relative redirect to another site');
+  assert.equal((await get(`/\\evil.example?token=${TOKEN}`)).headers.location, '/');
   const cookie = first.headers['set-cookie'][0].split(';')[0];
   assert.equal((await get('/api/streams', { headers: { cookie } })).status, 200);
   assert.equal((await get('/api/streams', { headers: { cookie: `other=1; ${cookie}` } })).status, 200);
@@ -539,11 +565,12 @@ test('an internal error is a generic 500 with no stack or message, and the serve
   assert.equal((await get('/api/streams')).status, 200);
 });
 
-test('an invalid request URL is 400 or 404, not a crash', async (t) => {
+test('malformed percent-encoding is never a crash: a bad path is 404, a bad query is just ignored', async (t) => {
   const { get, port } = await start(t);
-  for (const path of ['/%', '/%zz', '/api/candles?symbol=%E0%A4%A', '/?a=%']) {
+  for (const path of ['/%', '/%zz', '/%E0%A4%A']) assert.equal((await get(path)).status, 404, path);
+  for (const path of ['/api/candles?symbol=%E0%A4%A', '/?a=%', '/api/alerts?limit=%zz&symbol=%']) {
     const res = await get(path);
-    assert.ok([400, 404].includes(res.status), `${path} -> ${res.status}`);
+    assert.ok(res.status < 500, `${path} -> ${res.status}`);
   }
   assert.equal((await request(port, { path: '/api/streams' })).status, 200);
 });
@@ -677,4 +704,18 @@ test('the log shows the dashboard address but never a token or a request URL', a
   const text = logs.join('\n');
   assert.ok(!text.includes(TOKEN));
   assert.ok(!text.includes('SECRETSYMBOL'));
+});
+
+test('a malformed request gets a 400 that still carries the security headers', async (t) => {
+  const { port } = await start(t);
+  const socket = net.connect(port, '127.0.0.1');
+  t.after(() => socket.destroy());
+  let text = '';
+  socket.setEncoding('utf8');
+  socket.on('data', (c) => { text += c; });
+  await new Promise((resolve) => socket.on('connect', resolve));
+  socket.write('NOT A VALID REQUEST\r\n\r\n');
+  await eventually(() => text.includes('\r\n\r\n'));
+  assert.match(text, /^HTTP\/1\.1 400 /);
+  for (const [name, value] of Object.entries(SECURITY_HEADERS)) assert.ok(text.includes(`${name}: ${value}`), name);
 });
