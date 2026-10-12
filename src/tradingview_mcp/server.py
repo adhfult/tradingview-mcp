@@ -933,7 +933,7 @@ def strategy_gauntlet(
     counterparty: str,
     cost_profile: str = "default",
     interval: str = "1d",
-    period: str = "2y",
+    period: Optional[str] = None,
     params: Optional[dict] = None,
     data_source: str = "yahoo",
     tv_symbol: Optional[str] = None,
@@ -952,7 +952,7 @@ def strategy_gauntlet(
         counterparty: Who is on the other side of the trade, and why they lose
         cost_profile: default | binance_spot | coinbase_advanced | us_stock_broker (assumed fees: check your own)
         interval: '1d' or '1h' (Yahoo). With data_source='tradingview' also '15m' and '4h'.
-        period: Left at '2y' it is raised to the longest history the source allows (5y for daily TradingView data)
+        period: Leave it out for the longest history the source allows (2y for Yahoo, 5y for daily TradingView data)
         params: Optional strategy parameters by name, e.g. {"period": 10}
         data_source: 'yahoo' (default) or 'tradingview'
         tv_symbol: EXCHANGE:SYMBOL for data_source='tradingview', e.g. 'BINANCE:BTCUSDT'

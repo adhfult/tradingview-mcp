@@ -16,6 +16,7 @@ import os
 import re
 import statistics
 import string
+import tempfile
 import time
 from datetime import date, datetime, timedelta, timezone
 from importlib import metadata
@@ -70,7 +71,8 @@ def _num(x):
 
 
 def _gate(name: str, status: str, reason: str, numbers: Optional[dict] = None) -> dict:
-    return {"gate": name, "status": status, "reason": reason, "numbers": numbers or {}}
+    return {"gate": name, "status": status, "reason": reason,
+            "numbers": {k: _num(v) for k, v in (numbers or {}).items()}}
 
 
 def _edge_problem(hypothesis, counterparty) -> Optional[str]:
@@ -142,17 +144,28 @@ def _gauntlet_dir(create: bool = False) -> Path:
     if create:
         home.mkdir(mode=0o700, exist_ok=True)
         directory.mkdir(mode=0o700, exist_ok=True)
+        os.chmod(directory, 0o700)          # also when it already existed with looser permissions
     return directory
 
 
-def _store(report: dict) -> Path:
-    """Write the report atomically and append one summary line to the log."""
+def _store(report: dict) -> tuple[Path, Optional[str]]:
+    """Write the report atomically, then append one summary line to the log.
+
+    Returns (report path, a warning if only the log line failed).
+    """
     directory = _gauntlet_dir(create=True)
     path = directory / f"{report['fingerprint']}.json"
-    tmp = directory / f"{report['fingerprint']}.json.tmp"
-    tmp.write_text(json.dumps(report, indent=2, sort_keys=True))
-    os.chmod(tmp, 0o600)
-    os.replace(tmp, path)
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".report-", suffix=".tmp")   # unique, mode 0600
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(json.dumps(report, indent=2, sort_keys=True, allow_nan=False))
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
     failed = [g["gate"] for g in report["gates"] if g["status"] == "FAIL"]
     summary = {
         "fingerprint": report["fingerprint"],
@@ -163,9 +176,13 @@ def _store(report: dict) -> Path:
         "passed": report["verdict"].startswith("PASS"),
         "failed_gates": failed,
     }
-    with open(directory / "log.jsonl", "a") as fh:
-        fh.write(json.dumps(summary, sort_keys=True) + "\n")
-    return path
+    try:
+        log_fd = os.open(directory / "log.jsonl", os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        with os.fdopen(log_fd, "a") as fh:
+            fh.write(json.dumps(summary, sort_keys=True) + "\n")
+    except OSError as e:
+        return path, f"The report was stored but its log line could not be written: {e}"
+    return path, None
 
 
 # ─── The gauntlet ─────────────────────────────────────────────────────────────
@@ -259,11 +276,14 @@ def _gate_recent_year(candles, strategy, resolved, base, interval, ppy, run) -> 
     cutoff = (date.fromisoformat(candles[-1]["date"][:10]) - timedelta(days=RECENT_DAYS)).isoformat()
     start = next(i for i, c in enumerate(candles) if c["date"][:10] >= cutoff)
     if len(candles) - start < MIN_RECENT_BARS:
-        return _gate("recent_year", "SKIPPED", "Fewer than 30 bars in the last year.")
+        return _gate("recent_year", "FAIL",
+                     f"Only {len(candles) - start} bars in the last year (need {MIN_RECENT_BARS}): too few to judge recent behaviour.",
+                     {"recent_bars": len(candles) - start})
     warmup = bt._STRATEGY_WARMUP_BARS.get(strategy, 20)
     first = max(0, start - warmup)
     sim = run(candles[first:], resolved)
-    kept = [t for t in sim["trades"] if t["entry_idx"] >= start - first]  # entered inside the window
+    # next_open fills land one bar after the signal, so a trade filled inside the window counts
+    kept = [t for t in sim["trades"] if t["entry_idx"] + 1 >= start - first]
     m = bt._calc_metrics(kept, 10_000.0, interval, candles=candles[start:], periods_per_year=ppy)
     full_sharpe = base["metrics"]["sharpe_ratio"]
     numbers = {"recent_bars": len(candles) - start, "recent_trades": m["total_trades"],
@@ -306,14 +326,18 @@ def run_gauntlet(
     counterparty: str,
     cost_profile: str = "default",
     interval: str = "1d",
-    period: str = "2y",
+    period: Optional[str] = None,
     params: Optional[dict] = None,
     data_source: str = "yahoo",
     tv_symbol: Optional[str] = None,
 ) -> dict:
-    """Run a strategy through the six gates and store a fingerprinted report."""
+    """Run a strategy through the six gates and store a fingerprinted report.
+
+    `period` left out means the longest history the source allows (2y for Yahoo, up to 5y for TradingView).
+    """
     strategy = strategy.lower().strip()
-    period = period.lower().strip()
+    period_given = period is not None
+    period = (period or "2y").lower().strip()
     interval = interval.lower().strip()
     data_source, tv_symbol = bt._normalize_source(data_source, tv_symbol)
 
@@ -325,8 +349,8 @@ def run_gauntlet(
     src_err = bt._check_data_source(data_source)
     if src_err:
         return {"error": src_err}
-    # The default period is upgraded to the longest history the source allows for this interval.
-    if period == "2y" and data_source == "tradingview" and interval in bt._TV_PERIODS_BY_INTERVAL:
+    # An omitted period becomes the longest history the source allows for this interval.
+    if not period_given and data_source == "tradingview" and interval in bt._TV_PERIODS_BY_INTERVAL:
         period = bt._TV_PERIODS_BY_INTERVAL[interval][-1]
     pi_err = bt._check_period_interval(period, interval, data_source, tv_symbol)
     if pi_err:
@@ -386,8 +410,11 @@ def run_gauntlet(
         "disclaimer": DISCLAIMER,
     }
     try:
-        report["report_path"] = str(_store(report))
-    except OSError as e:
+        path, log_warning = _store(report)
+        report["report_path"] = str(path)
+        if log_warning:
+            report["report_error"] = log_warning
+    except (OSError, ValueError) as e:
         report["report_path"] = None
         report["report_error"] = f"Could not store the report: {e}"
     return report
@@ -398,13 +425,17 @@ def run_gauntlet(
 def gauntlet_stats() -> dict:
     """Summary of every stored run: how many survived and which gate kills most."""
     entries = []
-    log = _gauntlet_dir() / "log.jsonl"
-    if log.exists():
-        for line in log.read_text().splitlines():
-            try:
-                entries.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
+    try:
+        raw = (_gauntlet_dir() / "log.jsonl").read_bytes().decode("utf-8", errors="replace")
+    except OSError:
+        raw = ""
+    for line in raw.splitlines():
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(entry, dict):
+            entries.append(entry)
     total = len(entries)
     passed = sum(1 for e in entries if e.get("passed"))
     by_gate: dict[str, int] = {}
@@ -428,7 +459,7 @@ def verify_report(fingerprint: str) -> dict:
     if not isinstance(fingerprint, str) or not _FINGERPRINT_RE.match(fingerprint):
         return {**missing, "error": "fingerprint must be 64 lowercase hex characters"}
     path = _gauntlet_dir() / f"{fingerprint}.json"
-    if not path.exists():
+    if path.is_symlink() or not path.exists():
         return missing
     try:
         report = json.loads(path.read_text())

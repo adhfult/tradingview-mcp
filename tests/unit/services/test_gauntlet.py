@@ -343,9 +343,10 @@ def test_bars_without_a_time_key_are_left_alone():
     ({"data_source": "tradingview", "tv_symbol": "BINANCE:BTCUSDT"}, "5y"),
     ({"data_source": "tradingview", "tv_symbol": "BINANCE:BTCUSDT", "interval": "1h"}, "2y"),
     ({"data_source": "tradingview", "tv_symbol": "BINANCE:BTCUSDT", "period": "1y"}, "1y"),
+    ({"data_source": "tradingview", "tv_symbol": "BINANCE:BTCUSDT", "period": "2y"}, "2y"),   # explicit stays
     ({}, "2y"),
 ])
-def test_the_default_period_is_upgraded_to_the_longest_the_source_allows(monkeypatch, kw, expected):
+def test_an_omitted_period_becomes_the_longest_the_source_allows(monkeypatch, kw, expected):
     seen = {}
 
     def load(symbol, period, interval, data_source, tv_symbol):
@@ -482,3 +483,83 @@ def test_verify_report_survives_a_damaged_file(series, home):
     (home / "gauntlet" / f"{fp}.json").write_text("{broken")
     out = g.verify_report(fp)
     assert out["exists"] is True and out["matches_current_code"] is False and "error" in out
+
+
+# ─── fixes from the wrap-up review ────────────────────────────────────────────
+
+def test_recent_year_counts_a_trade_signalled_the_bar_before_the_window(monkeypatch):
+    """With next-open fills a signal on the bar before the window fills inside it."""
+    candles = wavy(600)                          # longer than a year, so the window starts well inside the series
+    warmup = bt._STRATEGY_WARMUP_BARS["rsi"]
+    offset = warmup                              # start is far past the warm-up, so the slice begins warmup bars early
+    trades = [{"entry_idx": i} for i in (offset - 2, offset - 1, offset)]
+    seen = []
+
+    def fake_metrics(kept, *a, **k):
+        seen.append(sorted(t["entry_idx"] for t in kept))
+        return {"total_trades": len(kept), "total_return_pct": 1.0, "sharpe_ratio": 1.0}
+    monkeypatch.setattr(bt, "_calc_metrics", fake_metrics)
+    gate = g._gate_recent_year(candles, "rsi", {}, {"metrics": {"sharpe_ratio": 1.0}}, "1d", None,
+                               lambda window, params: {"trades": trades})
+    assert seen == [[offset - 1, offset]], seen
+    assert gate["status"] == "PASS"
+
+
+def test_a_sparse_last_year_fails_the_gate_instead_of_skipping_it(monkeypatch):
+    sparse = wavy(300)
+    for i, c in enumerate(sparse):               # one bar a month: only ~12 bars in the last year
+        c["date"] = (date(2000, 1, 1) + timedelta(days=30 * i)).isoformat()
+    monkeypatch.setattr(bt, "_load_candles", lambda *a, **k: (sparse, {}))
+    gate = [x for x in run("rsi")["gates"] if x["gate"] == "recent_year"][0]
+    assert gate["status"] == "FAIL" and "too few" in gate["reason"]
+
+
+def test_non_finite_numbers_become_null_in_a_gate():
+    gate = g._gate("x", "PASS", "r", {"a": float("nan"), "b": float("inf"), "c": 1.5})
+    assert gate["numbers"] == {"a": None, "b": None, "c": 1.5}
+
+
+def test_candles_with_non_finite_prices_are_dropped():
+    good = {"time": 1_700_000_000, "open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5, "volume": 1}
+    nan_bar = {**good, "time": 1_700_086_400, "open": float("nan")}
+    inf_bar = {**good, "time": 1_700_172_800, "close": float("inf")}
+    assert len(bt.tv_bars_to_candles([good, nan_bar, inf_bar], "1d")) == 1
+
+
+def test_an_existing_loose_directory_is_tightened_and_the_log_is_private(series, home):
+    directory = home / "gauntlet"
+    directory.mkdir(mode=0o755)
+    directory.chmod(0o755)
+    run("rsi")
+    assert stat.S_IMODE(directory.stat().st_mode) == 0o700
+    assert stat.S_IMODE((directory / "log.jsonl").stat().st_mode) == 0o600
+
+
+def test_no_temporary_files_are_left_behind(series, home):
+    run("rsi")
+    run("rsi")
+    names = sorted(p.name for p in (home / "gauntlet").iterdir())
+    assert len(names) == 2 and "log.jsonl" in names and not any(n.endswith(".tmp") for n in names)
+
+
+def test_a_failed_log_line_does_not_hide_a_stored_report(series, home):
+    (home / "gauntlet").mkdir(mode=0o700)
+    (home / "gauntlet" / "log.jsonl").mkdir()         # appending to a directory fails
+    result = run("rsi")
+    assert result["report_path"] and (home / "gauntlet" / f"{result['fingerprint']}.json").exists()
+    assert "log line" in result["report_error"]
+
+
+def test_stats_survive_invalid_bytes_and_non_object_lines(series, home):
+    run("rsi")
+    with open(home / "gauntlet" / "log.jsonl", "ab") as fh:
+        fh.write(b"\xff\xfe broken\nnull\n[1, 2]\n42\n")
+    assert g.gauntlet_stats()["total"] == 1
+
+
+def test_a_symlink_named_like_a_fingerprint_is_not_a_report(home, tmp_path):
+    outside = tmp_path / "outside.json"
+    outside.write_text(json.dumps({"inputs": {}, "verdict": "PASS"}))
+    (home / "gauntlet").mkdir(mode=0o700)
+    (home / "gauntlet" / ("a" * 64 + ".json")).symlink_to(outside)
+    assert g.verify_report("a" * 64) == {"exists": False, "verdict": None, "matches_current_code": False}

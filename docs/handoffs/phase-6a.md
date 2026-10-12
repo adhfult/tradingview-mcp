@@ -266,3 +266,24 @@ Steps 5, 7 and 8 are done, plus the four Phase 3 advisor carry-ins. **943 Python
 - Live TradingView and Yahoo runs (the cloud-style tests use synthetic candles).
 - The `strategy_builder` / `strategy_reviewer` prompts have never been used by a real model. Try them once.
 - With `period` left at the default `2y`, a TradingView daily run is upgraded to `5y`; a caller who passes `2y` explicitly gets the same upgrade (the default cannot be told apart).
+
+## Wrap-up review (regime 11)
+Reviewers: Luna Max (read-only, via `inv.sh`) and Fable (read-only subagent). Diff base `28cbc6a..HEAD`.
+
+### Luna Max: 10 findings, 9 fixed, 1 dismissed (each checked against the code first)
+| # | Finding | Result |
+|---|---|---|
+| 1 | `recent_year` dropped a trade signalled on the bar before the window (next-open fills land one bar later) | Fixed (`entry_idx + 1`); mutation-checked |
+| 2 | A recent window under 30 bars was SKIPPED even with 200+ total bars, letting sparse history bypass the gate | Fixed: now FAIL ("too few to judge"). Deviates from the brief's wording, which only skips on total bars |
+| 3 | `verify_report` hashes only `inputs`, so an edited verdict still verifies | **Dismissed, known limitation:** anyone who can edit the file can recompute any hash we could add, and the brief fingerprints the inputs. Phase 6b must treat a stored verdict as local, not signed |
+| 4 | A symlink named like a fingerprint is followed | Fixed: symlinks are treated as missing |
+| 5 | NaN/inf candle data could leave non-strict JSON in reports | Fixed: gate numbers sanitised, non-finite TradingView bars dropped, `allow_nan=False` on write |
+| 6 | An existing `gauntlet` directory kept loose permissions; `log.jsonl` was 0644 | Fixed: directory re-chmodded to 0700, log created 0600 |
+| 7 | Concurrent same-fingerprint runs shared one `.tmp` name | Fixed: `mkstemp` per write |
+| 8 | A failed log append hid an already-stored report (`report_path: null`) | Fixed: path is kept and `report_error` explains the log failure |
+| 9 | Invalid UTF-8 or a JSON scalar in `log.jsonl` crashed `gauntlet_stats` | Fixed |
+| 10 | An explicit `period="2y"` on TradingView was upgraded too | Fixed: `period` now defaults to `None` (omitted means longest allowed). Signature differs from the brief's `period="2y"` on purpose; the tool's docs say so |
+
+10 new tests; the python suite is **953 passed**, bridge 344. Luna's closing note: TradingView session-aligned bar timing is still unverified (needs a live run).
+
+### Fable: pending at the time of writing. Findings go below, each marked fixed or dismissed with the reason.

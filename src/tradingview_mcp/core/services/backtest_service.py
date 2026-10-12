@@ -147,7 +147,7 @@ def tv_bars_to_candles(bars: list, interval: str) -> list[dict]:
         if not isinstance(bar, dict) or bar.get("time") is None:
             continue
         o, h, l, c = bar.get("open"), bar.get("high"), bar.get("low"), bar.get("close")
-        if None in (o, h, l, c):
+        if None in (o, h, l, c) or not all(math.isfinite(x) for x in (o, h, l, c)):
             continue
         ts = int(bar["time"])
         dated.append((ts, {
