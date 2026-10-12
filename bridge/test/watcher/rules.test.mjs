@@ -283,11 +283,6 @@ test('a composite honours its own symbol and timeframes filters', () => {
   assert.equal(run(combo('any_of', members, { timeframes: ['60'] }), bars([100, 105])).length, 1);
 });
 
-test('barsNeeded for a composite is the most any member needs', () => {
-  const members = [leaf('a', { bars: 4 }), { id: 'b', type: 'new_extreme', lookback: 50 }];
-  assert.equal(rulesLib.barsNeeded(combo('all_of', members)), 51);
-});
-
 test('all_of and any_of are rule types, and their rules list is validated', () => {
   assert.ok(rulesLib.RULE_TYPES.includes('all_of') && rulesLib.RULE_TYPES.includes('any_of'));
   const check = (rules) => validateRuleParams({ type: 'all_of', rules }, 'r');

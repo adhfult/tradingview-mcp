@@ -44,8 +44,9 @@ Because the composite hit carries a direction, the existing cooldown key (rule, 
 "cooldown key includes direction" with no new code.
 
 ### Bars needed
-`barsNeeded(composite)` is the maximum over its members. The config check "needs N closed bars but the watcher keeps only
-CANDLE_COUNT" then covers composites too.
+Nothing extra. Every member is a plain rule that is validated on its own, including the "needs N closed bars" limit, so a
+composite cannot need more than its members do. (A `barsNeeded` case for composites was written first and removed in
+review: it was dead code.)
 
 ### Mixed timeframes and "can never fire" (config errors)
 Members keep their own `symbol` and `timeframes` filters. The composite is checked per watched stream (symbol x timeframe):

@@ -151,8 +151,6 @@ export function barsNeeded(rule) {
     case 'bollinger_break': return rule.period;
     case 'new_extreme': return rule.lookback + 1;
     case 'price_cross': return 2;
-    case 'all_of':
-    case 'any_of': return Math.max(0, ...(rule.members ?? []).map(barsNeeded));
     default: return 0;
   }
 }

@@ -688,3 +688,68 @@ test('the direction is part of the composite cooldown, and max_per_day counts th
   assert.equal((await run({})).length, 2, 'one up, one down');
   assert.equal((await run({ max_per_day: 1 })).length, 1, 'the cap stops the second');
 });
+
+// ---- W3 review fixes ----------------------------------------------------------------------
+test('an any_of whose members disagree on one bar sends both directions, not one', async (t) => {
+  // Closed bar 100 after [110, 95]: a (bars 1) is +5.26% up, b (bars 2) is -9.09% down. Both fire on the same bar.
+  const rules = [
+    { id: 'a', type: 'pct_move', bars: 1, threshold_pct: 5 },
+    { id: 'b', type: 'pct_move', bars: 2, threshold_pct: 5 },
+    { id: 'either', type: 'any_of', rules: ['a', 'b'] },
+  ];
+  const { watcher, lib, calls } = await build(t, { configOverrides: { rules, ...NO_API } });
+  await watcher.start();
+  lib.watchers[0].feed(snapshot([110, 95, 100]));
+  lib.watchers[0].feed(snapshot([110, 95, 100, 101]));
+  await settle();
+  const sent = fromType(calls, 'any_of');
+  assert.equal(sent.length, 2);
+  assert.deepEqual(sent.map((c) => c.body.embeds[0].description.split('\n')[0]).sort(),
+    ['a: Up 5.26% over 1 bar', 'b: Down 9.09% over 2 bars']);
+  await watcher.stop();
+});
+
+// Inside a composite, a member's own expiry and session gate still count: a retired member must not keep alerting
+// through the composite. It cannot hit, so it blocks an all_of and is simply absent from an any_of.
+const gatedMembers = (type, memberExtra) => ({
+  rules: [
+    { id: 'a', type: 'pct_move', bars: 1, threshold_pct: 0.5, ...memberExtra },
+    { id: 'b', type: 'pct_move', bars: 1, threshold_pct: 0.5 },
+    { id: 'both', type, rules: ['a', 'b'] },
+  ],
+  ...NO_API,
+});
+
+for (const [name, memberExtra] of [['has expired', { expires: '2026-10-09' }], ['is out of its us_session', { calendar: 'us_session' }]]) {
+  test(`a member that ${name}: any_of carries on without it, all_of stays quiet`, async (t) => {
+    // The snapshot bars are in November 2023 at night (UTC), so the calendar member is out of session, and the clock is 2026-10-10.
+    const feedOneHit = async (type) => {
+      const built = await build(t, { configOverrides: gatedMembers(type, memberExtra) });
+      await built.watcher.start();
+      built.lib.watchers[0].feed(snapshot([100, 101]));
+      built.lib.watchers[0].feed(snapshot([100, 101, 102]));
+      await settle();
+      await built.watcher.stop();
+      return built.calls;
+    };
+    const any = fromType(await feedOneHit('any_of'), 'any_of');
+    assert.equal(any.length, 1);
+    assert.match(any[0].body.embeds[0].description, /^b: Up 1\.00% over 1 bar\n/, 'only the live member is reported');
+    assert.equal(fromType(await feedOneHit('all_of'), 'all_of').length, 0);
+  });
+}
+
+test('an any_of whose members are all expired sends nothing', async (t) => {
+  const rules = [
+    { id: 'a', type: 'pct_move', bars: 1, threshold_pct: 0.5, expires: '2026-10-09' },
+    { id: 'b', type: 'pct_move', bars: 1, threshold_pct: 0.5, expires: '2026-10-09' },
+    { id: 'either', type: 'any_of', rules: ['a', 'b'] },
+  ];
+  const { watcher, lib, calls } = await build(t, { configOverrides: { rules, ...NO_API } });
+  await watcher.start();
+  lib.watchers[0].feed(snapshot([100, 101]));
+  lib.watchers[0].feed(snapshot([100, 101, 102]));
+  await settle();
+  assert.equal(calls.length, 0);
+  await watcher.stop();
+});
