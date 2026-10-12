@@ -130,9 +130,14 @@ async function readSmallFile(path) {
     const info = await handle.stat();
     if (!info.isFile() || info.size > MAX_FILE_BYTES) return null;
     const buffer = Buffer.allocUnsafe(MAX_FILE_BYTES + 1);
-    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-    if (bytesRead > MAX_FILE_BYTES) return null;
-    return buffer.toString('utf8', 0, bytesRead);
+    let total = 0;
+    while (total <= MAX_FILE_BYTES) { // a read may be short (network filesystems), so loop to EOF
+      const { bytesRead } = await handle.read(buffer, total, buffer.length - total, total);
+      if (bytesRead === 0) break;
+      total += bytesRead;
+    }
+    if (total > MAX_FILE_BYTES) return null;
+    return buffer.toString('utf8', 0, total);
   } catch {
     return null;
   } finally {
@@ -409,8 +414,9 @@ export function createDashboard({
   server.on('clientError', (err, socket) => {
     if (!socket.writable) return socket.destroy();
     // A second response on a socket that already answered (a 405 to a POST whose body never came, then the
-    // request timeout) would be garbage to the client. _httpMessage is Node-internal: the response bound to the socket.
-    if (socket._httpMessage?.headersSent) return socket.destroy();
+    // request timeout) would be garbage to the client. bytesWritten covers a finished answer (Node detaches
+    // _httpMessage then); _httpMessage.headersSent covers one in flight. A fresh socket still gets its 400.
+    if (socket.bytesWritten > 0 || socket._httpMessage?.headersSent) return socket.destroy();
     const lines = Object.entries(SECURITY_HEADERS).map(([name, value]) => `${name}: ${value}\r\n`).join('');
     return socket.end(`HTTP/1.1 400 Bad Request\r\n${lines}content-length: 0\r\nconnection: close\r\n\r\n`);
   });
