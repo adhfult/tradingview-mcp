@@ -5,7 +5,7 @@
  *   1. Dedupe: the same dedupeKey within 24 hours is dropped.
  *   2. Cooldown: the same cooldownKey within cooldown_minutes is dropped.
  *   3. Daily cap: a rule with max_per_day is dropped once that many of its alerts were
- *      accepted (sent, held or digested) on the current local calendar day. Critical
+ *      accepted (sent, digested, or held for a digest) on the current local calendar day. Critical
  *      alerts are never capped and never counted.
  *   4. Critical (health) alerts skip steps 5 and 6 and are sent at once.
  *   5. Quiet hours (config timezone): the alert is held. When quiet hours end, one
@@ -115,7 +115,11 @@ export function createAlerts({ alerts, timezone, store, clock, queue, log = () =
 
       if (item.dedupeKey !== undefined) s.seen[item.dedupeKey] = now;
       if (item.cooldownKey !== undefined) s.cooldowns[item.cooldownKey] = now;
-      if (dailyCap) s.dailyCounts[item.ruleId] = { date: today, count: usedToday + 1 };
+      // Held alerts are dropped when quiet hours end if digest_after_quiet is off, so they never
+      // reach anyone and must not use up the cap.
+      if (dailyCap && (status !== 'held' || alerts.digest_after_quiet)) {
+        s.dailyCounts[item.ruleId] = { date: today, count: usedToday + 1 };
+      }
       s.alerts.push({ at: now, kind: item.kind, level: message.level, title: message.title, key: item.dedupeKey ?? null, status });
       if (s.alerts.length > 500) s.alerts.splice(0, s.alerts.length - 500);
 
@@ -154,7 +158,8 @@ export function createAlerts({ alerts, timezone, store, clock, queue, log = () =
       prune(s, now);
       const today = localDate(now, timezone);
       for (const [id, entry] of Object.entries(s.dailyCounts)) {
-        if (entry?.date !== today) {
+        // Only earlier days (and junk) go. A later date means the clock stepped back; keep it.
+        if (typeof entry?.date !== 'string' || entry.date < today) {
           delete s.dailyCounts[id];
           store.touch();
         }

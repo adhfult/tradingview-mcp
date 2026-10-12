@@ -307,11 +307,20 @@ test('a rule that has already expired is a warning, not an error', () => {
 });
 
 test('a rule is not expired on its last day, and the day is judged in the config timezone', () => {
-  assert.deepEqual(withRule({ expires: '2026-10-10' }).warnings.filter((w) => /expired/.test(w)), []);
+  const lastDay = withRule({ expires: '2026-10-10' });
+  assert.deepEqual(lastDay.errors, []);
+  assert.deepEqual(lastDay.warnings.filter((w) => /expired/.test(w)), []);
   // 03:00 UTC on 10 Oct is still 9 Oct (23:00) in New York.
   const ny = parseConfig(
     { ...base({ timezone: 'America/New_York' }), rules: [{ id: 'move', type: 'pct_move', bars: 1, threshold_pct: 1, expires: '2026-10-09' }] },
     { home: HOME, now: Date.UTC(2026, 9, 10, 3, 0, 0) },
   );
+  assert.deepEqual(ny.errors, []);
+  assert.notEqual(ny.config, null);
   assert.deepEqual(ny.warnings.filter((w) => /expired/.test(w)), []);
+});
+
+test('a rule id of __proto__ is rejected, because a counter stored under it could never be saved', () => {
+  const { errors } = withRule({ id: '__proto__' });
+  assert.ok(errors.some((e) => e.startsWith('rules[0].id: ') && e.includes('__proto__')), errors.join('\n'));
 });

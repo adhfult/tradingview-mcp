@@ -200,6 +200,9 @@ function parseRules(input, watchlist, errors, warnings, { timezone, now }) {
 
     if (typeof raw.id !== 'string' || !RULE_ID.test(raw.id)) {
       errors.push(`${path}.id: must be 1 to 64 letters, digits, "-" or "_"`);
+    } else if (raw.id === '__proto__') {
+      // Used as an object key for the daily counter, where this name would set the prototype instead.
+      errors.push(`${path}.id: "__proto__" is reserved, pick another id`);
     } else if (ids.has(raw.id)) {
       errors.push(`${path}.id: "${raw.id}" is already used by another rule`);
     } else {

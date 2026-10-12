@@ -387,13 +387,21 @@ test('daily cap: a step back inside the same local day keeps the count', () => {
   assert.equal(pipeline.submit(capped(clock, 'b', { maxPerDay: 1 })), 'capped');
 });
 
-test('daily cap: tick prunes counts from earlier days and keeps today', () => {
+test('daily cap: tick prunes counts from earlier days and malformed ones, and keeps today and later days', () => {
   const { pipeline, store } = setup();
   store.state.dailyCounts = {
     old: { date: '2026-10-08', count: 3 },
     today: { date: '2026-10-10', count: 1 },
+    future: { date: '2026-10-11', count: 2 },   // saved before the clock stepped back: kept, not pruned
     junk: 'not a count',
   };
   pipeline.tick();
-  assert.deepEqual(Object.keys(store.state.dailyCounts), ['today']);
+  assert.deepEqual(Object.keys(store.state.dailyCounts).sort(), ['future', 'today']);
+});
+
+test('daily cap: held alerts do not count when digest_after_quiet is off, because they are dropped later', () => {
+  const quiet = { quiet_hours: { start: '23:00', end: '07:00' }, digest_after_quiet: false };
+  const { clock, pipeline } = setup({ start: NIGHT, alerts: quiet });
+  assert.equal(pipeline.submit(capped(clock, 'a', { maxPerDay: 1 })), 'held');
+  assert.equal(pipeline.submit(capped(clock, 'b', { maxPerDay: 1 })), 'held', 'the first held alert did not use the cap');
 });
