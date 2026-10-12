@@ -794,3 +794,26 @@ test('a correction to the closing candle and the next candle inside one second a
   await events.waitFor('"close":102');
   assert.deepEqual(frames(), [[a.time, 100], [a.time, 101], [b.time, 102]]);
 });
+
+test('a request timeout after the 405 closes the socket without a second response (real socket)', async (t) => {
+  const dashboard = createDashboard({
+    host: '127.0.0.1', port: 0, token: '', bus: new EventEmitter(), streams: { list: () => [], candles: () => null },
+    getAlerts: () => [], rules: [], timezone: 'UTC', home: '/x', assets: {}, logger: { info() {}, warn() {}, error() {} },
+  });
+  // Node checks for timed-out requests every 30 s by default; make it quick.
+  dashboard.server.requestTimeout = 600;
+  dashboard.server.headersTimeout = 500;
+  dashboard.server.connectionsCheckingInterval = 150;
+  const { port } = await dashboard.listen();
+  t.after(() => dashboard.close());
+  const socket = net.connect(port, '127.0.0.1');
+  let text = '';
+  socket.setEncoding('utf8');
+  socket.on('data', (c) => { text += c; });
+  socket.on('connect', () => socket.write('POST /api/streams HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 10\r\n\r\n'));
+  const closed = await new Promise((resolve) => { socket.on('close', () => resolve(true)); setTimeout(() => resolve(false), 4000).unref(); });
+  socket.destroy();
+  assert.ok(closed, 'the server should drop the stalled connection');
+  assert.match(text, /^HTTP\/1\.1 405 /);
+  assert.equal(text.match(/HTTP\/1\.1 \d+/g).length, 1, text);
+});
