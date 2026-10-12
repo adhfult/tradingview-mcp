@@ -6,6 +6,8 @@
 #   1. The gauntlet report must exist on this machine (~/.tradingview-mcp/gauntlet/<fingerprint>.json) and
 #      the code here must match the code that produced it, or the paper trader refuses to start.
 #   2. Put the watcher's WATCHER_LOCAL_TOKEN (and WATCHER_LOCAL_PORT if you changed it) in the file below.
+#      For a logged-in TradingView session the bridge also reads TRADINGVIEW_SESSION_ID and TRADINGVIEW_SESSION_SIGN
+#      from the environment; leave them out and it runs anonymously.
 #   3. Use a system node (/usr/bin/node). An nvm path under /home breaks under systemd (silent 203/EXEC loop).
 [Unit]
 Description=TradingView paper trader (hypothetical trades only, never places orders)

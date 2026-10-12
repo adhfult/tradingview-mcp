@@ -115,10 +115,11 @@ def fetch_closed_candles(client, plan: dict, now: float) -> list[dict]:
 
 # ─── events ───────────────────────────────────────────────────────────────────
 
-def new_events(plan: dict, candles: list[dict], seen: set) -> list[dict]:
-    """Entries and real exits from the last few closed bars that are not in `seen` yet.
+def new_events(plan: dict, candles: list[dict], seen: set, since: Optional[float] = None) -> list[dict]:
+    """Entries and real exits that are not in `seen` yet, from the last few closed bars.
 
-    `seen` holds (type, bar_time). With fill="next_open" an entry shows up one bar after
+    `seen` holds (type, bar_time). `since` (a bar time) widens the window back to that bar, so an
+    outage longer than a few bars cannot drop events. With fill="next_open" an entry shows up one bar after
     its signal, and a last-bar exit is a forced close of the simulation, not a real exit,
     so it produces no event.
     """
@@ -129,7 +130,7 @@ def new_events(plan: dict, candles: list[dict], seen: set) -> list[dict]:
                           commission_pct=inputs["commission_pct"], slippage_pct=inputs["slippage_pct"],
                           fill=inputs["fill"], interval=inputs["interval"])
     time_of = {c["date"]: c["time"] for c in candles}
-    cutoff = candles[max(0, len(candles) - LOOKBACK_BARS)]["time"]
+    cutoff = candles[max(0, len(candles) - LOOKBACK_BARS)]["time"] if since is None else since
     found: dict[tuple, dict] = {}
     for t in result["trades"]:
         bar_time = time_of.get(t["entry_date"])
@@ -153,6 +154,18 @@ def paper_dir(create: bool = False) -> Path:
         directory.mkdir(mode=0o700, exist_ok=True)
         os.chmod(directory, 0o700)
     return directory
+
+
+def _window_start(journal: list[dict], interval: str) -> Optional[float]:
+    """Where event detection resumes: the newest journaled trade, else the last few closed bars at the start."""
+    times = lambda *kinds: [e["bar_time"] for e in journal if e.get("type") in kinds  # noqa: E731
+                            and isinstance(e.get("bar_time"), (int, float))]
+    trades = times("entry", "exit")
+    if trades:
+        return max(trades)
+    started = times("start")
+    bar = gauntlet._BAR_SECONDS[interval]
+    return (min(started) // bar - LOOKBACK_BARS) * bar if started else None
 
 
 def _journal_path(fingerprint: str, create: bool = False) -> Path:
@@ -354,7 +367,8 @@ def process_once(plan: dict, *, client, now: float, post: Optional[Callable] = N
         append_journal(fingerprint, journal[0])
     seen = {(e.get("type"), e.get("bar_time")) for e in journal}
     candles = fetch_closed_candles(client, plan, now)
-    events = [{"ts": _iso(now), **e} for e in new_events(plan, candles, seen)]
+    since = _window_start(journal, plan["inputs"]["interval"])
+    events = [{"ts": _iso(now), **e} for e in new_events(plan, candles, seen, since)]
     for event in events:
         append_journal(fingerprint, event)                    # journal first: a failed notify must not repeat
         journal.append(event)

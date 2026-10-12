@@ -592,13 +592,12 @@ def test_once_dry_run_prints_a_notification_and_makes_no_network_call(monkeypatc
     report = store()
     fake_simulate(monkeypatch, [trade(closed, 27, 29, forced=True)])
 
-    def no_network(*a, **k):
-        raise AssertionError("dry run must not touch the network")
-
-    monkeypatch.setattr(ps, "_http_post", no_network)
+    network_calls = []                       # send_notification swallows exceptions, so record instead of raising
+    monkeypatch.setattr(ps, "_http_post", lambda *a, **k: network_calls.append(a))
     assert cli(["--report", report["fingerprint"], "--once", "--dry-run"]) == 0
     out = capsys.readouterr().out
     assert "PAPER rsi" in out and "hypothetical" in out
+    assert network_calls == []
     assert len(trades_logged(report["fingerprint"])) == 1
 
 
@@ -628,3 +627,44 @@ def test_a_strategy_that_never_trades_is_still_judged(monkeypatch):
     ps.process_once(plan, client=StubClient(), now=monday, post=post, env=ENV, timezone_name="America/New_York")
     summary, = [p for _, _, p in post.sent if "weekly summary" in p["title"]]
     assert "diverge" in summary["body"]
+
+
+def test_an_outage_longer_than_the_window_loses_no_event(monkeypatch, closed):
+    plan = make_report()
+    ps.append_journal(plan["fingerprint"], {"type": "entry", "bar_time": closed[20]["time"], "price": 1.0})
+    fake_simulate(monkeypatch, [trade(closed, 20, 25)])                       # the exit is 4 bars back
+    events = ps.process_once(plan, client=StubClient(), now=LAST_CLOSED_NOW, post=FakePost(), env=ENV)
+    assert [(e["type"], e["bar_time"]) for e in events] == [("exit", closed[25]["time"])]
+
+
+def test_the_first_pass_does_not_replay_old_history(monkeypatch, closed):
+    plan = make_report()
+    fake_simulate(monkeypatch, [trade(closed, 2, 5), trade(closed, 10, 12)])
+    assert ps.process_once(plan, client=StubClient(), now=LAST_CLOSED_NOW, post=FakePost(), env=ENV) == []
+
+
+def test_a_stop_during_a_step_lets_the_step_finish(monkeypatch, closed):
+    plan = make_report()
+    fake_simulate(monkeypatch, [trade(closed, 27, 29, forced=True)])
+    stop = Stop()
+
+    class StoppingClient(StubClient):
+        def call(self, *a, **k):
+            stop.set()                                                         # SIGTERM arrives mid-step
+            return super().call(*a, **k)
+
+    client, sleeps = StoppingClient(), []
+    ps.run_loop(plan, client=client, clock=lambda: LAST_CLOSED_NOW, sleep=sleeps.append, stop=stop,
+                post=FakePost(), env=ENV)
+    assert len(client.calls) == 1 and len(trades_logged(plan["fingerprint"])) == 1 and len(sleeps) <= 1
+
+
+def test_the_journal_refuses_to_follow_a_symlink(home):
+    fp = "f" * 64
+    target = home / "elsewhere.txt"
+    target.write_text("keep")
+    (home / "paper").mkdir(mode=0o700)
+    (home / "paper" / f"{fp}.jsonl").symlink_to(target)
+    with pytest.raises(OSError):
+        ps.append_journal(fp, {"type": "entry", "bar_time": 1})
+    assert target.read_text() == "keep"
