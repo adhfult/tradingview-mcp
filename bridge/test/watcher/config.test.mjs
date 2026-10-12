@@ -468,3 +468,34 @@ test('a composite takes the generic rule keys: max_per_day, expires, calendar, s
   assert.equal(r.config.rules[2].max_per_day, 3);
   assert.equal(r.config.rules[2].calendar, 'us_session');
 });
+
+test('dashboard defaults: on, loopback only, port 8788', () => {
+  const { config, errors } = parseConfig(base(), { home: HOME });
+  assert.deepEqual(errors, []);
+  assert.deepEqual(config.dashboard, { enabled: true, host: '127.0.0.1', port: 8788 });
+});
+
+test('the example config sets the dashboard block explicitly', async () => {
+  const { config, errors } = await loadConfig(EXAMPLE, { home: HOME });
+  assert.deepEqual(errors, []);
+  assert.deepEqual(config.dashboard, { enabled: true, host: '127.0.0.1', port: 8788 });
+});
+
+test('dashboard values are validated with their JSON path', () => {
+  const run = (dashboard) => parseConfig(base({ dashboard }), { home: HOME });
+  assert.deepEqual(run({ enabled: false, host: '::1', port: 9000 }).config.dashboard, { enabled: false, host: '::1', port: 9000 });
+  assert.match(run({ port: 80 }).errors.join('\n'), /dashboard\.port: must be at least 1024/);
+  assert.match(run({ port: 70000 }).errors.join('\n'), /dashboard\.port: must be at most 65535/);
+  assert.match(run({ port: 8788.5 }).errors.join('\n'), /dashboard\.port/);
+  assert.match(run({ host: '' }).errors.join('\n'), /dashboard\.host: must be a non-empty string/);
+  assert.match(run({ host: 7 }).errors.join('\n'), /dashboard\.host: must be a non-empty string/);
+  assert.match(run({ enabled: 'yes' }).errors.join('\n'), /dashboard\.enabled/);
+  assert.match(run({ extra: 1 }).errors.join('\n'), /dashboard.*extra/);
+  assert.match(run([]).errors.join('\n'), /dashboard: must be an object/);
+});
+
+test('the dashboard port must differ from the local API port', () => {
+  const { errors } = parseConfig(base({ local_api: { port: 9100 }, dashboard: { port: 9100 } }), { home: HOME });
+  assert.match(errors.join('\n'), /dashboard\.port: must differ from local_api\.port \(9100\)/);
+  assert.deepEqual(parseConfig(base({ dashboard: { port: 8787 } }), { home: HOME }).errors.length, 1, 'the default local_api port counts too');
+});
