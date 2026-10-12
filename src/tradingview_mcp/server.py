@@ -90,6 +90,10 @@ from tradingview_mcp.core.services.backtest_service import (
     compare_strategies as _compare_strategies,
     walk_forward_backtest,
 )
+from tradingview_mcp.core.services.gauntlet_service import (
+    gauntlet_stats as _gauntlet_stats,
+    run_gauntlet,
+)
 from tradingview_mcp.core.services import freshness, tv_data_service
 from tradingview_mcp.core.utils.validators import (
     validate_timeframe,
@@ -810,6 +814,9 @@ def backtest_strategy(
     include_equity_curve: bool = False,
     data_source: str = "yahoo",
     tv_symbol: Optional[str] = None,
+    params: Optional[dict] = None,
+    fill: str = "signal_close",
+    cost_profile: Optional[str] = None,
 ) -> dict:
     """Backtest a trading strategy on historical data with institutional-grade metrics.
 
@@ -830,12 +837,16 @@ def backtest_strategy(
         data_source: 'yahoo' (default) or 'tradingview' (uses the TradingView account
                      when session cookies are configured; needs the Node bridge, see tv_status)
         tv_symbol: EXCHANGE:SYMBOL for data_source='tradingview', e.g. 'BINANCE:BTCUSDT'
+        params: Optional strategy parameters by name, e.g. {"period": 10}. Unknown names are an error.
+        fill: 'signal_close' (default, fills at the signal bar's close) or 'next_open' (fills at the next bar's open; no lookahead)
+        cost_profile: default | binance_spot | coinbase_advanced | us_stock_broker. When given it replaces commission_pct and slippage_pct (assumed fees: check your own).
     """
     return run_backtest(
         symbol, strategy, period, initial_capital,
         commission_pct, slippage_pct, interval,
         include_trade_log, include_equity_curve,
         data_source=data_source, tv_symbol=tv_symbol,
+        params=params, fill=fill, cost_profile=cost_profile,
     )
 
 
@@ -881,6 +892,8 @@ def walk_forward_backtest_strategy(
     interval: str = "1d",
     data_source: str = "yahoo",
     tv_symbol: Optional[str] = None,
+    params: Optional[dict] = None,
+    fill: str = "signal_close",
 ) -> dict:
     """Walk-forward backtest to detect overfitting — validates strategy on unseen data.
 
@@ -901,12 +914,95 @@ def walk_forward_backtest_strategy(
         interval: '1d' or '1h' (Yahoo). With data_source='tradingview' also '15m' and '4h'.
         data_source: 'yahoo' (default) or 'tradingview'
         tv_symbol: EXCHANGE:SYMBOL for data_source='tradingview', e.g. 'BINANCE:BTCUSDT'
+        params: Optional strategy parameters by name, e.g. {"period": 10}. Unknown names are an error.
+        fill: 'signal_close' (default) or 'next_open' (fills at the next bar's open; no lookahead)
     """
     return walk_forward_backtest(
         symbol, strategy, period, initial_capital,
         commission_pct, slippage_pct, n_splits, train_ratio, interval,
         data_source=data_source, tv_symbol=tv_symbol,
+        params=params, fill=fill,
     )
+
+
+@mcp.tool(annotations=ToolAnnotations(title="Strategy Gauntlet", readOnlyHint=True, destructiveHint=False, openWorldHint=True))
+def strategy_gauntlet(
+    symbol: str,
+    strategy: str,
+    hypothesis: str,
+    counterparty: str,
+    cost_profile: str = "default",
+    interval: str = "1d",
+    period: str = "2y",
+    params: Optional[dict] = None,
+    data_source: str = "yahoo",
+    tv_symbol: Optional[str] = None,
+) -> dict:
+    """Run a strategy through six checks (settings, evidence, parameter sensitivity, double costs, last year, walk-forward). Most ideas should fail.
+
+    Needs a stated edge first: hypothesis (why it should work) and counterparty (who loses the trade),
+    each at least 20 characters and specific, not "momentum" or "retail". All fills use the next bar's open.
+    Writes a small report file under ~/.tradingview-mcp/gauntlet (or $TRADINGVIEW_MCP_HOME); it changes nothing else.
+
+    Args:
+        symbol: Yahoo Finance symbol (AAPL, BTC-USD, SPY…)
+        strategy: rsi | bollinger | macd | ema_cross | supertrend | donchian
+                  | rsi_pullback | keltner_breakout | triple_ema
+        hypothesis: The reason this edge should exist, in your own words
+        counterparty: Who is on the other side of the trade, and why they lose
+        cost_profile: default | binance_spot | coinbase_advanced | us_stock_broker (assumed fees: check your own)
+        interval: '1d' or '1h' (Yahoo). With data_source='tradingview' also '15m' and '4h'.
+        period: Left at '2y' it is raised to the longest history the source allows (5y for daily TradingView data)
+        params: Optional strategy parameters by name, e.g. {"period": 10}
+        data_source: 'yahoo' (default) or 'tradingview'
+        tv_symbol: EXCHANGE:SYMBOL for data_source='tradingview', e.g. 'BINANCE:BTCUSDT'
+    """
+    return run_gauntlet(
+        symbol, strategy, hypothesis, counterparty, cost_profile=cost_profile,
+        interval=interval, period=period, params=params,
+        data_source=data_source, tv_symbol=tv_symbol,
+    )
+
+
+@mcp.tool(annotations=ToolAnnotations(title="Gauntlet Statistics", readOnlyHint=True, destructiveHint=False, openWorldHint=False))
+def gauntlet_stats() -> dict:
+    """How many strategy ideas have been through the gauntlet, how many survived, and which gate kills most.
+
+    Reads the local log written by strategy_gauntlet. Most ideas should fail; around 6 in 7 failing is normal.
+    """
+    return _gauntlet_stats()
+
+
+# ── Prompts ─────────────────────────────────────────────────────────────────────
+
+@mcp.prompt()
+def strategy_builder(market: str = "crypto", timeframe: str = "1d") -> str:
+    """Find, test and honestly report a strategy idea for one market."""
+    return f"""Help me find a {market} strategy idea on the {timeframe} timeframe and test it honestly. Nothing here trades.
+
+1. Scan the market first: use tv_hotlist and the screeners to see what is actually moving and liquid.
+2. Check tradability for the symbols you consider: average daily traded value, zero-volume bars, thin markets.
+3. Propose five hypotheses. Each one must name who loses the trade (the counterparty) and why they keep losing it. "Momentum" or "retail trades badly" is not an answer.
+4. Pick only the strongest one and run it through strategy_gauntlet, with the real hypothesis and counterparty text and a cost profile that matches where I would trade.
+5. Report honestly: every gate with its numbers, the verdict, and the report path. Most ideas should fail; if this one fails, say so plainly and say which gate failed and why. Do not tune parameters until it passes, and do not call a surviving idea a prediction.
+"""
+
+
+@mcp.prompt()
+def strategy_reviewer(fingerprint: str) -> str:
+    """Try to kill a gauntlet report."""
+    return f"""Review gauntlet report {fingerprint} and try to kill it. Default answer: recommend rejection unless every gate passed clearly.
+
+Load the stored report (its file is <fingerprint>.json in the gauntlet folder; strategy_gauntlet returned the report_path) and read the inputs, every gate with its numbers, and the verdict.
+Then attack it on each of these:
+- Counterparty: is the named loser real, and would they really keep losing this trade after costs?
+- Cost drag: gross versus net return, trades per year, and what happens at double costs.
+- Recent-year weakness: did the last year hold up against the full period?
+- Sensitivity spread: how wide are the neighbouring-parameter results? One narrow peak is overfitting.
+- Trade count: is 30 trades really enough to tell skill from luck here?
+- Survivorship: could this symbol only be here because it survived, or because it was picked after the fact?
+Finish with ACCEPT FOR PAPER TRADING or REJECT, and the one reason that decides it.
+"""
 
 
 # ── Yahoo Finance tools ────────────────────────────────────────────────────────
