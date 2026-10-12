@@ -10,12 +10,16 @@
  *
  * `createWatcher(deps)` is exported for tests (fake library, fake fetch, fake clock).
  */
+import { EventEmitter } from 'node:events';
 import { realpathSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { errorMessage } from './lib/errors.mjs';
 import { createClientManager } from './lib/client.mjs';
 import { loadConfig, checkEnv } from './lib/config.mjs';
 import { createAlerts } from './lib/alerts.mjs';
+import { createDashboard, defaultAssets } from './lib/dashboard.mjs';
 import { createHealth } from './lib/health.mjs';
 import { createLocalApi } from './lib/localapi.mjs';
 import { createQueue } from './lib/queue.mjs';
@@ -87,6 +91,8 @@ export function createWatcher({
     ? [createStdoutNotifier({ write, redact })]
     : buildNotifiers({ env, fetch, redact });
   const queue = createQueue({ notifiers, clock, log: (message) => logger.warn(message) });
+  // The only way the dashboard hears about anything: 'bar' (stream, candle), 'alert' (history entry), 'health' (stream list).
+  const bus = new EventEmitter();
   const alerts = createAlerts({
     alerts: config.alerts,
     timezone: config.timezone,
@@ -94,6 +100,7 @@ export function createWatcher({
     clock,
     queue,
     log: (message) => logger.info(message),
+    onRecord: (entry) => bus.emit('alert', entry),
   });
 
   const evaluated = {
@@ -173,6 +180,7 @@ export function createWatcher({
     onClosedBar,
     random,
     onConnection: () => { connectionsOpened += 1; },
+    onBar: (stream, candle) => bus.emit('bar', stream, candle),
   });
 
   const scanner = createScanner({
@@ -222,6 +230,30 @@ export function createWatcher({
     })
     : null;
 
+  // A dashboard that cannot be created (non-loopback without a token) or bound never stops the watcher:
+  // alerts matter more than charts.
+  let dashboard = null;
+  if (config.dashboard.enabled) {
+    try {
+      dashboard = createDashboard({
+        host: config.dashboard.host,
+        port: config.dashboard.port,
+        token: typeof env.WATCHER_DASHBOARD_TOKEN === 'string' ? env.WATCHER_DASHBOARD_TOKEN : '',
+        bus,
+        streams,
+        getAlerts: () => store.state.alerts,
+        rules: config.rules,
+        timezone: config.timezone,
+        home: env.TRADINGVIEW_MCP_HOME || join(homedir(), '.tradingview-mcp'),
+        assets: defaultAssets(),
+        clock,
+        logger,
+      });
+    } catch (err) {
+      logger.warn(`dashboard not started: ${errorMessage(err)}`);
+    }
+  }
+
   let ticker = null;
   let nextScanAt = 0;
   let scanInFlight = null;
@@ -231,7 +263,12 @@ export function createWatcher({
   async function tick() {
     if (stopping) return;
     // A bug in one housekeeping step must not kill a process that is otherwise healthy.
-    for (const [name, step] of [['alerts', () => alerts.tick()], ['health', () => health.tick()]]) {
+    const steps = [
+      ['alerts', () => alerts.tick()],
+      ['health', () => health.tick()],
+      ['events', () => { if (bus.listenerCount('health') > 0) bus.emit('health', streams.list()); }],
+    ];
+    for (const [name, step] of steps) {
       try {
         step();
       } catch (err) {
@@ -257,6 +294,8 @@ export function createWatcher({
     scanner,
     health,
     localApi,
+    dashboard,
+    bus,
     tick,
 
     /** Loads state, starts the streams and the tick, and opens the local API. */
@@ -272,6 +311,16 @@ export function createWatcher({
         logger.info(`local API listening on ${bound.host}:${bound.port}`);
       } else {
         logger.info('local API disabled (needs local_api.enabled and WATCHER_LOCAL_TOKEN)');
+      }
+      if (!config.dashboard.enabled) {
+        logger.info('dashboard disabled (dashboard.enabled is false)');
+      } else if (dashboard !== null) {
+        try {
+          const bound = await dashboard.listen();
+          logger.info(`dashboard listening on ${bound.host}:${bound.port}`);
+        } catch (err) {
+          logger.warn(`dashboard not started: ${err?.code ?? errorMessage(err)}`);
+        }
       }
       nextScanAt = clock.now();
       streams.start();
@@ -293,6 +342,7 @@ export function createWatcher({
       queue.close();
       await store.close().catch((err) => logger.warn(`state write failed: ${err?.code ?? 'error'}`));
       if (localApi !== null) await localApi.close();
+      if (dashboard !== null) await dashboard.close();
       await clients.close();
       logger.info('stopped');
     },
