@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createLocalApi, parseNotifyBody, tokenMatches, MAX_BODY_BYTES } from '../../lib/localapi.mjs';
+import { createLocalApi, parseNotifyBody, tokenMatches, tokensEqual, MAX_BODY_BYTES } from '../../lib/localapi.mjs';
 
 const TOKEN = 'local-token-value-1234';
 const silent = { info() {}, warn() {}, error() {} };
@@ -171,4 +171,16 @@ test('GET /health never contains the token or any env secret name', async (t) =>
   const text = await (await fetch(`${base}/health`)).text();
   assert.ok(!text.includes(TOKEN));
   assert.ok(!/token|webhook|cookie|session/i.test(text));
+});
+
+test('tokensEqual: true only for two equal, non-empty strings; any length or type is handled without error', () => {
+  assert.equal(tokensEqual('s3cret-token', 's3cret-token'), true);
+  assert.equal(tokensEqual('s3cret-token', 's3cret-tokeN'), false);
+  assert.equal(tokensEqual('short', 'a-much-longer-token-than-short'), false);
+  assert.equal(tokensEqual('', ''), false, 'an empty token never matches, even another empty one');
+  assert.equal(tokensEqual('x', ''), false);
+  for (const bad of [undefined, null, 5, {}, []]) {
+    assert.equal(tokensEqual(bad, 'x'), false);
+    assert.equal(tokensEqual('x', bad), false);
+  }
 });
