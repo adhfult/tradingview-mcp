@@ -532,3 +532,75 @@ test('--check-config warns about an expired rule and still prints OK', async (t)
   assert.deepEqual(outs, ['OK\n']);
   assert.ok(errs.some((line) => line.includes('expired') && line.includes('2000-01-01')), errs.join(''));
 });
+
+// ---- W2: calendar gating, through the whole watcher ---------------------------------------
+// The test clock reads Saturday 2026-10-10 12:00 UTC (outside the US session) the whole time, so a rule that fires
+// proves the gate looks at the bar's own close time and not at the clock. October is EDT (UTC-4), November EST (UTC-5).
+
+/** Feeds two snapshots on a 15-minute stream so that the bar closing at `closeIso` trips the 0.5% rule. */
+async function barClosingAt(t, closeIso, rule) {
+  const built = await build(t, { configOverrides: ruleWith(rule) });
+  await built.watcher.start();
+  const startTime = Date.parse(closeIso) / 1000 - 1800;
+  built.lib.watchers[0].feed(snapshot([100, 101], { startTime, step: 900 }));
+  built.lib.watchers[0].feed(snapshot([100, 101, 102], { startTime, step: 900 }));
+  await settle();
+  return built;
+}
+
+const GATE_CASES = [
+  ['mid-session', '2026-10-12T17:00:00Z', true],
+  ['the bar closing at 16:00 is the last one in', '2026-10-12T20:00:00Z', true],
+  ['a bar closing at 16:15 is out', '2026-10-12T20:15:00Z', false],
+  ['the bar closing at 09:45 is the first one in', '2026-10-12T13:45:00Z', true],
+  ['the bar closing at 09:30 ended before the open', '2026-10-12T13:30:00Z', false],
+  ['a Saturday', '2026-10-10T17:00:00Z', false],
+  ['Thanksgiving 2026 (holiday)', '2026-11-26T17:00:00Z', false],
+  ['early close day: the bar closing at 13:00 is the last one in', '2026-11-27T18:00:00Z', true],
+  ['early close day: a bar closing at 13:15 is out', '2026-11-27T18:15:00Z', false],
+  ['2027-01-18 (holiday from the new defaults)', '2027-01-18T17:00:00Z', false],
+  ['2027-01-19 (a normal day)', '2027-01-19T17:00:00Z', true],
+  ['2027-11-26 early close: a bar closing at 13:15 is out', '2027-11-26T18:15:00Z', false],
+  ['2027-12-24 is a full closure, not an early close', '2027-12-24T15:00:00Z', false],
+];
+
+for (const [name, closeIso, fires] of GATE_CASES) {
+  test(`calendar us_session: ${name} ${fires ? 'fires' : 'is skipped'}`, async (t) => {
+    const { watcher, calls } = await barClosingAt(t, closeIso, { calendar: 'us_session' });
+    assert.equal(calls.length, fires ? 1 : 0);
+    await watcher.stop();
+  });
+}
+
+test('calendar any (or no field) fires outside the session', async (t) => {
+  for (const rule of [{ calendar: 'any' }, {}]) {
+    const { watcher, calls } = await barClosingAt(t, '2026-10-10T17:00:00Z', rule);
+    assert.equal(calls.length, 1, JSON.stringify(rule));
+    await watcher.stop();
+  }
+});
+
+test('a gated rule is never evaluated, so it uses no daily allowance and records nothing', async (t) => {
+  const { watcher, calls, dir } = await barClosingAt(t, '2026-10-10T17:00:00Z', { calendar: 'us_session', max_per_day: 1 });
+  assert.equal(calls.length, 0);
+  await watcher.stop();
+  const saved = JSON.parse(await readFile(join(dir, 'state.json'), 'utf8'));
+  assert.deepEqual(saved.dailyCounts ?? {}, {});
+  assert.deepEqual(saved.cooldowns ?? {}, {});
+  assert.deepEqual(saved.seen ?? {}, {});
+});
+
+test('gating one rule leaves the other rules on the same stream alone', async (t) => {
+  const rules = [
+    { id: 'gated', type: 'pct_move', bars: 1, threshold_pct: 0.5, calendar: 'us_session' },
+    { id: 'open', type: 'pct_move', bars: 1, threshold_pct: 0.5 },
+  ];
+  const { watcher, lib, calls } = await build(t, { configOverrides: { rules, ...NO_API } });
+  await watcher.start();
+  const startTime = Date.parse('2026-10-10T17:00:00Z') / 1000 - 1800;
+  lib.watchers[0].feed(snapshot([100, 101], { startTime, step: 900 }));
+  lib.watchers[0].feed(snapshot([100, 101, 102], { startTime, step: 900 }));
+  await settle();
+  assert.equal(calls.length, 1);
+  await watcher.stop();
+});

@@ -324,3 +324,68 @@ test('a rule id of __proto__ is rejected, because a counter stored under it coul
   const { errors } = withRule({ id: '__proto__' });
   assert.ok(errors.some((e) => e.startsWith('rules[0].id: ') && e.includes('__proto__')), errors.join('\n'));
 });
+
+// ---- W2: calendar gating -----------------------------------------------------------------
+test('a rule may set calendar to "any" or "us_session", and the config keeps it', () => {
+  for (const calendar of ['any', 'us_session']) {
+    const { config, errors } = withRule({ calendar });
+    assert.deepEqual(errors, [], calendar);
+    assert.equal(config.rules[0].calendar, calendar);
+  }
+  assert.equal(withRule({}).config.rules[0].calendar, undefined, 'no field means any, nothing is filled in');
+});
+
+test('calendar rejects any other value', () => {
+  for (const bad of ['us', 'US_SESSION', '', null, true, 1]) {
+    const { errors } = withRule({ calendar: bad });
+    assert.ok(errors.some((e) => e.startsWith('rules[0].calendar: must be "any" or "us_session"')), `${JSON.stringify(bad)} gave ${errors}`);
+  }
+});
+
+test('us_session needs intraday timeframes, because a daily bar closes at a day boundary', () => {
+  const daily = base({ watchlist: [{ symbol: 'BINANCE:BTCUSDT', timeframes: ['60', 'D'] }] });
+  const run = (rule) => parseConfig(
+    { ...daily, rules: [{ id: 'move', type: 'pct_move', bars: 1, threshold_pct: 1, ...rule }] },
+    { home: HOME, now: Date.UTC(2026, 9, 10, 12, 0, 0) },
+  );
+  // No timeframes on the rule means it also matches the daily stream.
+  assert.ok(run({ calendar: 'us_session' }).errors.some((e) => /^rules\[0\]\.calendar: .*intraday/.test(e)));
+  assert.ok(run({ calendar: 'us_session', timeframes: ['D'] }).errors.some((e) => /^rules\[0\]\.calendar: .*intraday/.test(e)));
+  assert.ok(run({ calendar: 'us_session', timeframes: ['60', 'W'] }).errors.some((e) => /^rules\[0\]\.calendar: .*intraday/.test(e)));
+  // Pinning the rule to intraday timeframes is the fix; "any" is never restricted.
+  assert.deepEqual(run({ calendar: 'us_session', timeframes: ['60'] }).errors, []);
+  assert.deepEqual(run({ calendar: 'any' }).errors, []);
+  assert.deepEqual(run({}).errors, []);
+});
+
+test('the default holiday lists cover 2027 (NYSE release of 2025-12-23)', () => {
+  const { config } = withRule({});
+  const holidays = config.health.us_holidays;
+  const early = config.health.us_early_closes;
+  for (const date of ['2027-01-01', '2027-01-18', '2027-02-15', '2027-03-26', '2027-05-31', '2027-06-18',
+    '2027-07-05', '2027-09-06', '2027-11-25', '2027-12-24']) {
+    assert.ok(holidays.includes(date), `${date} is missing from us_holidays`);
+  }
+  assert.deepEqual(early.filter((d) => d.startsWith('2027')), ['2027-11-26']);
+  assert.ok(!early.includes('2027-12-24'), '2027-12-24 is a full closure, not an early close');
+  // The 2026 dates still ahead are kept.
+  assert.ok(holidays.includes('2026-11-26') && holidays.includes('2026-12-25'));
+  assert.ok(early.includes('2026-11-27') && early.includes('2026-12-24'));
+});
+
+test('a holiday list with no date 30 or more days ahead is a warning, not an error', () => {
+  const at = (now, extra = {}) => parseConfig({ ...base(extra) }, { home: HOME, now });
+  const stale = (r) => r.warnings.filter((w) => w.startsWith('health.us_holidays'));
+  assert.deepEqual(stale(at(Date.UTC(2026, 9, 12))), [], 'the defaults run to 2027-12-24');
+  assert.deepEqual(stale(at(Date.UTC(2027, 10, 24))), [], '30 days before the last date is still fine');
+  const late = at(Date.UTC(2027, 11, 1));
+  assert.deepEqual(late.errors, []);
+  assert.ok(stale(late).length === 1 && stale(late)[0].includes('2027-12-24'), late.warnings.join('\n'));
+  // A custom list that reaches further is judged on its own latest date.
+  assert.deepEqual(stale(at(Date.UTC(2027, 11, 1), { health: { us_holidays: ['2028-12-25'] } })), []);
+  assert.equal(stale(at(Date.UTC(2027, 11, 1), { health: { us_holidays: ['2027-12-24'] } })).length, 1);
+  // An empty list is a deliberate choice, so it is not nagged about.
+  const empty = at(Date.UTC(2027, 11, 1), { health: { us_holidays: [] } });
+  assert.deepEqual(empty.errors, []);
+  assert.deepEqual(stale(empty), []);
+});
