@@ -134,6 +134,39 @@ def _truncation_note(period: str, meta: dict) -> str:
             f"{_TV_MAX_BARS:,}-bar plan limit applied.")
 
 
+def tv_bars_to_candles(bars: list, interval: str) -> list[dict]:
+    """Bridge bars as backtest candles: sorted, one per date (the last bar seen wins).
+
+    Pure (no network). Each candle keeps `time`, the bar's open time in unix seconds,
+    so callers can tell a still-forming last bar from a closed one.
+    """
+    fmt = "%Y-%m-%d" if interval == "1d" else "%Y-%m-%d %H:%M"
+    dated: list[tuple[int, dict]] = []
+    for bar in bars:
+        if not isinstance(bar, dict) or bar.get("time") is None:
+            continue
+        o, h, l, c = bar.get("open"), bar.get("high"), bar.get("low"), bar.get("close")
+        if None in (o, h, l, c):
+            continue
+        ts = int(bar["time"])
+        dated.append((ts, {
+            "date":   datetime.fromtimestamp(ts, tz=timezone.utc).strftime(fmt),
+            "time":   ts,
+            "open":   round(o, 4),
+            "high":   round(h, 4),
+            "low":    round(l, 4),
+            "close":  round(c, 4),
+            "volume": bar.get("volume") or 0,
+        }))
+    dated.sort(key=lambda item: item[0])
+
+    # Dates must be unique: a duplicate keeps the last bar seen.
+    by_date: dict[str, dict] = {}
+    for _, candle in dated:
+        by_date[candle["date"]] = candle
+    return list(by_date.values())
+
+
 def _fetch_tv_candles(tv_symbol: str, period: str, interval: str) -> tuple[list[dict], dict]:
     """Bridge candles as backtest bars, plus metadata (source label, truncation).
 
@@ -163,38 +196,16 @@ def _fetch_tv_candles(tv_symbol: str, period: str, interval: str) -> tuple[list[
     if not isinstance(bars, list):
         raise RuntimeError("TradingView returned an unexpected candles reply")
 
-    fmt = "%Y-%m-%d" if interval == "1d" else "%Y-%m-%d %H:%M"
-    dated: list[tuple[int, dict]] = []
-    for bar in bars:
-        if not isinstance(bar, dict) or bar.get("time") is None:
-            continue
-        o, h, l, c = bar.get("open"), bar.get("high"), bar.get("low"), bar.get("close")
-        if None in (o, h, l, c):
-            continue
-        ts = int(bar["time"])
-        dated.append((ts, {
-            "date":   datetime.fromtimestamp(ts, tz=timezone.utc).strftime(fmt),
-            "open":   round(o, 4),
-            "high":   round(h, 4),
-            "low":    round(l, 4),
-            "close":  round(c, 4),
-            "volume": bar.get("volume") or 0,
-        }))
-    dated.sort(key=lambda item: item[0])
-
-    # Dates must be unique: a duplicate keeps the last bar seen.
-    by_date: dict[str, dict] = {}
-    for _, candle in dated:
-        by_date[candle["date"]] = candle
+    candles = tv_bars_to_candles(bars, interval)
 
     span = now - from_ts
-    truncated = bool(dated) and (dated[0][0] - from_ts) > _TV_TRUNCATION_FRACTION * span
+    truncated = bool(candles) and (candles[0]["time"] - from_ts) > _TV_TRUNCATION_FRACTION * span
     meta = {
         "data_source": f"TradingView ({'session' if auth == 'session' else 'anonymous'})",
         "truncated": truncated,
-        "first_date": dated[0][1]["date"] if dated else None,
+        "first_date": candles[0]["date"] if candles else None,
     }
-    return list(by_date.values()), meta
+    return candles, meta
 
 
 def _fetch_ohlcv_tv(tv_symbol: str, period: str, interval: str) -> list[dict]:

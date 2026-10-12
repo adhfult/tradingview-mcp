@@ -116,7 +116,7 @@ def test_conversion_drops_none_ohlc_keeps_last_duplicate_and_rounds(tv_stub):
     ]
     candles = bt._fetch_ohlcv_tv("BINANCE:BTCUSDT", "1y", "1d")
     assert [c["date"] for c in candles] == ["2026-01-01", "2026-01-03"]
-    assert candles[0] == {"date": "2026-01-01", "open": 9.0, "high": 9.0,
+    assert candles[0] == {"date": "2026-01-01", "time": T0 + 600, "open": 9.0, "high": 9.0,
                           "low": 9.0, "close": 9.0, "volume": 5}
     assert candles[1]["open"] == 1.1235
     assert candles[1]["volume"] == 7
