@@ -77,3 +77,38 @@
 - files
 - mismatches with the 6a or Phase 5 code
 - the real pytest tails
+
+## Implementation report
+
+Lead: Sonnet 5.5 High, regime 3, no delegates. Branch `claude/phase-6b` (worktree `~/code/tvmcp-6b`), base `a3a5274`. Not pushed.
+
+### Files
+- New `src/tradingview_mcp/core/services/paper_service.py` (logic), `src/tradingview_mcp/paper.py` (CLI), `bridge/paper.service.example`, `tests/unit/services/test_paper_service.py` (69 tests).
+- Edited `gauntlet_service.py`: `load_report`, `latest_pass_fingerprint`, `_read_log` (shared with `gauntlet_stats`), `_drop_forming_bar` made public as `drop_forming_bar` (3 lines in `test_gauntlet.py` renamed).
+- Edited `pyproject.toml` (`tradingview-mcp-paper` script) and `README.md` ("Paper trading" section). No new dependencies (`urllib`, `zoneinfo`).
+
+### Mismatches with the brief / 6a / Phase 5 code
+- The report has no `trades_per_year`: expected trades per week = `enough_evidence.numbers.trades` over the weeks between `bars.date_from` and `bars.date_to`.
+- `verify_report` only says yes/no, so `load_report` was added; it reuses `verify_report` for the fingerprint check and symlink refusal.
+- The brief's candles call uses `count: 500` (the bridge accepts it); the backtest fetch helper uses `from`/`maxCount`. The paper loop wants a sliding window, so it uses `count`.
+- A forced exit on the last bar emits no event; an entry appears one bar after its signal (`next_open`). Both are in the README.
+- Weekly summary: sent only for a journal that existed before that Monday 08:00 (otherwise a new journal would announce a summary with its first entry). A journal starts with a `start` line so a strategy that never trades is still judged (trade-count check after 4 weeks).
+- Event detection resumes from the newest journaled trade, so an outage longer than 3 bars loses nothing. The first pass of a new journal looks at the last 3 closed bars only (no replay of history).
+
+### Review (regime 11)
+Fable (subagent) and Luna Max (`inv.sh codex gpt-6-luna max`), read-only, given the brief and a saved diff. Every finding checked against the code.
+Fixed: Luna: `WATCHER_LOCAL_PORT` went into the URL unchecked (`@host:80` would send the bearer token elsewhere); zero-trade strategies never got a summary or divergence flag. Fable: events older than 3 bars were lost after an outage; the dry-run no-network test could not fail (exceptions are swallowed); no test for stop-mid-step or the journal symlink refusal; service example did not mention the bridge session variables.
+Dismissed: `paper/` or the journal being a symlink and the 0600 mode on a pre-existing file (needs write access to the user's own home, same posture as `gauntlet/`); 168-hour weekly window shifts one hour across DST (cosmetic); `--once` has no signal handler (Ctrl+C exits 130); `load_report` re-reads after `verify_report` (TOCTOU inside a 0700 directory).
+Known limit (not fixed): paper drawdown is computed from realised exits, the backtest's from the equity curve, so a deep open-trade dip that recovers before exit can hide a divergence.
+Test gap noted by Luna: the event tests stub `_simulate`, so one-bar-late `next_open` is covered by the engine's own tests, not here.
+Mutation checks: removing the forced-exit filter, the dedupe against the journal and the outage window each turn tests red.
+
+### Gates (real tails)
+- `uv run pytest tests/unit -q`: `1024 passed` (955 before; also `1012 passed` with Node hidden at the earlier commit).
+- `npm test --prefix bridge`: `ℹ tests 344 / ℹ pass 344 / ℹ fail 0`.
+- `uv run tradingview-mcp-paper --help` works; `--once --dry-run` against a stub client prints a notification with "hypothetical" and makes no network call (test).
+
+### Still open
+- Confirm on live data that a daily bar's `time` is its open and it closes 24 hours later (forming-bar check). Needs the one live `strategy_gauntlet` run noted in the NEXT file.
+- Daily bars for non-24-hour markets (bar `time` not at UTC midnight) are untested.
+- Not pushed; STATUS.md untouched (integrator step C updates it).
