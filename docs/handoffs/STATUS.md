@@ -21,16 +21,18 @@
 | 4: packaging/Docker/CI/docs | **done** | 2264f50, 154dbfc, d6b5509 | 812 pass | .env.example safe defaults; Docker build deferred to WSL |
 | 5: watcher | **done** | 83e48a1, WIP snapshots, (advisor fixes) | bridge 344 pass | Fable: one README must-fix (Node path) applied; Pi-only checks below |
 | 6a: gauntlet | **done** | 8406891, 5d88359, 9d7fcab, d736b48, a6210f7, (warm-up fix) | 955 pass | Luna 9 fixed/1 dismissed; Fable 1 fixed; live TradingView run still to do |
-| 6b: paper trader | not started | – | – | – |
+| 6b: paper trader | **done** | 59d4092, f374753, a01f477, 7ae0ec8, 7317b6d, 4cd0c90, a851ade | python 1024 pass | Fable + Luna Max reviews fixed: events lost in a >3-bar outage, `WATCHER_LOCAL_PORT` token redirect, zero-trade strategies, a vacuous test. Never places orders (a test checks the source). Details in `phase-6b.md` |
+| W1: watcher daily cap + expiry | **done** | 4d552f3, a2868fc, 828a8b1, 639c4f0 | bridge 377 pass | `max_per_day` + `expires` per rule. Fable + Luna Max fixed 4 findings (held alerts using the cap with `digest_after_quiet` off, `tick()` pruning future-dated counts, `__proto__` rule id, a weak test). Details in `watcher-w1.md` |
 | 7a: dashboard | not started | – | – | – |
 | 7b: alert images | not started | – | – | – |
 | 7c: PyneCore | not started | – | – | – |
 
 ## Current step (2026-10-12)
-Phases 0-6a are done (python 955 pass, bridge 344 pass). Branch work is local until Adham approves a push.
-1. **Next piece** (state the regime line first, see `docs/plans/panwatch-ideas-and-pi-footprint.md`): Phase 6b (`phase-6b.md`, regime 3 or 4, Sonnet 5.5 High) or watcher W1 (daily cap + expiry, regime 4). Adham has not chosen.
-2. Then 7a, 7b, 7c (`phase-7.md`) and the watcher pieces W2-W4 from the plan, each with the per-piece regime and the wrap-up review (regime 11).
-3. **Finally:** the checks in "Checks only Adham can run" and the Pi checklist. Add: one live TradingView run of `strategy_gauntlet` (confirms the daily-bar `time` assumption in `_drop_forming_bar`) and one real use of the two prompts.
+Phases 0-6b and watcher W1 are done and merged on this branch (python 1024 pass, bridge 377 pass). Branch work is local until Adham approves a push.
+1. **Next piece** (state the regime line first, see `docs/plans/panwatch-ideas-and-pi-footprint.md`): watcher **W2 calendar gating** (regime 4, Sonnet 5.5 High, includes extending `DEFAULT_US_HOLIDAYS` to 2027). Then W3 AND/OR rules (regime 3, no delegates).
+2. Then 7a, 7b, 7c (`phase-7.md`). W4 (ccxt backup source) starts with a new Opus High plan-mode session, and only after the watcher has run a night on the Pi.
+3. **Finally:** the checks in "Checks only Adham can run" and the Pi checklist. Add: one live TradingView run of `strategy_gauntlet` (confirms the daily-bar `time` assumption in `drop_forming_bar`, which the paper trader also relies on) and one real use of the two prompts.
+4. Paper trader limits to remember (`phase-6b.md`): paper drawdown uses realised exits while the backtest's is mark-to-market, so a deep dip inside a trade that recovers before exit could hide a divergence.
 
 ## Approved dependencies
 - `@mathieuc/tradingview` 4.0.0 (ISC)
@@ -51,6 +53,7 @@ Phases 0-6a are done (python 955 pass, bridge 344 pass). Branch work is local un
 ## Open issues / follow-ups
 - Phase 3: `tv_*` tools must use `freshness.record(...)`, not hand-built `data_freshness`. Decide how `auth` rolls up across mixed sources. Add the auth flag to screener cache keys.
 - Phase 5: the watcher opens one freshness collection per tick, never one for the whole loop.
+- W1: with `digest_after_quiet` on, N alerts held overnight use N cap slots but make one digest. If the clock steps back across midnight, a rule's daily counter is overwritten (see `watcher-w1.md`, known limits).
 
 ## Checks only Adham can run (not possible in the cloud session)
 - The Docker daemon is not reachable in the cloud session, so Docker build checks are deferred to WSL.
