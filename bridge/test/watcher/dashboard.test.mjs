@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { mkdir, mkdtemp, rm, symlink, utimes, writeFile } from 'node:fs/promises';
 import http from 'node:http';
@@ -729,4 +730,67 @@ test('a malformed request gets a 400 that still carries the security headers', a
   await eventually(() => text.includes('\r\n\r\n'));
   assert.match(text, /^HTTP\/1\.1 400 /);
   for (const [name, value] of Object.entries(SECURITY_HEADERS)) assert.ok(text.includes(`${name}: ${value}`), name);
+});
+
+// ---------------------------------------------------------------- review findings (P1 wrap-up)
+
+test('a FIFO where a report should be is skipped at once: opening it would hang a worker thread for good', async (t) => {
+  const { get, home } = await start(t);
+  try {
+    execFileSync('mkfifo', [join(home, 'gauntlet', `${FP}.json`)]);
+  } catch {
+    t.skip('mkfifo is not available here');
+    return;
+  }
+  await writeFile(join(home, 'paper', `${FP}.jsonl`), journalLines({ ts: 't', type: 'start', bar_time: 1 }));
+  const timeout = new Promise((_, reject) => { setTimeout(() => reject(new Error('/api/paper hung on a FIFO')), 3000).unref(); });
+  const [journal] = json(await Promise.race([get('/api/paper'), timeout]));
+  assert.equal(journal.fingerprint, FP);
+  assert.equal(journal.strategy, null);
+});
+
+test('the 1 MB file cap is exact: a file of exactly 1 MiB is read, one byte more is skipped', async (t) => {
+  const { get, home } = await start(t);
+  const pad = (fp, size) => {
+    const body = gauntletReport(fp);
+    return body + ' '.repeat(size - Buffer.byteLength(body));
+  };
+  await writeFile(join(home, 'gauntlet', `${FP}.json`), pad(FP, 1024 * 1024));
+  await writeFile(join(home, 'gauntlet', `${FP2}.json`), pad(FP2, 1024 * 1024 + 1));
+  assert.deepEqual(json(await get('/api/gauntlet')).map((r) => r.fingerprint), [FP]);
+});
+
+test('Expect: with an unknown value is a 417 that still carries the security headers', async (t) => {
+  const { port } = await start(t);
+  const text = await rawRequest(port, 'GET /api/streams HTTP/1.1\r\nHost: 127.0.0.1\r\nExpect: nonsense\r\nConnection: close\r\n\r\n');
+  assert.match(text, /^HTTP\/1\.1 417 /);
+  for (const [name, value] of Object.entries(SECURITY_HEADERS)) assert.ok(text.includes(`${name}: ${value}`), name);
+});
+
+test('a client error after a response has started destroys the socket instead of writing a second response', async (t) => {
+  const { dashboard } = await start(t);
+  const calls = [];
+  const socket = { writable: true, _httpMessage: { headersSent: true }, end: () => calls.push('end'), destroy: () => calls.push('destroy') };
+  dashboard.server.emit('clientError', new Error('request timeout'), socket);
+  assert.deepEqual(calls, ['destroy']);
+  const fresh = { writable: true, _httpMessage: null, end: () => calls.push('end:fresh'), destroy: () => calls.push('destroy:fresh') };
+  dashboard.server.emit('clientError', new Error('bad request'), fresh);
+  assert.deepEqual(calls, ['destroy', 'end:fresh'], 'with no response started, the 400 is still written');
+});
+
+test('a correction to the closing candle and the next candle inside one second are both delivered, in time order', async (t) => {
+  const { port, bus, clock } = await start(t);
+  const events = await openEvents(port);
+  t.after(() => events.close());
+  const frames = () => [...events.text().matchAll(/"time":(\d+),"open":\d+(?:\.\d+)?,"high":\d+(?:\.\d+)?,"low":\d+(?:\.\d+)?,"close":(\d+(?:\.\d+)?)/g)].map((m) => [Number(m[1]), Number(m[2])]);
+  const a = candle(0);
+  const b = candle(1);
+  bus.emit('bar', STREAMS[0], { ...a, close: 100 });   // leading edge, sent at once
+  clock.advance(100);
+  bus.emit('bar', STREAMS[0], { ...a, close: 101 });   // pending
+  clock.advance(100);
+  bus.emit('bar', STREAMS[0], { ...b, close: 102 });   // a new candle, still inside the second
+  clock.advance(COALESCE_MS);
+  await events.waitFor('"close":102');
+  assert.deepEqual(frames(), [[a.time, 100], [a.time, 101], [b.time, 102]]);
 });

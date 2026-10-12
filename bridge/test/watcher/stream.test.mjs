@@ -616,3 +616,18 @@ test('onBar sees the stored candles already updated, and a throwing onBar is log
   assert.equal(evaluations.length, 1);
   assert.ok(log.lines.some((l) => l.startsWith('error') && l.includes('dashboard bug')));
 });
+
+test('onBar also reports the closing candle when its final values differ from the last forming update', async () => {
+  const bars = [];
+  const { lib, streams } = setup({ onBar: (stream, bar) => bars.push([bar.time, bar.close]) });
+  streams.start();
+  await settle();
+  const w = lib.watchers[0];
+  const first = snapshot([10, 11, 12]);
+  w.feed(first);                                 // forming bar closes at 12
+  w.feed(snapshot([10, 11, 12.5, 13]));          // the old bar ended at 12.5, and a new bar began
+  const t = (i) => first[0].time + i * 3600;
+  assert.deepEqual(bars, [[t(2), 12], [t(2), 12.5], [t(3), 13]]);
+  w.feed(snapshot([10, 11, 12.5, 13, 14]));      // the closing bar is unchanged this time: only the new bar
+  assert.deepEqual(bars.slice(3), [[t(4), 14]]);
+});

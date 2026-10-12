@@ -499,3 +499,8 @@ test('the dashboard port must differ from the local API port', () => {
   assert.match(errors.join('\n'), /dashboard\.port: must differ from local_api\.port \(9100\)/);
   assert.deepEqual(parseConfig(base({ dashboard: { port: 8787 } }), { home: HOME }).errors.length, 1, 'the default local_api port counts too');
 });
+
+test('the port clash is caught even when the dashboard block is left out (the default 8788 applies)', () => {
+  const { errors } = parseConfig(base({ local_api: { port: 8788 } }), { home: HOME });
+  assert.match(errors.join('\n'), /dashboard\.port: must differ from local_api\.port \(8788\)/);
+});
