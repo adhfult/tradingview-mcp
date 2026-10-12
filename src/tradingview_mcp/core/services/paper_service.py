@@ -36,6 +36,7 @@ DEFAULT_PORT = 8787
 DEFAULT_TIMEZONE = "America/New_York"
 MIN_WEEKS_TO_JUDGE_COUNT = 4
 DAY = 86400
+JOURNAL_STARTS = ("start", "entry", "exit")     # lines that say when this journal began
 
 
 class PaperRefusal(Exception):
@@ -225,7 +226,10 @@ def send_notification(payload: dict, *, post: Optional[Callable] = None, env: Op
     if not token:
         log.warning("paper: WATCHER_LOCAL_TOKEN is not set, notification not sent")
         return False
-    port = env.get("WATCHER_LOCAL_PORT") or DEFAULT_PORT
+    port = str(env.get("WATCHER_LOCAL_PORT") or DEFAULT_PORT)
+    if not (port.isascii() and port.isdigit() and 0 < int(port) < 65536):
+        log.warning("paper: WATCHER_LOCAL_PORT is not a port number, notification not sent")
+        return False                                          # it goes into the URL next to the token
     url = f"http://127.0.0.1:{port}/notify"
     try:
         status = (post or _http_post)(url, {"Authorization": f"Bearer {token}"}, payload)
@@ -281,7 +285,7 @@ def weekly_summary(plan: dict, journal: list[dict], now: float) -> dict:
     problems = []
     if backtest_dd and paper_dd > 2 * backtest_dd:
         problems.append(f"paper drawdown {paper_dd:.1f}% is over twice the backtest's {backtest_dd:.1f}%")
-    starts = [e["bar_time"] for e in journal if e.get("type") in ("entry", "exit")
+    starts = [e["bar_time"] for e in journal if e.get("type") in JOURNAL_STARTS
               and isinstance(e.get("bar_time"), (int, float))]
     weeks_running = (now - min(starts)) / (7 * DAY) if starts else 0
     if expected and weeks_running >= MIN_WEEKS_TO_JUDGE_COUNT:
@@ -308,7 +312,7 @@ def summary_due(now: float, journal: list[dict], timezone_name: str) -> Optional
     Only for a journal that already existed before that Monday, so a brand-new journal does
     not send a summary in the same pass as its first entry.
     """
-    starts = [e["bar_time"] for e in journal if e.get("type") in ("entry", "exit")
+    starts = [e["bar_time"] for e in journal if e.get("type") in JOURNAL_STARTS
               and isinstance(e.get("bar_time"), (int, float))]
     local = datetime.fromtimestamp(now, ZoneInfo(timezone_name))
     monday = (local - timedelta(days=local.weekday())).replace(hour=8, minute=0, second=0, microsecond=0)
@@ -345,6 +349,9 @@ def process_once(plan: dict, *, client, now: float, post: Optional[Callable] = N
     env = os.environ if env is None else env
     fingerprint = plan["fingerprint"]
     journal = read_journal(fingerprint)
+    if not journal:                                           # lets a strategy that never trades still be judged
+        journal = [{"ts": _iso(now), "type": "start", "bar_time": int(now)}]
+        append_journal(fingerprint, journal[0])
     seen = {(e.get("type"), e.get("bar_time")) for e in journal}
     candles = fetch_closed_candles(client, plan, now)
     events = [{"ts": _iso(now), **e} for e in new_events(plan, candles, seen)]

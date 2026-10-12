@@ -118,6 +118,11 @@ def trade(candles, entry_idx, exit_idx, ret=3.0, forced=False):
     return t
 
 
+def trades_logged(fingerprint):
+    """Journal lines that are trades (the journal also holds a start line and summaries)."""
+    return [e for e in ps.read_journal(fingerprint) if e["type"] in ("entry", "exit")]
+
+
 @pytest.fixture
 def closed():
     return bt.tv_bars_to_candles(BARS, "1d")           # 30 closed daily candles, each with `time`
@@ -340,6 +345,14 @@ def test_send_posts_to_the_local_endpoint_with_the_bearer_token():
     assert post.sent[1][0] == "http://127.0.0.1:8787/notify"          # default port
 
 
+@pytest.mark.parametrize("port", ["@evil.example:80", "80/x", "0", "70000", "-1", " 80", "8o"])
+def test_a_port_that_is_not_a_port_never_reaches_the_url(port, caplog):
+    post = FakePost()
+    with caplog.at_level(logging.WARNING):
+        assert ps.send_notification({"title": "t"}, post=post, env={**ENV, "WATCHER_LOCAL_PORT": port}) is False
+    assert post.sent == [] and "tok-123" not in caplog.text
+
+
 def test_missing_token_warns_and_sends_nothing(caplog):
     post = FakePost()
     with caplog.at_level(logging.WARNING):
@@ -377,17 +390,17 @@ def test_process_once_journals_and_notifies_and_a_restart_is_silent(monkeypatch,
     post = FakePost()
     events = ps.process_once(plan, client=StubClient(), now=LAST_CLOSED_NOW, post=post, env=ENV)
     assert [e["type"] for e in events] == ["entry", "exit"]
-    assert len(post.sent) == 2 and len(ps.read_journal(plan["fingerprint"])) == 2
+    assert len(post.sent) == 2 and len(trades_logged(plan["fingerprint"])) == 2
     # a new process reads the journal and must not announce the same events again
     again = ps.process_once(plan, client=StubClient(), now=LAST_CLOSED_NOW, post=post, env=ENV)
-    assert again == [] and len(post.sent) == 2 and len(ps.read_journal(plan["fingerprint"])) == 2
+    assert again == [] and len(post.sent) == 2 and len(trades_logged(plan["fingerprint"])) == 2
 
 
 def test_a_dead_watcher_does_not_stop_the_journal(monkeypatch, closed):
     plan = make_report()
     fake_simulate(monkeypatch, [trade(closed, 20, 28)])
     ps.process_once(plan, client=StubClient(), now=LAST_CLOSED_NOW, post=FakePost(error=OSError("x")), env=ENV)
-    assert len(ps.read_journal(plan["fingerprint"])) == 1
+    assert len(trades_logged(plan["fingerprint"])) == 1
 
 
 # ─── weekly summary ───────────────────────────────────────────────────────────
@@ -586,7 +599,7 @@ def test_once_dry_run_prints_a_notification_and_makes_no_network_call(monkeypatc
     assert cli(["--report", report["fingerprint"], "--once", "--dry-run"]) == 0
     out = capsys.readouterr().out
     assert "PAPER rsi" in out and "hypothetical" in out
-    assert len(ps.read_journal(report["fingerprint"])) == 1
+    assert len(trades_logged(report["fingerprint"])) == 1
 
 
 def test_latest_pass_finds_the_report(monkeypatch, closed, home, capsys):
@@ -602,3 +615,16 @@ def test_no_order_placing_code_exists():
     source = open(ps.__file__).read() + open(paper.__file__).read()
     for word in ("place_order", "create_order", "submit_order", "ccxt", "alpaca"):
         assert word not in source
+
+
+def test_a_strategy_that_never_trades_is_still_judged(monkeypatch):
+    plan = make_report(trades=52)                                              # expects about 1 trade a week
+    fake_simulate(monkeypatch, [])
+    post = FakePost()
+    first_day = utc(2024, 1, 3, 12)
+    ps.process_once(plan, client=StubClient(), now=first_day, post=post, env=ENV, timezone_name="America/New_York")
+    assert [e["type"] for e in ps.read_journal(plan["fingerprint"])] == ["start"]
+    monday = utc(2024, 2, 12, 14)                                              # five weeks on, nothing ever traded
+    ps.process_once(plan, client=StubClient(), now=monday, post=post, env=ENV, timezone_name="America/New_York")
+    summary, = [p for _, _, p in post.sent if "weekly summary" in p["title"]]
+    assert "diverge" in summary["body"]
