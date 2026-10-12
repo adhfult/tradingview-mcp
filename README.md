@@ -476,6 +476,26 @@ Example prompt: "Compare all 9 strategies on MSFT for 2 years"
 
 ---
 
+### 🧾 Paper trading (hypothetical trades only)
+
+`tradingview-mcp-paper` follows a strategy that **passed the gauntlet** on live TradingView candles and records the trades it *would* have made. It never places an order and never connects to a broker or exchange.
+
+```bash
+uv run tradingview-mcp-paper --latest-pass rsi BINANCE:BTCUSDT          # follow forever
+uv run tradingview-mcp-paper --report <fingerprint> --once --dry-run    # one check, print instead of sending
+```
+
+- It refuses (exit code 2) unless the stored verdict starts with `PASS`, today's code still matches the report, and the run used TradingView data. Change the code, parameters or cost profile and the strategy must pass the gauntlet again. The stored verdict is a local file, not a signed one: this guards against stale code, not against someone editing the file.
+- Each bar it re-runs the strategy on the last 500 closed candles, appends new entries and exits to `$TRADINGVIEW_MCP_HOME/paper/<fingerprint>.jsonl`, and posts them to the watcher's local `/notify` endpoint (`WATCHER_LOCAL_TOKEN`, port `WATCHER_LOCAL_PORT`, default 8787). If the token is missing or the watcher is down it logs a warning and carries on.
+- **An entry appears one bar after its signal.** The backtest fills at the next bar's open, so the paper trader does too. That is not lateness. A position still open on the last bar is not reported as an exit.
+- On Monday 08:00 (`PAPER_TIMEZONE`, default `America/New_York`) it sends a weekly summary: trades, win rate, average return, and a warning when paper drawdown is over twice the backtest's or the trade count is off by more than 3x (judged after four weeks). Expected trades per week come from the report's trade count and the span of its bars.
+- Bridge errors back off 60s, 120s, then 300s. A rejected TradingView session waits 300s and tells you to fix the session settings and restart. SIGTERM or Ctrl+C finishes the current step and exits 0.
+- On a Raspberry Pi, run it as a service: `bridge/paper.service.example`.
+
+Not yet confirmed on live data: that a daily bar's `time` is its open and that it closes 24 hours later (the forming-bar check relies on it).
+
+---
+
 ### 💰 Yahoo Finance — Real-Time Prices *(New in v0.6.0)*
 
 | Tool | Description |

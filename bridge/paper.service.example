@@ -1,0 +1,37 @@
+# systemd unit for the paper trader (Raspberry Pi OS, user pi). Hypothetical trades only: it never places an order.
+# Install: sudo cp bridge/paper.service.example /etc/systemd/system/tradingview-paper.service
+#          sudo systemctl daemon-reload && sudo systemctl enable --now tradingview-paper
+# Logs:    journalctl -u tradingview-paper -f
+# Before you start it:
+#   1. The gauntlet report must exist on this machine (~/.tradingview-mcp/gauntlet/<fingerprint>.json) and
+#      the code here must match the code that produced it, or the paper trader refuses to start.
+#   2. Put the watcher's WATCHER_LOCAL_TOKEN (and WATCHER_LOCAL_PORT if you changed it) in the file below.
+#      For a logged-in TradingView session the bridge also reads TRADINGVIEW_SESSION_ID and TRADINGVIEW_SESSION_SIGN
+#      from the environment; leave them out and it runs anonymously.
+#   3. Use a system node (/usr/bin/node). An nvm path under /home breaks under systemd (silent 203/EXEC loop).
+[Unit]
+Description=TradingView paper trader (hypothetical trades only, never places orders)
+# A Pi has no battery clock: wait for time sync, or bar boundaries and the Monday summary come out wrong.
+After=network-online.target time-sync.target systemd-time-wait-sync.service tradingview-watcher.service
+Wants=network-online.target time-sync.target systemd-time-wait-sync.service
+
+[Service]
+User=pi
+WorkingDirectory=/home/pi/code/tradingview-mcp
+# Same file as the watcher: it holds WATCHER_LOCAL_TOKEN. Add PAPER_TIMEZONE=... there for another zone.
+EnvironmentFile=/etc/tradingview-watcher.env
+# Replace the fingerprint with yours, or use: --latest-pass rsi BINANCE:BTCUSDT
+ExecStart=/home/pi/code/tradingview-mcp/.venv/bin/tradingview-mcp-paper --report 0000000000000000000000000000000000000000000000000000000000000000
+Restart=always
+RestartSec=10
+# Python plus the Node bridge. Ignored when the Pi's memory cgroup is off (check: cat /sys/fs/cgroup/cgroup.controllers).
+MemoryMax=768M
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+# Journal and reports live here. Create it first: mkdir -p ~/.tradingview-mcp/paper
+ReadWritePaths=/home/pi/.tradingview-mcp
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

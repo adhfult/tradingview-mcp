@@ -97,7 +97,7 @@ def _warmup_bars(strategy: str, resolved: dict) -> int:
     return max(bt._STRATEGY_WARMUP_BARS.get(strategy, 20), int(longest))
 
 
-def _drop_forming_bar(candles: list[dict], interval: str, now: Optional[float] = None) -> list[dict]:
+def drop_forming_bar(candles: list[dict], interval: str, now: Optional[float] = None) -> list[dict]:
     """A TradingView bar whose period has not ended yet is still forming: score closed bars only."""
     if not candles or "time" not in candles[-1]:
         return candles
@@ -377,7 +377,7 @@ def run_gauntlet(
     except Exception as e:
         return {"error": f"Failed to fetch data for '{bt._label(symbol, data_source, tv_symbol)}': {e}"}
     if data_source == "tradingview":
-        candles = _drop_forming_bar(candles, interval)
+        candles = drop_forming_bar(candles, interval)
 
     ppy = tv_periods_per_year(tv_symbol, interval) if data_source == "tradingview" else None
     commission = bt.COST_PROFILES[profile]["commission_pct"]
@@ -430,8 +430,8 @@ def run_gauntlet(
 
 # ─── Stats and verification ───────────────────────────────────────────────────
 
-def gauntlet_stats() -> dict:
-    """Summary of every stored run: how many survived and which gate kills most."""
+def _read_log() -> list[dict]:
+    """Every readable summary line of log.jsonl, oldest first; damaged lines are skipped."""
     entries = []
     try:
         raw = (_gauntlet_dir() / "log.jsonl").read_bytes().decode("utf-8", errors="replace")
@@ -444,6 +444,12 @@ def gauntlet_stats() -> dict:
             continue
         if isinstance(entry, dict):
             entries.append(entry)
+    return entries
+
+
+def gauntlet_stats() -> dict:
+    """Summary of every stored run: how many survived and which gate kills most."""
+    entries = _read_log()
     total = len(entries)
     passed = sum(1 for e in entries if e.get("passed"))
     by_gate: dict[str, int] = {}
@@ -475,3 +481,26 @@ def verify_report(fingerprint: str) -> dict:
     except (OSError, ValueError, KeyError, TypeError):
         return {**missing, "exists": True, "error": "the stored report could not be read"}
     return {"exists": True, "verdict": report.get("verdict"), "matches_current_code": current == fingerprint}
+
+
+def load_report(fingerprint: str) -> Optional[dict]:
+    """The stored report for a fingerprint, or None. Same path checks as verify_report.
+
+    The report is a local file, not a signed one: this guards against stale code and
+    changed settings, not against someone editing the file.
+    """
+    if not verify_report(fingerprint)["exists"]:
+        return None
+    try:
+        report = json.loads((_gauntlet_dir() / f"{fingerprint}.json").read_text())
+    except (OSError, ValueError):
+        return None
+    return report if isinstance(report, dict) else None
+
+
+def latest_pass_fingerprint(strategy: str, tv_symbol: str) -> Optional[str]:
+    """Fingerprint of the newest passed run for this strategy and symbol, or None."""
+    for entry in reversed(_read_log()):
+        if entry.get("passed") and entry.get("strategy") == strategy and entry.get("symbol") == tv_symbol:
+            return entry.get("fingerprint")
+    return None

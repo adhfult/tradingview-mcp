@@ -330,13 +330,13 @@ def test_a_forming_bar_is_dropped_but_closed_bars_stay():
     day = 86400
     bars = [{"time": 1_700_000_000 + i * day, "date": f"d{i}"} for i in range(3)]
     now_inside_last = bars[-1]["time"] + day / 2
-    assert g._drop_forming_bar(bars, "1d", now_inside_last) == bars[:-1]
-    assert g._drop_forming_bar(bars, "1d", bars[-1]["time"] + day + 1) == bars
+    assert g.drop_forming_bar(bars, "1d", now_inside_last) == bars[:-1]
+    assert g.drop_forming_bar(bars, "1d", bars[-1]["time"] + day + 1) == bars
 
 
 def test_bars_without_a_time_key_are_left_alone():
     bars = [{"date": "2024-01-01"}]
-    assert g._drop_forming_bar(bars, "1d", 0) == bars
+    assert g.drop_forming_bar(bars, "1d", 0) == bars
 
 
 @pytest.mark.parametrize("kw, expected", [
