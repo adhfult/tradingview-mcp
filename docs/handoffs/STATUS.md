@@ -23,13 +23,14 @@
 | 6a: gauntlet | **done** | 8406891, 5d88359, 9d7fcab, d736b48, a6210f7, (warm-up fix) | 955 pass | Luna 9 fixed/1 dismissed; Fable 1 fixed; live TradingView run still to do |
 | 6b: paper trader | **done** | 59d4092, f374753, a01f477, 7ae0ec8, 7317b6d, 4cd0c90, a851ade | python 1024 pass | Fable + Luna Max reviews fixed: events lost in a >3-bar outage, `WATCHER_LOCAL_PORT` token redirect, zero-trade strategies, a vacuous test. Never places orders (a test checks the source). Details in `phase-6b.md` |
 | W1: watcher daily cap + expiry | **done** | 4d552f3, a2868fc, 828a8b1, 639c4f0 | bridge 377 pass | `max_per_day` + `expires` per rule. Fable + Luna Max fixed 4 findings (held alerts using the cap with `digest_after_quiet` off, `tick()` pruning future-dated counts, `__proto__` rule id, a weak test). Details in `watcher-w1.md` |
+| W2: watcher calendar gating | **done** | 531ca61, 5ca3437, 2c5178b | bridge 404 pass | `calendar: us_session` per rule, gated on the closed bar's open, 2027 holidays, stale-list warning. Fable + Luna Max both found the gate dropped the last bar of each stock session (`closeTime` is the next candle's open); fixed with gapped-stream tests. Details in `watcher-w2.md` |
 | 7a: dashboard | not started | – | – | – |
 | 7b: alert images | not started | – | – | – |
 | 7c: PyneCore | not started | – | – | – |
 
 ## Current step (2026-10-12)
-Phases 0-6b and watcher W1 are done and merged on this branch (python 1024 pass, bridge 377 pass). Branch work is local until Adham approves a push.
-1. **Next piece** (state the regime line first, see `docs/plans/panwatch-ideas-and-pi-footprint.md`): watcher **W2 calendar gating** (regime 4, Sonnet 5.5 High, includes extending `DEFAULT_US_HOLIDAYS` to 2027). Then W3 AND/OR rules (regime 3, no delegates).
+Phases 0-6b and watchers W1 and W2 are done on this branch (python 1024 pass, bridge 404 pass). The branch was pushed to origin at 392e38c; W2 commits are local.
+1. **Next piece** (state the regime line first, see `docs/plans/panwatch-ideas-and-pi-footprint.md`): watcher **W3 AND/OR rules** (regime 3, no delegates).
 2. Then 7a, 7b, 7c (`phase-7.md`). W4 (ccxt backup source) starts with a new Opus High plan-mode session, and only after the watcher has run a night on the Pi.
 3. **Finally:** the checks in "Checks only Adham can run" and the Pi checklist. Add: one live TradingView run of `strategy_gauntlet` (confirms the daily-bar `time` assumption in `drop_forming_bar`, which the paper trader also relies on) and one real use of the two prompts.
 4. Paper trader limits to remember (`phase-6b.md`): paper drawdown uses realised exits while the backtest's is mark-to-market, so a deep dip inside a trade that recovers before exit could hide a divergence.

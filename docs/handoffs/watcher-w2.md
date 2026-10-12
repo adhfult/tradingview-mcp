@@ -1,7 +1,7 @@
-# Watcher W2: calendar gating (design, written before any code)
+# Watcher W2: calendar gating
 
-Regime 4. Sonnet 5.5 High. Plan row: `docs/plans/panwatch-ideas-and-pi-footprint.md` (W2). This file becomes the
-implementation report after the build; for now it is only the design.
+Regime 4. Sonnet 5.5 High. Plan row: `docs/plans/panwatch-ideas-and-pi-footprint.md` (W2). Design first, then the
+implementation report (below the design).
 
 ## Goal
 1. A rule can say "only fire during the US regular session".
@@ -74,3 +74,55 @@ after 30 days from today. Reason: hard-coded holidays fail silently when they ru
 5. README + `watcher.config.example.json` (one rule gets `calendar`) and `--check-config` prints `OK`.
 6. Mutation check (scratch copy), regime-11 review (Fable subagent + Luna Max, read-only, spec path + saved diff), fix
    verified findings, fill in this report, log with `regime_log.py`.
+
+---
+
+# Implementation report
+
+Commits: `531ca61` (failing tests and design), `5ca3437` (implementation), `2c5178b` (review fixes).
+
+## What was built
+- `bridge/lib/scanner.mjs`: `DEFAULT_US_HOLIDAYS` and `DEFAULT_US_EARLY_CLOSES` now run through 2027 (data only).
+- `bridge/lib/config.mjs`: rule key `calendar` (`any` | `us_session`), the intraday check (`matchedStreams` helper), the
+  stale holiday-list warning, and holiday dates now validated with `isCalendarDate`.
+- `bridge/watcher.mjs`: the gate in `onClosedBar`; the US calendar is built once and shared with the scanner.
+- `bridge/README.md`, `bridge/watcher.config.example.json` (the `volspike` rule now has `timeframes: ["15"]` and `calendar: "us_session"`).
+- Tests: 35 new (bridge 377 to 404 incl. review fixes): `config.test.mjs` 6, `watcher.test.mjs` 21 gate cases + 5 gap cases + 3 others.
+
+## Delegation
+`config.mjs` went to a Haiku 5.5 xhigh worker (one worker, one file, tests already written). It followed the tests where the
+design said less (rule-named timeframes such as `W` also count) and reported the conflict instead of editing a test; the
+design was updated to match. It also reported a full-suite run that hit the 100 s timeout once; it did not reproduce in 4
+later runs (suite takes about 3 s), and was most likely my concurrent edits to `watcher.mjs` during its run.
+
+## Decisions worth knowing
+- Gate on the closed bar's **open**, not `closeTime` (see Design). This was wrong in the first version, see Review.
+- `us_session` is by time, not symbol: a crypto rule with it fires only in US hours.
+- A gated rule is dropped before `evaluateRules`, so it uses no cap slot and writes no state (tested).
+
+## Mutation checks (committed tree, one mutation at a time, suite run, file restored)
+13 on the first version and 5 on the fixes; all caught. Includes: gate removed, gate inverted, `closeTime` instead of the
+bar open, `closeTime - 1`, `open + 3600`, `clock.now()`, early-close date swapped, MLK 2027 dropped, intraday list missing `W`,
+rule-named timeframes ignored, stale threshold 30 days to 0, comparison flipped, max replaced by min, empty-list guard
+removed, calendar value check disabled, impossible-date check removed. My own script once restored files to HEAD and wiped
+uncommitted fixes; commit before mutating.
+
+## Review (regime 11): Fable (read-only subagent) and Luna Max (`inv.sh codex gpt-6-luna max`, read-only)
+| Finding | Who | Verdict |
+|---|---|---|
+| Gate used `closeTime - 1`, but `closeTime` is the next received candle's open; on stock streams the last bar of each day (and before holidays and weekends) was judged at the next morning and dropped. My tests only fed contiguous crypto bars, so they were vacuous for stocks. | both | **real, fixed**: gate on the bar's open, 5 gapped-stream tests (3 failed first) |
+| `us_holidays` accepted impossible dates (`2027-11-31`), so a typo silently left a holiday ungated | Luna | **real, fixed** with `isCalendarDate` and a test |
+| The "30 days" check is elapsed milliseconds, not local calendar days, so it can be a day off around a DST change | Luna | real but trivial, not fixed |
+| Luna's own run showed 5 failing test files: its sandbox is read-only (`EROFS` on `/tmp`), not a defect | Luna | not a finding |
+
+Fable also confirmed the 2027 data against the NYSE release (all 10 closures, early close 11-26 only).
+
+## Known limits
+- A crypto hourly bar opening 09:00 (closing 10:00) is out of `us_session`; it opened before the session.
+- The stale warning counts 30 elapsed days (can be a day off at a DST change) and uses the config timezone.
+- Extended-hours stock bars (the library's `session: 'extended'`) are not requested by the watcher today; if that is ever
+  enabled, `us_session` would drop pre and post market bars, which is the intended meaning.
+- Holiday dates are data: add 2028 before 2027-11-25 (the warning appears then).
+
+## Final gates
+`timeout 100 npm test --prefix bridge` = 404 pass, 0 fail. `node bridge/watcher.mjs --config bridge/watcher.config.example.json --check-config` prints `OK`.
