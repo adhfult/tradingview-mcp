@@ -276,3 +276,132 @@ test('cooldown holds across midnight in the configured timezone, and ends on tim
   clock.advance(30 * 60_000);                 // 00:50
   assert.equal(pipeline.submit(item(clock, 'c', { cooldownKey: 'k' })), 'sent');
 });
+
+// ---- W1: per-rule daily cap (max_per_day) ----------------------------------------------
+// A rule alert carries {ruleId, maxPerDay}. The count is per rule id and per local calendar
+// day in the config timezone. Only accepted alerts (sent, held, digested) use the cap.
+
+const capped = (clock, key, extra = {}) => item(clock, key, { ruleId: 'move', maxPerDay: 2, ...extra });
+
+test('daily cap: after max_per_day accepted alerts the rule is dropped, with a log line', () => {
+  const { clock, pipeline, enqueued, logs } = setup({ alerts: { max_per_hour: 100 } });
+  assert.equal(pipeline.submit(capped(clock, 'a')), 'sent');
+  assert.equal(pipeline.submit(capped(clock, 'b')), 'sent');
+  assert.equal(pipeline.submit(capped(clock, 'c')), 'capped');
+  assert.equal(enqueued.length, 2);
+  assert.ok(logs.some((l) => l.includes('daily cap') && l.includes('move')), logs.join('\n'));
+});
+
+test('daily cap: the count resets at local midnight (UTC zone)', () => {
+  const { clock, pipeline } = setup({ start: NIGHT, alerts: { max_per_hour: 100 } });
+  assert.equal(pipeline.submit(capped(clock, 'a', { maxPerDay: 1 })), 'sent');
+  clock.advance(29 * 60_000);                                   // 23:59
+  assert.equal(pipeline.submit(capped(clock, 'b', { maxPerDay: 1 })), 'capped');
+  clock.advance(60_000);                                        // 00:00 next day
+  assert.equal(pipeline.submit(capped(clock, 'c', { maxPerDay: 1 })), 'sent');
+});
+
+// New York: the day is 25 hours long when clocks fall back and 23 when they spring forward,
+// so a rolling 24-hour window or a fixed UTC offset would reset at the wrong moment.
+for (const [name, lastMinuteBefore, midnight] of [
+  ['fall back (2026-11-01 is 25 hours long)', Date.UTC(2026, 10, 2, 4, 59), Date.UTC(2026, 10, 2, 5, 0)],
+  ['spring forward (2026-03-08 is 23 hours long)', Date.UTC(2026, 2, 9, 3, 59), Date.UTC(2026, 2, 9, 4, 0)],
+  ['the midnight that starts the long day (fall back)', Date.UTC(2026, 10, 1, 3, 59), Date.UTC(2026, 10, 1, 4, 0)],
+  ['the midnight that starts the short day (spring forward)', Date.UTC(2026, 2, 8, 4, 59), Date.UTC(2026, 2, 8, 5, 0)],
+]) {
+  test(`daily cap: resets at New York midnight across a DST change: ${name}`, () => {
+    const { clock, pipeline } = setup({ start: lastMinuteBefore - 60_000, timezone: 'America/New_York', alerts: { max_per_hour: 100 } });
+    const one = (key) => capped(clock, key, { maxPerDay: 1 });
+    assert.equal(pipeline.submit(one('a')), 'sent');
+    clock.advance(60_000);                                      // the last minute of the local day
+    assert.equal(clock.now(), lastMinuteBefore);
+    assert.equal(pipeline.submit(one('b')), 'capped');
+    clock.advance(midnight - lastMinuteBefore);                 // local midnight
+    assert.equal(pipeline.submit(one('c')), 'sent');
+  });
+}
+
+test('daily cap: duplicates and cooldown drops do not use up the cap', () => {
+  const { clock, pipeline } = setup({ alerts: { max_per_hour: 100 } });
+  assert.equal(pipeline.submit(capped(clock, 'a', { cooldownKey: 'k' })), 'sent');
+  assert.equal(pipeline.submit(capped(clock, 'a', { cooldownKey: 'k' })), 'duplicate');
+  assert.equal(pipeline.submit(capped(clock, 'b', { cooldownKey: 'k' })), 'cooldown');
+  assert.equal(pipeline.submit(capped(clock, 'c')), 'sent', 'only one of the three used the cap of 2');
+  assert.equal(pipeline.submit(capped(clock, 'd')), 'capped');
+});
+
+test('daily cap: a capped alert leaves no dedupe or cooldown record behind', () => {
+  const { clock, pipeline } = setup({ start: NIGHT, alerts: { max_per_hour: 100 } });
+  const one = (key, extra) => capped(clock, key, { maxPerDay: 1, ...extra });
+  assert.equal(pipeline.submit(one('a')), 'sent');
+  assert.equal(pipeline.submit(one('b', { cooldownKey: 'k' })), 'capped');
+  clock.advance(HOUR);                                          // next local day, inside the 24h dedupe window
+  assert.equal(pipeline.submit(one('b', { cooldownKey: 'k' })), 'sent');
+});
+
+test('daily cap: counted per rule id, across symbols and timeframes', () => {
+  const { clock, pipeline } = setup({ alerts: { max_per_hour: 100 } });
+  const one = (key, ruleId) => item(clock, key, { ruleId, maxPerDay: 1 });
+  assert.equal(pipeline.submit(one('BTC|60|move|1', 'move')), 'sent');
+  assert.equal(pipeline.submit(one('ETH|240|move|1', 'move')), 'capped', 'same rule, other symbol and timeframe');
+  assert.equal(pipeline.submit(one('BTC|60|rsi|1', 'rsi')), 'sent', 'another rule has its own count');
+});
+
+test('daily cap: a rule without max_per_day is never counted or capped, and no state is kept', () => {
+  const { clock, pipeline, store } = setup({ alerts: { max_per_hour: 100 } });
+  for (let i = 0; i < 5; i += 1) assert.equal(pipeline.submit(item(clock, `k${i}`, { ruleId: 'move' })), 'sent');
+  assert.deepEqual(store.state.dailyCounts, {});
+});
+
+test('daily cap: critical (health) alerts bypass the cap and never use it', () => {
+  const { clock, pipeline } = setup({ alerts: { max_per_hour: 100 } });
+  const one = (key, extra) => capped(clock, key, { maxPerDay: 1, ...extra });
+  assert.equal(pipeline.submit(one('h1', { critical: true })), 'sent');
+  assert.equal(pipeline.submit(one('a')), 'sent', 'the health alert did not use the cap');
+  assert.equal(pipeline.submit(one('b')), 'capped');
+  assert.equal(pipeline.submit(one('h2', { critical: true })), 'sent', 'health alerts are never capped');
+});
+
+test('daily cap: held (quiet hours) and digested (hourly cap) alerts count, because they are queued', () => {
+  const quiet = setup({ start: NIGHT, alerts: { quiet_hours: { start: '23:00', end: '07:00' } } });
+  assert.equal(quiet.pipeline.submit(capped(quiet.clock, 'a', { maxPerDay: 1 })), 'held');
+  assert.equal(quiet.pipeline.submit(capped(quiet.clock, 'b', { maxPerDay: 1 })), 'capped');
+
+  const busy = setup({ alerts: { max_per_hour: 1 } });
+  assert.equal(busy.pipeline.submit(capped(busy.clock, 'a')), 'sent');
+  assert.equal(busy.pipeline.submit(capped(busy.clock, 'b')), 'digested');
+  assert.equal(busy.pipeline.submit(capped(busy.clock, 'c')), 'capped');
+});
+
+test('daily cap: a clock that stepped back across midnight does not lock the rule out', () => {
+  const { clock, pipeline, store } = setup({ alerts: { max_per_hour: 100 } });
+  store.state.dailyCounts = { move: { date: '2026-10-11', count: 5 } };   // saved "tomorrow"
+  assert.equal(pipeline.submit(capped(clock, 'a', { maxPerDay: 1 })), 'sent');
+  assert.deepEqual(store.state.dailyCounts.move, { date: '2026-10-10', count: 1 });
+});
+
+test('daily cap: a step back inside the same local day keeps the count', () => {
+  const { clock, pipeline } = setup({ alerts: { max_per_hour: 100 } });
+  assert.equal(pipeline.submit(capped(clock, 'a', { maxPerDay: 1 })), 'sent');
+  clock.advance(-HOUR);
+  assert.equal(pipeline.submit(capped(clock, 'b', { maxPerDay: 1 })), 'capped');
+});
+
+test('daily cap: tick prunes counts from earlier days and malformed ones, and keeps today and later days', () => {
+  const { pipeline, store } = setup();
+  store.state.dailyCounts = {
+    old: { date: '2026-10-08', count: 3 },
+    today: { date: '2026-10-10', count: 1 },
+    future: { date: '2026-10-11', count: 2 },   // saved before the clock stepped back: kept, not pruned
+    junk: 'not a count',
+  };
+  pipeline.tick();
+  assert.deepEqual(Object.keys(store.state.dailyCounts).sort(), ['future', 'today']);
+});
+
+test('daily cap: held alerts do not count when digest_after_quiet is off, because they are dropped later', () => {
+  const quiet = { quiet_hours: { start: '23:00', end: '07:00' }, digest_after_quiet: false };
+  const { clock, pipeline } = setup({ start: NIGHT, alerts: quiet });
+  assert.equal(pipeline.submit(capped(clock, 'a', { maxPerDay: 1 })), 'held');
+  assert.equal(pipeline.submit(capped(clock, 'b', { maxPerDay: 1 })), 'held', 'the first held alert did not use the cap');
+});

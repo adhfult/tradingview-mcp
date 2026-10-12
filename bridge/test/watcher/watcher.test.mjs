@@ -443,3 +443,92 @@ test('the chat id, local token, cookies, webhook and bot token never reach a log
     assert.ok(!text.includes(secret), `log leaked ${secret}`);
   }
 });
+
+// ---- W1: per-rule max_per_day and expires, through the whole watcher ----------------------
+const NO_API = { local_api: { enabled: false, port: 8787 } };
+const ruleWith = (extra) => ({ rules: [{ id: 'move', type: 'pct_move', bars: 1, threshold_pct: 0.5, ...extra }], ...NO_API });
+
+test('max_per_day: the second alert of the day is dropped, whatever its direction', async (t) => {
+  const { watcher, lib, calls, logs } = await build(t, { configOverrides: ruleWith({ max_per_day: 1 }) });
+  await watcher.start();
+  const w = lib.watchers[0];
+  w.feed(snapshot([100, 101]));
+  w.feed(snapshot([100, 101, 102]));              // up: sent
+  w.feed(snapshot([100, 101, 102, 100]));         // up again: cooldown
+  w.feed(snapshot([100, 101, 102, 100, 100]));    // down: a different cooldown key, but over the daily cap
+  await settle();
+  assert.equal(calls.length, 1);
+  assert.ok(logs.some((l) => l.includes('daily cap')), logs.join('\n'));
+  await watcher.stop();
+});
+
+test('max_per_day: the counter is saved, so a restart does not give the rule a fresh allowance', async (t) => {
+  const overrides = { ...ruleWith({ max_per_day: 1 }), alerts: { cooldown_minutes: 1, max_per_hour: 20, quiet_hours: null } };
+  const first = await build(t, { configOverrides: overrides });
+  await first.watcher.start();
+  first.lib.watchers[0].feed(snapshot([100, 101]));
+  first.lib.watchers[0].feed(snapshot([100, 101, 102]));
+  await settle();
+  assert.equal(first.calls.length, 1);
+  await first.watcher.stop();
+  const saved = JSON.parse(await readFile(join(first.dir, 'state.json'), 'utf8'));
+  assert.deepEqual(saved.dailyCounts, { move: { date: '2026-10-10', count: 1 } });
+
+  const second = await build(t, { stateDir: first.dir, configOverrides: overrides });
+  await second.watcher.start();
+  second.clock.advance(2 * 60_000);                // the 1-minute cooldown is over, so only the cap can stop it
+  second.lib.watchers[0].feed(snapshot([100, 101, 102]));
+  second.lib.watchers[0].feed(snapshot([100, 101, 102, 102.5]));
+  await settle();
+  assert.equal(second.calls.length, 0);
+  assert.ok(second.logs.some((l) => l.includes('daily cap')), second.logs.join('\n'));
+  await second.watcher.stop();
+});
+
+test('max_per_day in a dry run is enforced, printed once, and still saves no state', async (t) => {
+  const fetchSpy = createFakeFetch(() => { throw new Error('fetch must not be called'); });
+  const { watcher, lib, printed, dir } = await build(t, { dryRun: true, fetch: fetchSpy.fetch, configOverrides: ruleWith({ max_per_day: 1 }) });
+  await watcher.start();
+  lib.watchers[0].feed(snapshot([100, 101]));
+  lib.watchers[0].feed(snapshot([100, 101, 102]));
+  lib.watchers[0].feed(snapshot([100, 101, 102, 100]));
+  lib.watchers[0].feed(snapshot([100, 101, 102, 100, 100]));
+  await settle();
+  assert.equal(printed.length, 1);
+  assert.equal(fetchSpy.calls.length, 0);
+  await watcher.stop();
+  await assert.rejects(readFile(join(dir, 'state.json'), 'utf8'), { code: 'ENOENT' });
+});
+
+test('expires: a rule is skipped after the end of its last day, and fires on that day', async (t) => {
+  // The test clock is 2026-10-10 12:00 UTC and the config timezone is UTC.
+  const expired = await build(t, { configOverrides: ruleWith({ expires: '2026-10-09' }) });
+  await expired.watcher.start();
+  expired.lib.watchers[0].feed(snapshot([100, 101]));
+  expired.lib.watchers[0].feed(snapshot([100, 101, 102]));
+  await settle();
+  assert.equal(expired.calls.length, 0, 'expired yesterday');
+  await expired.watcher.stop();
+
+  const lastDay = await build(t, { configOverrides: ruleWith({ expires: '2026-10-10' }) });
+  await lastDay.watcher.start();
+  lastDay.lib.watchers[0].feed(snapshot([100, 101]));
+  lastDay.lib.watchers[0].feed(snapshot([100, 101, 102]));
+  await settle();
+  assert.equal(lastDay.calls.length, 1, 'expires today, still active');
+  await lastDay.watcher.stop();
+});
+
+test('--check-config warns about an expired rule and still prints OK', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'watcher-check-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const file = join(dir, 'expired.json');
+  const { writeFile } = await import('node:fs/promises');
+  await writeFile(file, JSON.stringify({ ...RAW_CONFIG, rules: [{ ...RAW_CONFIG.rules[0], expires: '2000-01-01' }] }));
+  const outs = [];
+  const errs = [];
+  const code = await runCheckConfig({ configPath: file, env: {}, out: (x) => outs.push(x), err: (x) => errs.push(x), redact: (x) => x });
+  assert.equal(code, 0);
+  assert.deepEqual(outs, ['OK\n']);
+  assert.ok(errs.some((line) => line.includes('expired') && line.includes('2000-01-01')), errs.join(''));
+});

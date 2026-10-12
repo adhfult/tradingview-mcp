@@ -194,3 +194,35 @@ test('loading keeps known fields and ignores ones with the wrong type', async (t
   assert.deepEqual(state.digest.held, [{ summary: 'a' }]);
   assert.deepEqual(state.digest.overflow, []);
 });
+
+// ---- W1: daily cap counters ---------------------------------------------------------------
+test('dailyCounts starts empty, survives a save and reload, and drops malformed entries', async (t) => {
+  assert.deepEqual(emptyState().dailyCounts, {});
+  const dir = await tempDir(t);
+  const first = createStateStore({ dir, clock: createFakeClock(), log: () => {} });
+  await first.load();
+  first.state.dailyCounts.move = { date: '2026-10-10', count: 2 };
+  first.touch();
+  await first.flush();
+
+  const second = createStateStore({ dir, clock: createFakeClock(), log: () => {} });
+  assert.deepEqual((await second.load()).dailyCounts, { move: { date: '2026-10-10', count: 2 } });
+
+  await writeFile(join(dir, STATE_FILE), JSON.stringify({
+    dailyCounts: {
+      ok: { date: '2026-10-10', count: 1 },
+      noDate: { count: 1 },
+      badCount: { date: '2026-10-10', count: -1 },
+      text: 'x',
+    },
+  }));
+  const third = createStateStore({ dir, clock: createFakeClock(), log: () => {} });
+  assert.deepEqual((await third.load()).dailyCounts, { ok: { date: '2026-10-10', count: 1 } });
+});
+
+test('an old state file without dailyCounts still loads', async (t) => {
+  const dir = await tempDir(t);
+  await writeFile(join(dir, STATE_FILE), JSON.stringify({ heartbeatDate: '2026-10-10' }));
+  const store = createStateStore({ dir, clock: createFakeClock(), log: () => {} });
+  assert.deepEqual((await store.load()).dailyCounts, {});
+});

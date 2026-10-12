@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { evaluateRules, normalizeRule, validateRuleParams, ruleApplies } from '../../lib/rules.mjs';
+import * as rulesLib from '../../lib/rules.mjs';   // ruleExpired is read off the namespace so a missing export fails only its own tests
 
 const STREAM = { symbol: 'BINANCE:BTCUSDT', timeframe: '60' };
 const T0 = 1_700_000_000;
@@ -197,4 +198,20 @@ test('validateRuleParams reports missing required parameters and out-of-range va
     ['r[0].bars: must be an integer']);
   assert.deepEqual(validateRuleParams({ id: 'v', type: 'volume_spike', multiple: 0, lookback: 3 }, 'r[0]'),
     ['r[0].multiple: must be greater than 0']);
+});
+
+// ---- W1: expiry ------------------------------------------------------------------------
+test('ruleExpired: no expires never expires; the last day still counts; the next day does not', () => {
+  const noon = Date.UTC(2026, 9, 10, 12, 0, 0);
+  assert.equal(rulesLib.ruleExpired({ id: 'a' }, noon, 'UTC'), false);
+  assert.equal(rulesLib.ruleExpired({ id: 'a', expires: '2026-10-10' }, noon, 'UTC'), false);
+  assert.equal(rulesLib.ruleExpired({ id: 'a', expires: '2026-10-10' }, Date.UTC(2026, 9, 10, 23, 59, 59), 'UTC'), false);
+  assert.equal(rulesLib.ruleExpired({ id: 'a', expires: '2026-10-10' }, Date.UTC(2026, 9, 11, 0, 0, 0), 'UTC'), true);
+  assert.equal(rulesLib.ruleExpired({ id: 'a', expires: '2026-10-09' }, noon, 'UTC'), true);
+});
+
+test('ruleExpired: the end of the day is local midnight in the given timezone', () => {
+  const rule = { id: 'a', expires: '2026-10-09' };
+  assert.equal(rulesLib.ruleExpired(rule, Date.UTC(2026, 9, 10, 3, 59, 59), 'America/New_York'), false);   // 23:59:59 EDT on the 9th
+  assert.equal(rulesLib.ruleExpired(rule, Date.UTC(2026, 9, 10, 4, 0, 0), 'America/New_York'), true);      // 00:00 EDT on the 10th
 });

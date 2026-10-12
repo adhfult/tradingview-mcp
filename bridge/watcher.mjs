@@ -21,7 +21,7 @@ import { createLocalApi } from './lib/localapi.mjs';
 import { createQueue } from './lib/queue.mjs';
 import { buildNotifiers, createStdoutNotifier } from './lib/notifiers.mjs';
 import { createLogger, renderNotify, renderRuleAlert, renderTest } from './lib/format.mjs';
-import { evaluateRules } from './lib/rules.mjs';
+import { evaluateRules, ruleExpired } from './lib/rules.mjs';
 import { buildUsCalendar, createScanner } from './lib/scanner.mjs';
 import { createStateStore } from './lib/state.mjs';
 import { createStreams } from './lib/stream.mjs';
@@ -104,8 +104,12 @@ export function createWatcher({
     },
   };
 
+  const maxPerDay = new Map(config.rules.map((rule) => [rule.id, rule.max_per_day]));
+
   const onClosedBar = (stream, closed, closeTime) => {
-    const hits = evaluateRules(config.rules, stream, closed);
+    // An expired rule is skipped before it is evaluated, so it costs nothing.
+    const active = config.rules.filter((rule) => !ruleExpired(rule, clock.now(), config.timezone));
+    const hits = evaluateRules(active, stream, closed);
     for (const hit of hits) {
       const message = renderRuleAlert(hit, {
         timezone: config.timezone,
@@ -117,6 +121,8 @@ export function createWatcher({
         kind: 'rule',
         message,
         summary: `${hit.symbol} ${hit.timeframe} ${hit.ruleId}: ${hit.message}`,
+        ruleId: hit.ruleId,
+        maxPerDay: maxPerDay.get(hit.ruleId),
         dedupeKey: `${hit.symbol}|${hit.timeframe}|${hit.ruleId}|${hit.barTime}`,
         cooldownKey: `${hit.symbol}|${hit.timeframe}|${hit.ruleId}|${hit.direction}`,
       });

@@ -27,6 +27,7 @@ export function emptyState() {
     version: STATE_VERSION,
     streams: {}, // "SYMBOL|tf" -> { lastEvaluatedTime }
     cooldowns: {}, // cooldown key -> last sent (ms)
+    dailyCounts: {}, // rule id -> { date: local YYYY-MM-DD, count } for max_per_day
     seen: {}, // dedupe key -> first accepted (ms)
     trending: {}, // "market|kind" -> { SYMBOL: last seen in the top list (ms) }
     alerts: [], // most recent accepted alerts, for the dashboard and heartbeat
@@ -45,6 +46,13 @@ function normalize(raw) {
   const out = { ...base };
   if (isObject(raw.streams)) out.streams = raw.streams;
   if (isObject(raw.cooldowns)) out.cooldowns = raw.cooldowns;
+  if (isObject(raw.dailyCounts)) {
+    for (const [id, entry] of Object.entries(raw.dailyCounts)) {
+      if (isObject(entry) && typeof entry.date === 'string' && Number.isSafeInteger(entry.count) && entry.count >= 0) {
+        out.dailyCounts[id] = { date: entry.date, count: entry.count };
+      }
+    }
+  }
   if (isObject(raw.seen)) out.seen = raw.seen;
   if (isObject(raw.trending)) out.trending = raw.trending;
   if (Array.isArray(raw.alerts)) out.alerts = raw.alerts;

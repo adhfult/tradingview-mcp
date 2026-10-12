@@ -6,7 +6,7 @@
     {"symbol": "NASDAQ:NVDA", "timeframes": ["15", "D"], "market": "stock"}
   ],
   "rules": [
-    {"id": "move", "type": "pct_move", "bars": 4, "threshold_pct": 3},
+    {"id": "move", "type": "pct_move", "bars": 4, "threshold_pct": 3, "max_per_day": 10},
     {"id": "volspike", "type": "volume_spike", "multiple": 3, "lookback": 20},
     {"id": "rsi", "type": "rsi_cross", "period": 14, "levels": [30, 70]},
     {"id": "bb", "type": "bollinger_break", "period": 20, "stddev": 2},

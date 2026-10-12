@@ -5,6 +5,7 @@
  *
  * Each hit: {ruleId, type, symbol, timeframe, barTime, direction, values, message}.
  */
+import { localDate } from './format.mjs';
 import { bollinger, rsi } from './indicators.mjs';
 
 const int = (min, max) => ({ kind: 'int', min, max });
@@ -101,6 +102,14 @@ export function validateRuleParams(rule, path) {
     if (message) errors.push(message);
   }
   return errors;
+}
+
+/**
+ * True once the rule's last day (`expires`, YYYY-MM-DD) is over in `timezone`.
+ * Zero-padded dates sort the same as calendar order, so a string compare is enough.
+ */
+export function ruleExpired(rule, nowMs, timezone) {
+  return rule.expires !== undefined && localDate(nowMs, timezone) > rule.expires;
 }
 
 /** Fills in defaults for optional parameters. Returns a new object. */
