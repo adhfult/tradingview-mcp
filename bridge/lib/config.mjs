@@ -10,7 +10,7 @@ import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import * as v from './validate.mjs';
-import { RULE_TYPES, barsNeeded, normalizeRule, validateRuleParams } from './rules.mjs';
+import { RULE_TYPES, barsNeeded, normalizeRule, ruleExpired, validateRuleParams } from './rules.mjs';
 import { CANDLE_COUNT } from './stream.mjs';
 import { DEFAULT_US_EARLY_CLOSES, DEFAULT_US_HOLIDAYS } from './scanner.mjs';
 
@@ -170,7 +170,16 @@ function parseWatchlist(input, errors, warnings) {
   return entries;
 }
 
-function parseRules(input, watchlist, errors) {
+const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
+
+/** True for a real calendar date written YYYY-MM-DD (rejects 2026-02-30). */
+function isCalendarDate(value) {
+  if (typeof value !== 'string' || !DATE_ONLY.test(value)) return false;
+  const date = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
+}
+
+function parseRules(input, watchlist, errors, warnings, { timezone, now }) {
   if (input.rules === undefined) return [];
   if (!Array.isArray(input.rules)) {
     errors.push('rules: must be an array');
@@ -186,7 +195,7 @@ function parseRules(input, watchlist, errors) {
     }
     const before = errors.length;
     const allowed = ['id', 'type', 'symbol', 'timeframes', 'bars', 'threshold_pct', 'multiple', 'lookback',
-      'period', 'levels', 'stddev', 'level'];
+      'period', 'levels', 'stddev', 'level', 'max_per_day', 'expires'];
     checkKeys(raw, allowed, path, errors);
 
     if (typeof raw.id !== 'string' || !RULE_ID.test(raw.id)) {
@@ -229,6 +238,10 @@ function parseRules(input, watchlist, errors) {
     if (RULE_TYPES.includes(raw.type)) {
       errors.push(...validateRuleParams(raw, path));
     }
+    readNumber(raw, 'max_per_day', path, errors, { min: 1, max: 1000, integer: true });
+    if (raw.expires !== undefined && !isCalendarDate(raw.expires)) {
+      errors.push(`${path}.expires: must be a date like 2026-12-31 (YYYY-MM-DD)`);
+    }
 
     // A rule that can never match is a config mistake, so report it.
     if (errors.length === before && RULE_TYPES.includes(raw.type)) {
@@ -241,6 +254,10 @@ function parseRules(input, watchlist, errors) {
       const needed = barsNeeded(normalized);
       if (needed > CANDLE_COUNT) {
         errors.push(`${path}: needs ${needed} closed bars but the watcher keeps only ${CANDLE_COUNT} per stream`);
+      }
+      // Only a warning: an expired rule is harmless, and the watcher skips it.
+      if (timezone !== null && ruleExpired(normalized, now, timezone)) {
+        warnings.push(`${path} "${raw.id}": expired on ${raw.expires}, so it will never fire`);
       }
       rules.push(normalized);
     }
@@ -430,7 +447,7 @@ function parseLocalApi(input, errors) {
  * Validates a parsed config object. Returns `{config, errors}`; see the module
  * comment for the shape.
  */
-export function parseConfig(input, { home = homedir() } = {}) {
+export function parseConfig(input, { home = homedir(), now = Date.now() } = {}) {
   const errors = [];
   const warnings = [];
   if (!isPlainObject(input)) {
@@ -453,7 +470,7 @@ export function parseConfig(input, { home = homedir() } = {}) {
     }
   }
 
-  const rules = parseRules(input, watchlist, errors);
+  const rules = parseRules(input, watchlist, errors, warnings, { timezone: isValidTimezone(timezone) ? timezone : null, now });
   const trending = parseTrending(input, errors);
   const alerts = parseAlerts(input, errors);
   const health = parseHealth(input, errors);
