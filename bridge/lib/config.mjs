@@ -495,6 +495,26 @@ function parseLocalApi(input, errors) {
   };
 }
 
+function parseDashboard(input, errors, localApiPort) {
+  const path = 'dashboard';
+  const defaults = { enabled: true, host: '127.0.0.1', port: 8788 };
+  if (input.dashboard === undefined) return defaults;
+  if (!isPlainObject(input.dashboard)) {
+    errors.push(`${path}: must be an object`);
+    return defaults;
+  }
+  const d = input.dashboard;
+  checkKeys(d, Object.keys(defaults), path, errors);
+  let host = defaults.host;
+  if (d.host !== undefined) {
+    if (typeof d.host !== 'string' || d.host.trim() === '') errors.push(`${path}.host: must be a non-empty string`);
+    else host = d.host.trim();
+  }
+  const port = readNumber(d, 'port', path, errors, { min: 1024, max: 65535, integer: true, fallback: defaults.port });
+  if (port === localApiPort) errors.push(`${path}.port: must differ from local_api.port (${localApiPort})`);
+  return { enabled: readBoolean(d, 'enabled', path, errors, true), host, port };
+}
+
 /**
  * Validates a parsed config object. Returns `{config, errors}`; see the module
  * comment for the shape.
@@ -506,7 +526,7 @@ export function parseConfig(input, { home = homedir(), now = Date.now() } = {}) 
     return { config: null, errors: ['$: the config must be a JSON object'], warnings };
   }
   checkKeys(input, [
-    'timezone', 'watchlist', 'rules', 'trending', 'alerts', 'health', 'state_dir', 'local_api', 'limits',
+    'timezone', 'watchlist', 'rules', 'trending', 'alerts', 'health', 'state_dir', 'local_api', 'dashboard', 'limits',
   ], '$', errors);
 
   const timezone = input.timezone ?? 'UTC';
@@ -532,6 +552,7 @@ export function parseConfig(input, { home = homedir(), now = Date.now() } = {}) 
     warnings.push(`health.us_holidays: the latest date is ${latestHoliday}, less than 30 days ahead; add next year's holidays`);
   }
   const localApi = parseLocalApi(input, errors);
+  const dashboard = parseDashboard(input, errors, localApi.port);
 
   let stateDir = DEFAULT_STATE_DIR;
   if (input.state_dir !== undefined) {
@@ -572,6 +593,7 @@ export function parseConfig(input, { home = homedir(), now = Date.now() } = {}) 
     health,
     state_dir: expandHome(stateDir, home),
     local_api: localApi,
+    dashboard,
     limits,
   };
   return { config, errors: [], warnings };
