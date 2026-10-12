@@ -9,7 +9,7 @@ const HOUR = 3_600_000;
 const NOON = Date.UTC(2026, 9, 10, 12, 0, 0);
 const NIGHT = Date.UTC(2026, 9, 10, 23, 30, 0);
 
-function setup({ start = NOON, alerts = {}, timezone = 'UTC' } = {}) {
+function setup({ start = NOON, alerts = {}, timezone = 'UTC', onRecord } = {}) {
   const clock = createFakeClock(start);
   const store = createStateStore({ dir: '/unused-persist-off', clock, persist: false });
   const enqueued = [];
@@ -22,7 +22,7 @@ function setup({ start = NOON, alerts = {}, timezone = 'UTC' } = {}) {
     ...alerts,
   };
   const logs = [];
-  const pipeline = createAlerts({ alerts: config, timezone, store, clock, queue, log: (l) => logs.push(l) });
+  const pipeline = createAlerts({ alerts: config, timezone, store, clock, queue, log: (l) => logs.push(l), onRecord });
   return { clock, store, enqueued, pipeline, logs };
 }
 
@@ -404,4 +404,49 @@ test('daily cap: held alerts do not count when digest_after_quiet is off, becaus
   const { clock, pipeline } = setup({ start: NIGHT, alerts: quiet });
   assert.equal(pipeline.submit(capped(clock, 'a', { maxPerDay: 1 })), 'held');
   assert.equal(pipeline.submit(capped(clock, 'b', { maxPerDay: 1 })), 'held', 'the first held alert did not use the cap');
+});
+
+const META = {
+  ruleId: 'rsi-70', symbol: 'BINANCE:BTCUSDT', timeframe: '60', barTime: 1_760_000_000,
+  direction: 'up', message: 'RSI rose through 70', values: { rsi: 71.2 },
+};
+
+test('meta is stored on the history entry; an alert without meta gets null', () => {
+  const { clock, pipeline, store } = setup();
+  pipeline.submit(item(clock, 'with', { meta: META }));
+  pipeline.submit(item(clock, 'without'));
+  assert.deepEqual(store.state.alerts[0].meta, META);
+  assert.equal(store.state.alerts[1].meta, null);
+});
+
+test('onRecord gets the stored entry for every accepted status: sent, held, digested', () => {
+  const recorded = [];
+  const { clock, pipeline, store } = setup({
+    alerts: { max_per_hour: 1, quiet_hours: { start: '23:00', end: '07:00' } },
+    onRecord: (entry) => recorded.push(entry),
+  });
+  pipeline.submit(item(clock, 'a', { meta: META }));
+  pipeline.submit(item(clock, 'b'));
+  clock.advance(NIGHT - NOON);
+  pipeline.submit(item(clock, 'c'));
+  assert.deepEqual(recorded.map((e) => e.status), ['sent', 'digested', 'held']);
+  assert.equal(recorded[0], store.state.alerts[0]);
+  assert.deepEqual(recorded[0].meta, META);
+});
+
+test('onRecord is not called for duplicate, cooldown or capped alerts', () => {
+  const recorded = [];
+  const { clock, pipeline } = setup({ onRecord: (entry) => recorded.push(entry) });
+  pipeline.submit(item(clock, 'k', { cooldownKey: 'c', ruleId: 'r', maxPerDay: 1 }));
+  assert.equal(pipeline.submit(item(clock, 'k')), 'duplicate');
+  assert.equal(pipeline.submit(item(clock, 'k2', { cooldownKey: 'c' })), 'cooldown');
+  assert.equal(pipeline.submit(item(clock, 'k3', { ruleId: 'r', maxPerDay: 1 })), 'capped');
+  assert.equal(recorded.length, 1);
+});
+
+test('a throwing onRecord cannot lose or block the alert, and the failure is logged', () => {
+  const { clock, pipeline, enqueued, logs } = setup({ onRecord: () => { throw new Error('listener bug'); } });
+  assert.equal(pipeline.submit(item(clock, 'a')), 'sent');
+  assert.equal(enqueued.length, 1);
+  assert.ok(logs.some((l) => l.includes('listener bug')));
 });
