@@ -253,3 +253,65 @@ test('a rule that needs more closed bars than the 300 each stream keeps is a con
   assert.equal(check({ id: 'd', type: 'new_extreme', lookback: 299 }), '');
   assert.equal(check({ id: 'e', type: 'bollinger_break', period: 300 }), '');
 });
+
+// ---- W1: per-rule max_per_day and expires -----------------------------------------------
+const withRule = (rule, extra = {}) => parseConfig(
+  { ...base(), rules: [{ id: 'move', type: 'pct_move', bars: 1, threshold_pct: 1, ...rule }], ...extra },
+  { home: HOME, now: Date.UTC(2026, 9, 10, 12, 0, 0) },
+);
+
+test('a rule may set max_per_day (1 to 1000) and expires (YYYY-MM-DD), and the config keeps them', () => {
+  const { config, errors } = withRule({ max_per_day: 5, expires: '2026-12-31' });
+  assert.deepEqual(errors, []);
+  assert.equal(config.rules[0].max_per_day, 5);
+  assert.equal(config.rules[0].expires, '2026-12-31');
+});
+
+test('max_per_day must be an integer from 1 to 1000', () => {
+  for (const bad of [0, -1, 1001, 2.5, '3', null, true]) {
+    const { errors } = withRule({ max_per_day: bad });
+    assert.ok(errors.some((e) => e.startsWith('rules[0].max_per_day: ')), `${JSON.stringify(bad)} gave ${errors}`);
+  }
+  for (const good of [1, 1000]) assert.deepEqual(withRule({ max_per_day: good }).errors, []);
+});
+
+test('expires must be a real calendar date written YYYY-MM-DD', () => {
+  for (const bad of ['2026-13-01', '2026-02-30', '2026-2-3', '31-12-2026', '2026-12-31T00:00', 20261231, '', null]) {
+    const { errors } = withRule({ expires: bad });
+    assert.ok(errors.some((e) => e.startsWith('rules[0].expires: must be a date')), `${JSON.stringify(bad)} gave ${errors}`);
+  }
+  assert.deepEqual(withRule({ expires: '2028-02-29' }).errors, [], 'a leap day is a real date');
+});
+
+test('bad max_per_day and expires are reported together with every other problem', () => {
+  const { config, errors } = withRule({ bars: 0, max_per_day: 0, expires: 'soon' }, { timezone: 'Nowhere/City' });
+  assert.equal(config, null);
+  const text = errors.join('\n');
+  assert.match(text, /rules\[0\]\.bars: /);
+  assert.match(text, /rules\[0\]\.max_per_day: must be /);
+  assert.doesNotMatch(text, /max_per_day: unknown key/);
+  assert.match(text, /rules\[0\]\.expires: must be a date/);
+  assert.match(text, /timezone: is not a valid IANA timezone name/);
+});
+
+test('a misspelt cap key is still an unknown key (the typo guard)', () => {
+  const { errors } = withRule({ max_per_days: 3 });
+  assert.ok(errors.includes('rules[0].max_per_days: unknown key'));
+});
+
+test('a rule that has already expired is a warning, not an error', () => {
+  const { config, errors, warnings } = withRule({ expires: '2026-10-09' });
+  assert.deepEqual(errors, []);
+  assert.equal(config.rules.length, 1);
+  assert.ok(warnings.some((w) => /rules\[0\]/.test(w) && /expired/.test(w) && w.includes('2026-10-09')), warnings.join('\n'));
+});
+
+test('a rule is not expired on its last day, and the day is judged in the config timezone', () => {
+  assert.deepEqual(withRule({ expires: '2026-10-10' }).warnings.filter((w) => /expired/.test(w)), []);
+  // 03:00 UTC on 10 Oct is still 9 Oct (23:00) in New York.
+  const ny = parseConfig(
+    { ...base({ timezone: 'America/New_York' }), rules: [{ id: 'move', type: 'pct_move', bars: 1, threshold_pct: 1, expires: '2026-10-09' }] },
+    { home: HOME, now: Date.UTC(2026, 9, 10, 3, 0, 0) },
+  );
+  assert.deepEqual(ny.warnings.filter((w) => /expired/.test(w)), []);
+});
