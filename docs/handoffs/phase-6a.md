@@ -286,4 +286,11 @@ Reviewers: Luna Max (read-only, via `inv.sh`) and Fable (read-only subagent). Di
 
 10 new tests; the python suite is **953 passed**, bridge 344. Luna's closing note: TradingView session-aligned bar timing is still unverified (needs a live run).
 
-### Fable: pending at the time of writing. Findings go below, each marked fixed or dismissed with the reason.
+### Fable: 1 defect (fixed), 3 spec notes (kept), 1 unverified
+- **Defect, fixed:** gates 1 (`honest_settings`) and 5 (`recent_year`) took the warm-up from the default table instead of the parameters being tested. `ema_cross` with `slow_period=400` on 420 bars passed with `bars_needed: 80`. Now `_warmup_bars(strategy, resolved)` = the larger of the table value and the longest period set; tested. Gate 6 still inherits the table through the existing `_walk_forward_on_candles` check (not changed).
+- **Spec notes, kept on purpose:** (a) a recent window under 30 bars FAILS (the brief only skips on total bars; `MIN_RECENT_BARS` is a module constant, not in `GAUNTLET_THRESHOLDS`); (b) a walk-forward `{"error": ...}` becomes a FAIL (the brief is silent); (c) the TradingView default period is the longest allowed per interval (5y for 1d/4h, 2y for 1h, 6mo for 15m), not literally "5y".
+- **Not verified:** `_drop_forming_bar` assumes a daily bar's `time` is its open and that open + 86400 is its close. If TradingView stamps stock daily bars with the session-open time, a closed bar is kept out until the next day (the safe direction). Needs one live TradingView run to confirm.
+- Confirmed clean by Fable: the word "profitable" appears 0 times in the three files; fingerprint contents match the brief; gate thresholds and verdict strings match the table; `verify_report` path safety.
+
+**Final state:** python 955 pass (also with Node hidden earlier at 943), bridge 344 pass. Phase 6a is done pending a push decision.
+

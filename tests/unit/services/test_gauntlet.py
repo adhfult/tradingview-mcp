@@ -563,3 +563,20 @@ def test_a_symlink_named_like_a_fingerprint_is_not_a_report(home, tmp_path):
     (home / "gauntlet").mkdir(mode=0o700)
     (home / "gauntlet" / ("a" * 64 + ".json")).symlink_to(outside)
     assert g.verify_report("a" * 64) == {"exists": False, "verdict": None, "matches_current_code": False}
+
+
+def test_warmup_follows_the_periods_actually_tested():
+    assert g._warmup_bars("rsi", {"period": 60, "oversold": 40, "overbought": 60}) == 60
+    assert g._warmup_bars("rsi", bt.resolve_params("rsi", None)) == bt._STRATEGY_WARMUP_BARS["rsi"]
+    assert g._warmup_bars("ema_cross", {"fast_period": 10, "slow_period": 400}) == 400
+    assert g._warmup_bars("macd", bt.resolve_params("macd", None)) == bt._STRATEGY_WARMUP_BARS["macd"]   # table wins when larger
+    assert g._warmup_bars("triple_ema", bt.resolve_params("triple_ema", None)) == 200
+
+
+def test_honest_settings_uses_the_configured_warmup(monkeypatch):
+    candles = wavy(420)
+    resolved = bt.resolve_params("ema_cross", {"slow_period": 400})
+    gate = g._gate_honest_settings(candles, "ema_cross", "1d", resolved)
+    assert gate["status"] == "FAIL" and gate["numbers"]["warmup_bars"] == 400      # was PASS with the table's 50
+    monkeypatch.setattr(bt, "_load_candles", lambda *a, **k: (candles, {}))
+    assert run("ema_cross", params={"slow_period": 400})["verdict"] == "FAIL: honest_settings"

@@ -1,7 +1,7 @@
 # Build status (single source of truth for resuming)
 
 - **Master plan:** `docs/plans/tradingview-api-integration.md`
-- **Branch:** `claude/lucid-bardeen-3ou62p` (all work is pushed here; no PR yet)
+- **Branch:** `claude/lucid-bardeen-3ou62p` (local commits since Phase 5 are not pushed; no PR yet)
 - **Pipeline per phase:**
   1. Opus brief
   2. Haiku implementation
@@ -20,17 +20,17 @@
 | 3: tv_* tools + wiring | **done** | 002d8dd, 8a1afef, bb32bcc | 812 pass | Yahoo parity pinned; in-flight cap; backtest follow-ups carried into the 6a review |
 | 4: packaging/Docker/CI/docs | **done** | 2264f50, 154dbfc, d6b5509 | 812 pass | .env.example safe defaults; Docker build deferred to WSL |
 | 5: watcher | **done** | 83e48a1, WIP snapshots, (advisor fixes) | bridge 344 pass | Fable: one README must-fix (Node path) applied; Pi-only checks below |
-| 6a: gauntlet | **built, review in progress** | 8406891, 5d88359, 9d7fcab, d736b48 | 943 pass | steps 5, 7, 8 and the Phase 3 carry-ins done; wrap-up review (Fable + Luna) pending |
+| 6a: gauntlet | **done** | 8406891, 5d88359, 9d7fcab, d736b48, a6210f7, (warm-up fix) | 955 pass | Luna 9 fixed/1 dismissed; Fable 1 fixed; live TradingView run still to do |
 | 6b: paper trader | not started | – | – | – |
 | 7a: dashboard | not started | – | – | – |
 | 7b: alert images | not started | – | – | – |
 | 7c: PyneCore | not started | – | – | – |
 
-## Current step (2026-10-11)
-Phase 5 is done (bridge 344 pass, Python 812 pass).
-1. **Phase 6a:** finish steps 5, 7 and 8 of `docs/handoffs/phase-6a.md` (see "Status at the handoff" at its end). Then a Sonnet review, which must also do the "Carried in from the Phase 3 advisor" items, then Fable.
-2. **Then** 6b (`phase-6b.md`), 7a, 7b, 7c (`phase-7.md`), each with the same loop: Haiku → Sonnet → Fable → verify, commit, push.
-3. **Finally:** the checks in "Checks only Adham can run" and the Pi checklist.
+## Current step (2026-10-12)
+Phases 0-6a are done (python 955 pass, bridge 344 pass). Branch work is local until Adham approves a push.
+1. **Next piece** (state the regime line first, see `docs/plans/panwatch-ideas-and-pi-footprint.md`): Phase 6b (`phase-6b.md`, regime 3 or 4, Sonnet 5.5 High) or watcher W1 (daily cap + expiry, regime 4). Adham has not chosen.
+2. Then 7a, 7b, 7c (`phase-7.md`) and the watcher pieces W2-W4 from the plan, each with the per-piece regime and the wrap-up review (regime 11).
+3. **Finally:** the checks in "Checks only Adham can run" and the Pi checklist. Add: one live TradingView run of `strategy_gauntlet` (confirms the daily-bar `time` assumption in `_drop_forming_bar`) and one real use of the two prompts.
 
 ## Approved dependencies
 - `@mathieuc/tradingview` 4.0.0 (ISC)

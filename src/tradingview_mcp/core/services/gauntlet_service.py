@@ -89,6 +89,14 @@ def _edge_problem(hypothesis, counterparty) -> Optional[str]:
     return None
 
 
+def _warmup_bars(strategy: str, resolved: dict) -> int:
+    """Bars before the slowest indicator can signal: the table value, or the longest period actually set."""
+    longest = max((v for k, v in resolved.items()
+                   if bt._is_length_param(k) and isinstance(v, (int, float)) and not isinstance(v, bool)),
+                  default=0)
+    return max(bt._STRATEGY_WARMUP_BARS.get(strategy, 20), int(longest))
+
+
 def _drop_forming_bar(candles: list[dict], interval: str, now: Optional[float] = None) -> list[dict]:
     """A TradingView bar whose period has not ended yet is still forming: score closed bars only."""
     if not candles or "time" not in candles[-1]:
@@ -198,9 +206,9 @@ def _verdict(gates: list[dict]) -> str:
     return "PASS"
 
 
-def _gate_honest_settings(candles: list[dict], strategy: str, interval: str) -> dict:
+def _gate_honest_settings(candles: list[dict], strategy: str, interval: str, resolved: dict) -> dict:
     min_bars = 30 if interval == "1d" else 100
-    warmup = bt._STRATEGY_WARMUP_BARS.get(strategy, 20)
+    warmup = _warmup_bars(strategy, resolved)
     needed = warmup + min_bars
     if strategy in bt._SMA200_STRATEGIES:
         needed = max(needed, bt._SMA200_MIN_BARS)
@@ -279,7 +287,7 @@ def _gate_recent_year(candles, strategy, resolved, base, interval, ppy, run) -> 
         return _gate("recent_year", "FAIL",
                      f"Only {len(candles) - start} bars in the last year (need {MIN_RECENT_BARS}): too few to judge recent behaviour.",
                      {"recent_bars": len(candles) - start})
-    warmup = bt._STRATEGY_WARMUP_BARS.get(strategy, 20)
+    warmup = _warmup_bars(strategy, resolved)
     first = max(0, start - warmup)
     sim = run(candles[first:], resolved)
     # next_open fills land one bar after the signal, so a trade filled inside the window counts
@@ -379,7 +387,7 @@ def run_gauntlet(
         return bt._simulate(window, strategy, params=run_params, commission_pct=comm,
                             slippage_pct=slip, fill=FILL, interval=interval, periods_per_year=ppy)
 
-    gates = [_gate_honest_settings(candles, strategy, interval)]
+    gates = [_gate_honest_settings(candles, strategy, interval, resolved)]
     if gates[0]["status"] == "PASS":
         base = run(candles, resolved)
         gates.append(_gate_enough_evidence(base))
