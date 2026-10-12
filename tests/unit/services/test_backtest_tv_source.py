@@ -267,14 +267,14 @@ def test_bridge_error_becomes_the_normal_error_dict(tv_stub):
     tv_stub.replies["candles"] = BridgeError("TIMEOUT", "bridge did not answer candles within 60s")
     out = bt.run_backtest("BTCUSDT", "rsi", period="1y", interval="1d",
                           data_source="tradingview", tv_symbol="BINANCE:BTCUSDT")
-    assert out == {"error": "Failed to fetch data for 'BTCUSDT': bridge did not answer candles within 60s"}
+    assert out == {"error": "Failed to fetch data for 'BINANCE:BTCUSDT': bridge did not answer candles within 60s"}
 
 
 def test_auth_failed_in_backtest_carries_the_restart_hint(tv_stub):
     tv_stub.replies["candles"] = BridgeError("AUTH_FAILED", "rejected")
     out = bt.run_backtest("BTCUSDT", "rsi", period="1y", interval="1d",
                           data_source="tradingview", tv_symbol="BINANCE:BTCUSDT")
-    assert "Failed to fetch data for 'BTCUSDT'" in out["error"]
+    assert "Failed to fetch data for 'BINANCE:BTCUSDT'" in out["error"]
     assert "Update TRADINGVIEW_SESSION_ID / TRADINGVIEW_SESSION_SIGN in .env, then restart the MCP server." in out["error"]
 
 
@@ -461,7 +461,7 @@ def test_non_list_reply_is_the_normal_error_dict(tv_stub):
     tv_stub.replies["candles"] = {"unexpected": True}
     out = bt.run_backtest("X", "rsi", period="1y", interval="1d",
                           data_source="tradingview", tv_symbol="BINANCE:BTCUSDT")
-    assert out == {"error": "Failed to fetch data for 'X': TradingView returned an unexpected candles reply"}
+    assert out == {"error": "Failed to fetch data for 'BINANCE:BTCUSDT': TradingView returned an unexpected candles reply"}
 
 
 def test_empty_reply_is_an_error_not_a_crash(tv_stub):
@@ -479,3 +479,35 @@ def test_tv_candle_values_and_cookies_do_not_leak_into_results(tv_stub, monkeypa
     out = bt.compare_strategies("X", period="1y", interval="1d",
                                 data_source="tradingview", tv_symbol="BINANCE:BTCUSDT")
     assert "SECRET" not in repr(out)
+
+
+# ── Phase 3 advisor carry-ins ───────────────────────────────────────────────
+
+def test_truncation_ignores_a_gap_under_five_days_on_a_short_period(tv_stub):
+    """A 1mo stock request starting after a long weekend is not a short history."""
+    def truncated(days_late):
+        tv_stub.replies["candles"] = lambda params: _series(params["from"] + int(days_late * 86400), 20, 86400)
+        return bt._fetch_tv_candles("NASDAQ:AAPL", "1mo", "1d")[1]["truncated"]
+    assert truncated(4) is False     # 4 days is over 10% of 30 days, but under the 5-day floor
+    assert truncated(6) is True
+
+
+def test_truncation_is_flagged_when_the_bar_cap_is_reached(tv_stub):
+    tv_stub.replies["candles"] = lambda params: _series(params["from"], bt._TV_MAX_BARS, 60)
+    meta = bt._fetch_tv_candles("BINANCE:BTCUSDT", "1mo", "15m")[1]
+    assert meta["truncated"] is True
+
+
+def test_a_successful_tradingview_result_is_labelled_with_the_tv_symbol(tv_stub):
+    tv_stub.replies["candles"] = _series(int(time.time()) - 300 * 86400, 300, 86400)
+    out = bt.run_backtest("ignored", "rsi", period="1y", interval="1d",
+                          data_source="tradingview", tv_symbol="binance:btcusdt")
+    assert out["symbol"] == "BINANCE:BTCUSDT" and out["tv_symbol"] == "BINANCE:BTCUSDT"
+    out = bt.walk_forward_backtest("ignored", "rsi", period="1y", interval="1d",
+                                   data_source="tradingview", tv_symbol="BINANCE:BTCUSDT")
+    assert out["symbol"] == "BINANCE:BTCUSDT"
+
+
+def test_yahoo_results_keep_the_yahoo_symbol(monkeypatch):
+    monkeypatch.setattr(bt, "_fetch_ohlcv", lambda *a, **k: _yahoo_candles(300))
+    assert bt.run_backtest("aapl", "rsi", period="1y")["symbol"] == "AAPL"

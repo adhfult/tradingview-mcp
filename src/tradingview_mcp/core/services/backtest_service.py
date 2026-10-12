@@ -86,6 +86,7 @@ _TV_PERIODS_BY_INTERVAL = {
 _TV_TIMEOUT_MS = 60000        # bridge-side deadline; the bridge default is 15 s
 _TV_CALL_TIMEOUT_S = 60       # client wait; the client adds its own margin on top
 _TV_TRUNCATION_FRACTION = 0.10
+_TV_TRUNCATION_MIN_GAP_S = 5 * 86400   # a long weekend or holiday run is not a short history
 
 
 def _normalize_source(data_source: Optional[str], tv_symbol: Optional[str]) -> tuple[str, Optional[str]]:
@@ -199,7 +200,9 @@ def _fetch_tv_candles(tv_symbol: str, period: str, interval: str) -> tuple[list[
     candles = tv_bars_to_candles(bars, interval)
 
     span = now - from_ts
-    truncated = bool(candles) and (candles[0]["time"] - from_ts) > _TV_TRUNCATION_FRACTION * span
+    late_start = bool(candles) and (candles[0]["time"] - from_ts) > max(
+        _TV_TRUNCATION_FRACTION * span, _TV_TRUNCATION_MIN_GAP_S)
+    truncated = len(bars) >= _TV_MAX_BARS or late_start
     meta = {
         "data_source": f"TradingView ({'session' if auth == 'session' else 'anonymous'})",
         "truncated": truncated,
@@ -211,6 +214,11 @@ def _fetch_tv_candles(tv_symbol: str, period: str, interval: str) -> tuple[list[
 def _fetch_ohlcv_tv(tv_symbol: str, period: str, interval: str) -> list[dict]:
     """TradingView candles as backtest bars (see _fetch_tv_candles)."""
     return _fetch_tv_candles(tv_symbol, period, interval)[0]
+
+
+def _label(symbol: str, data_source: str, tv_symbol: Optional[str]) -> str:
+    """The symbol a caller recognises: the EXCHANGE:SYMBOL they passed for TradingView, else the Yahoo one."""
+    return tv_symbol if data_source == "tradingview" and tv_symbol else symbol
 
 
 def _load_candles(
@@ -1032,7 +1040,7 @@ def run_backtest(
     try:
         candles, source_meta = _load_candles(symbol, period, interval, data_source, tv_symbol)
     except Exception as e:
-        return {"error": f"Failed to fetch data for '{symbol}': {e}"}
+        return {"error": f"Failed to fetch data for '{_label(symbol, data_source, tv_symbol)}': {e}"}
 
     min_bars = 30 if interval == "1d" else 100
     if len(candles) < min_bars:
@@ -1054,7 +1062,7 @@ def run_backtest(
     trades, metrics, bnh = sim["trades"], sim["metrics"], sim["bnh"]
 
     result = {
-        "symbol":                  symbol.upper(),
+        "symbol":                  _label(symbol, data_source, tv_symbol).upper(),
         "strategy":                strategy,
         "strategy_label":          _STRATEGY_LABELS[strategy],
         "period":                  period,
@@ -1134,7 +1142,7 @@ def compare_strategies(
     try:
         candles, source_meta = _load_candles(symbol, period, interval, data_source, tv_symbol)
     except Exception as e:
-        return {"error": f"Failed to fetch data for '{symbol}': {e}"}
+        return {"error": f"Failed to fetch data for '{_label(symbol, data_source, tv_symbol)}': {e}"}
 
     min_bars = 30 if interval == "1d" else 100
     if len(candles) < min_bars:
@@ -1178,7 +1186,7 @@ def compare_strategies(
                     f"their zero-trade results below are not meaningful.")
 
     out = {
-        "symbol":                  symbol.upper(),
+        "symbol":                  _label(symbol, data_source, tv_symbol).upper(),
         "period":                  period,
         "interval":                interval,
         "timeframe":               _TIMEFRAME_LABELS[interval],
@@ -1405,7 +1413,7 @@ def walk_forward_backtest(
     try:
         candles, source_meta = _load_candles(symbol, period, interval, data_source, tv_symbol)
     except Exception as e:
-        return {"error": f"Failed to fetch data for '{symbol}': {e}"}
+        return {"error": f"Failed to fetch data for '{_label(symbol, data_source, tv_symbol)}': {e}"}
 
     min_bars = max(60, n_splits * 20)
     if len(candles) < min_bars:
@@ -1425,7 +1433,7 @@ def walk_forward_backtest(
     oos_m = wf["oos_m"]
 
     out = {
-        "symbol":                  symbol.upper(),
+        "symbol":                  _label(symbol, data_source, tv_symbol).upper(),
         "strategy":                strategy,
         "strategy_label":          _STRATEGY_LABELS[strategy],
         "period":                  period,

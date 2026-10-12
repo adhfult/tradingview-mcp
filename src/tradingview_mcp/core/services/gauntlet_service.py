@@ -157,7 +157,7 @@ def _store(report: dict) -> Path:
     summary = {
         "fingerprint": report["fingerprint"],
         "created_utc": report["created_utc"],
-        "symbol": report["inputs"]["symbol"],
+        "symbol": report["inputs"]["tv_symbol"] or report["inputs"]["symbol"],
         "strategy": report["inputs"]["strategy"],
         "verdict": report["verdict"],
         "passed": report["verdict"].startswith("PASS"),
@@ -343,7 +343,7 @@ def run_gauntlet(
     try:
         candles, _meta = bt._load_candles(symbol, period, interval, data_source, tv_symbol)
     except Exception as e:
-        return {"error": f"Failed to fetch data for '{symbol}': {e}"}
+        return {"error": f"Failed to fetch data for '{bt._label(symbol, data_source, tv_symbol)}': {e}"}
     if data_source == "tradingview":
         candles = _drop_forming_bar(candles, interval)
 

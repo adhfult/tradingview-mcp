@@ -101,6 +101,18 @@ def test_a_failed_fetch_is_an_error(monkeypatch):
     assert "network down" in run()["error"]
 
 
+def test_tradingview_runs_are_labelled_with_the_tv_symbol(monkeypatch, home):
+    def fail(*a, **k):
+        raise RuntimeError("bridge down")
+    monkeypatch.setattr(bt, "_load_candles", fail)
+    out = run("rsi", data_source="tradingview", tv_symbol="BINANCE:BTCUSDT")
+    assert "'BINANCE:BTCUSDT'" in out["error"]
+    monkeypatch.setattr(bt, "_load_candles", lambda *a, **k: (wavy(), {}))
+    monkeypatch.setattr(g, "tv_periods_per_year", lambda *a: 365)
+    run("rsi", data_source="tradingview", tv_symbol="BINANCE:BTCUSDT")
+    assert json.loads((home / "gauntlet" / "log.jsonl").read_text().splitlines()[-1])["symbol"] == "BINANCE:BTCUSDT"
+
+
 # ─── gates on the real engine ─────────────────────────────────────────────────
 
 def test_a_decent_idea_passes_five_gates_and_walk_forward_decides(series):
