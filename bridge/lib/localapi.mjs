@@ -23,16 +23,23 @@ const LEVELS = ['info', 'up', 'down'];
 
 const isPlainObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 
+/**
+ * True when two tokens are equal, in constant time. Both sides are hashed first, so the buffers
+ * are always the same length and neither the comparison time nor an early return reveals anything
+ * about the token or its length. An empty or non-string token never matches. Shared with the dashboard.
+ */
+export function tokensEqual(given, expected) {
+  if (typeof given !== 'string' || typeof expected !== 'string' || expected === '') return false;
+  const a = createHash('sha256').update(given, 'utf8').digest();
+  const b = createHash('sha256').update(expected, 'utf8').digest();
+  return timingSafeEqual(a, b);
+}
+
 /** True when `header` is "Bearer <token>" and the token matches (constant time). */
 export function tokenMatches(header, token) {
-  if (typeof header !== 'string' || typeof token !== 'string' || token === '') return false;
+  if (typeof header !== 'string') return false;
   const match = /^Bearer\s+(.+)$/i.exec(header);
-  if (!match) return false;
-  // Hash both sides first: the buffers are then always the same length, so neither the
-  // comparison time nor an early return reveals anything about the token or its length.
-  const given = createHash('sha256').update(match[1], 'utf8').digest();
-  const expected = createHash('sha256').update(token, 'utf8').digest();
-  return timingSafeEqual(given, expected);
+  return match !== null && tokensEqual(match[1], token);
 }
 
 const nonBlank = (value, max) => typeof value === 'string' && value.trim() !== '' && value.length <= max;
