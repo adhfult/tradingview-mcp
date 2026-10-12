@@ -37,8 +37,9 @@ function pushBounded(list, item) {
 /**
  * `alerts` is the config alerts section, `timezone` the config timezone, `store`
  * the state store, `clock` the injectable clock and `queue` the delivery queue.
+ * `onRecord(entry)` is called once for every accepted alert, after it is stored and handled.
  */
-export function createAlerts({ alerts, timezone, store, clock, queue, log = () => {} }) {
+export function createAlerts({ alerts, timezone, store, clock, queue, log = () => {}, onRecord = () => {} }) {
   const cooldownMs = alerts.cooldown_minutes * 60_000;
   const cap = alerts.max_per_hour;
   const quiet = alerts.quiet_hours === null ? null : {
@@ -74,7 +75,8 @@ export function createAlerts({ alerts, timezone, store, clock, queue, log = () =
   return {
     /**
      * Offers one alert. `item` is {kind, message, summary, dedupeKey?, cooldownKey?, critical?,
-     * ruleId?, maxPerDay?}. Returns 'sent', 'held', 'digested', 'duplicate', 'cooldown' or 'capped'.
+     * ruleId?, maxPerDay?, meta?}. `meta` (rule, symbol, timeframe, bar, direction, message, values) is kept on the
+     * history entry for the dashboard. Returns 'sent', 'held', 'digested', 'duplicate', 'cooldown' or 'capped'.
      */
     submit(item) {
       const now = clock.now();
@@ -120,7 +122,8 @@ export function createAlerts({ alerts, timezone, store, clock, queue, log = () =
       if (dailyCap && (status !== 'held' || alerts.digest_after_quiet)) {
         s.dailyCounts[item.ruleId] = { date: today, count: usedToday + 1 };
       }
-      s.alerts.push({ at: now, kind: item.kind, level: message.level, title: message.title, key: item.dedupeKey ?? null, status });
+      const entry = { at: now, kind: item.kind, level: message.level, title: message.title, key: item.dedupeKey ?? null, status, meta: item.meta ?? null };
+      s.alerts.push(entry);
       if (s.alerts.length > 500) s.alerts.splice(0, s.alerts.length - 500);
 
       if (status === 'sent') {
@@ -131,6 +134,12 @@ export function createAlerts({ alerts, timezone, store, clock, queue, log = () =
       } else {
         pushBounded(s.digest.overflow, { summary, at: now });
         store.touch();
+      }
+      // Last, and guarded: a bug in a listener (the dashboard) must never lose or block an alert.
+      try {
+        onRecord(entry);
+      } catch (err) {
+        log(`onRecord failed: ${err?.message ?? 'error'}`);
       }
       return status;
     },

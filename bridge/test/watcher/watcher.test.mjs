@@ -770,6 +770,6 @@ test('a rule alert is recorded with its meta: rule, symbol, timeframe, bar, dire
   assert.equal(entry.meta.direction, 'up');
   assert.equal(typeof entry.meta.barTime, 'number');
   assert.match(entry.meta.message, /^Up 1\.00% over 1 bar/);
-  assert.equal(entry.meta.values.close, 102);
+  assert.equal(entry.meta.values.close, 101); // the closed bar; 102 is still forming
   await watcher.stop();
 });
