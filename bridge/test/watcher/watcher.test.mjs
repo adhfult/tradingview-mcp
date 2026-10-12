@@ -753,3 +753,23 @@ test('an any_of whose members are all expired sends nothing', async (t) => {
   assert.equal(calls.length, 0);
   await watcher.stop();
 });
+
+test('a rule alert is recorded with its meta: rule, symbol, timeframe, bar, direction, message, values', async (t) => {
+  const { watcher, lib, clock } = await build(t, { configOverrides: { local_api: { enabled: false, port: 8787 } } });
+  await watcher.start();
+  const w = lib.watchers[0];
+  w.feed(snapshot([100, 101]));
+  w.feed(snapshot([100, 101, 102]));
+  clock.advance(1);
+  await settle();
+  const [entry] = watcher.state.state.alerts;
+  assert.equal(entry.kind, 'rule');
+  assert.equal(entry.meta.ruleId, 'move');
+  assert.equal(entry.meta.symbol, 'BINANCE:BTCUSDT');
+  assert.equal(entry.meta.timeframe, '15');
+  assert.equal(entry.meta.direction, 'up');
+  assert.equal(typeof entry.meta.barTime, 'number');
+  assert.match(entry.meta.message, /^Up 1\.00% over 1 bar/);
+  assert.equal(entry.meta.values.close, 102);
+  await watcher.stop();
+});
