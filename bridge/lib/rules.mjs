@@ -287,13 +287,13 @@ export function ruleApplies(rule, stream) {
 
 /**
  * all_of / any_of: runs the member rules on the same closed bar and groups their hits by direction.
- * any_of gives one result per direction with a hit. all_of gives one only if every member applies to
- * the stream and all hit in that direction (members in opposite directions disagree, so no result).
+ * any_of gives one result per direction with a hit. all_of gives one only if every member hits
+ * the stream and all hit in that direction (members in opposite directions disagree, so no result;
+ * a member that does not apply to the stream cannot hit, so it also blocks all_of).
  * Messages are joined `ruleId: message`, and each value is named `ruleId.valueName`.
  */
 function evaluateComposite(rule, stream, closedCandles) {
   const members = rule.members ?? [];
-  if (rule.type === 'all_of' && !members.every((member) => ruleApplies(member, stream))) return [];
   const hits = evaluateRules(members, stream, closedCandles);
   const results = [];
   for (const direction of new Set(hits.map((hit) => hit.direction))) {

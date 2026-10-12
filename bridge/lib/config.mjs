@@ -302,13 +302,12 @@ function parseRules(input, watchlist, errors, warnings, { timezone, now }) {
 function resolveComposites(composites, rules, ids, compositeIds, errors) {
   const byId = new Map(rules.map((rule) => [rule.id, rule]));
   for (const { rule, path, streams } of composites) {
-    const before = errors.length;
     rule.rules.forEach((id, i) => {
       if (!ids.has(id)) errors.push(`${path}.rules[${i}]: "${id}" is not the id of a rule in this config`);
       else if (compositeIds.has(id)) errors.push(`${path}.rules[${i}]: "${id}" is a composite; composites cannot contain composites`);
     });
     const members = rule.rules.map((id) => byId.get(id));
-    if (errors.length > before || members.includes(undefined)) continue;
+    if (members.includes(undefined)) continue;
     rule.members = members;
     const applies = (member, stream) => ruleApplies(member, { symbol: stream.symbol, timeframe: stream.timeframe });
     const fires = streams.some((stream) => (rule.type === 'all_of' ? members.every((m) => applies(m, stream)) : members.some((m) => applies(m, stream))));
