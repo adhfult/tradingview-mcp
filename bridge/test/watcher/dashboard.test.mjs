@@ -351,6 +351,7 @@ test('hostile files in the gauntlet folder are ignored: bad names, symlinks, ove
   await writeFile(join(folder, `${FP}.json`), gauntletReport(FP));
   await writeFile(join(folder, 'log.jsonl'), gauntletReport(FP2));
   await writeFile(join(folder, 'notes.json'), gauntletReport(FP2));
+  await writeFile(join(folder, `${FP2}.bak.json`), gauntletReport(FP2), 'utf8'); // its first 64 characters look like a fingerprint
   await writeFile(join(folder, `${'C'.repeat(64)}.json`), gauntletReport('C'.repeat(64)));
   await writeFile(join(folder, `${'d'.repeat(64)}.json`), 'not json at all {');
   await writeFile(join(folder, `${'e'.repeat(64)}.json`), `${gauntletReport('e'.repeat(64))}${' '.repeat(1_100_000)}`);
@@ -394,6 +395,16 @@ test('/api/paper joins each journal to the report with the same fingerprint, and
   assert.deepEqual(Object.keys(journals[0].events[0]), ['ts', 'type', 'price', 'bar_time', 'return_pct']);
   assert.ok(!res.body.includes('dropped'));
   assert.deepEqual([journals[1].strategy, journals[1].symbol, journals[1].timeframe], [null, null, null], 'a journal without a report still shows, with null labels');
+});
+
+test('a journal whose report is a symlink still shows, with null labels: the report is never followed out of the folder', async (t) => {
+  const { get, home, dir } = await start(t);
+  await writeFile(join(dir, 'outside.json'), gauntletReport(FP));
+  await symlink(join(dir, 'outside.json'), join(home, 'gauntlet', `${FP}.json`));
+  await writeFile(join(home, 'paper', `${FP}.jsonl`), journalLines({ ts: 't', type: 'start', bar_time: 1 }));
+  const [journal] = json(await get('/api/paper'));
+  assert.equal(journal.fingerprint, FP);
+  assert.equal(journal.strategy, null);
 });
 
 test('hostile files in the paper folder are ignored the same way: log.jsonl, bad names, symlinks, oversize', async (t) => {

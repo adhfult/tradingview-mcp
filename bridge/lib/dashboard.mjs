@@ -161,11 +161,8 @@ export function createDashboard({
   host = '127.0.0.1', port, token = '', bus, streams, getAlerts, rules, timezone, home, assets, clock = realTimers, logger,
 }) {
   const loopback = LOOPBACK_BIND.has(String(host).toLowerCase());
-  if (!loopback && token === '') {
-    throw new Error(`dashboard host ${host} is not a loopback address: set WATCHER_DASHBOARD_TOKEN (16 characters or more)`);
-  }
   if (!loopback && token.length < MIN_REMOTE_TOKEN) {
-    throw new Error(`WATCHER_DASHBOARD_TOKEN must be at least ${MIN_REMOTE_TOKEN} characters when the dashboard is not on loopback`);
+    throw new Error(`dashboard host ${host} is not a loopback address: set WATCHER_DASHBOARD_TOKEN to a secret of at least ${MIN_REMOTE_TOKEN} characters`);
   }
 
   const files = new Map(); // URL path -> {body, type}, loaded once in listen()
