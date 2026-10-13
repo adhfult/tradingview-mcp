@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import http from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { createDashboard, defaultAssets } from '../../lib/dashboard.mjs';
@@ -329,4 +329,57 @@ test('setObsidianLink sets an href only for an obsidian:// link, and removes any
     assert.equal(setObsidianLink(el, bad), false, String(bad));
     assert.equal(el.href, undefined, `no href left for ${String(bad)}`);
   }
+});
+
+// ---------------------------------------------------------------- P4 step 2: the page is split into modules
+
+const MODULES = async () => (await readdir(dir(''))).filter((n) => n.endsWith('.mjs')).sort();
+const strip = (js) => js.replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, '');
+
+test('pure.mjs and dom.mjs exist, are allowlisted and are served', async () => {
+  for (const name of ['pure.mjs', 'dom.mjs']) {
+    assert.ok(ASSET_PATHS.has(`/assets/${name}`), `/assets/${name} is in the allowlist`);
+    assert.ok((await MODULES()).includes(name), name);
+  }
+});
+
+test('app.mjs re-exports the DOM-free helpers from pure.mjs, the same functions', async () => {
+  const app = await import('../../dashboard/app.mjs');
+  const pure = await import('../../dashboard/pure.mjs');
+  const names = ['streamKey', 'timeframeSeconds', 'formatTimeframe', 'classifyBar', 'isStale', 'alertMarker', 'paperMarker', 'noteMarker',
+    'buildMarkers', 'safeObsidianHref', 'setObsidianLink', 'newNoteLink', 'parseDeepLink', 'centerRange'];
+  for (const name of names) {
+    assert.equal(typeof pure[name], 'function', name);
+    assert.equal(app[name], pure[name], `${name} is re-exported, not copied`);
+  }
+});
+
+test('dom.mjs imports in Node without a DOM and exports the page helpers', async () => {
+  const dom = await import('../../dashboard/dom.mjs');
+  for (const name of ['$', 'getJson', 'cssVar', 'errorText', 'renderList', 'addText', 'setStatus', 'timeText']) assert.equal(typeof dom[name], 'function', name);
+});
+
+test('every dashboard module: no HTML from data, no eval, only own-origin requests, one fetch, one href assignment next to its scheme check', async () => {
+  const names = await MODULES();
+  const code = {};
+  for (const name of names) code[name] = await read(name);
+  const all = Object.values(code).map(strip).join('\n');
+  for (const [name, js] of Object.entries(code)) {
+    assert.doesNotMatch(js, /\.(innerHTML|outerHTML)\b|insertAdjacentHTML|setHTMLUnsafe|createContextualFragment|DOMParser|document\.write|\beval\s*\(|new Function|setAttribute\(\s*['"]style|style\.cssText|window\.open|location\s*(\.href\s*)?=[^=]/, name);
+    assert.doesNotMatch(js, /\bimport\s*\(\s*[^'"/\s]/, `${name}: dynamic import takes a literal`);
+    for (const [, url] of js.matchAll(/(?:from|import\s*\()\s*['"]([^'"]+)['"]/g)) {
+      if (url === '/assets/lightweight-charts.mjs') continue;
+      assert.match(url, /^\.\/[a-z-]+\.mjs$/, `${name}: ${url} must be the chart library or a sibling module`);
+      assert.ok(names.includes(url.slice(2)), `${name}: ${url} exists`);
+    }
+  }
+  assert.deepEqual([...all.matchAll(/\bfetch\(([^,)]*)/g)].map((m) => m[1]), ['path'], 'one fetch, inside getJson');
+  const calls = [...all.matchAll(/\bgetJson\(\s*([`'"])([^`'"]*)/g)].map((m) => m[2]);
+  assert.ok(calls.length >= 5, `found ${calls.length} getJson calls with a literal path`);
+  for (const url of calls) assert.match(url, /^\/api\//, url);
+  assert.equal([...all.matchAll(/\bgetJson\(/g)].length, calls.length + 1, 'every getJson call has a literal path (+1 for its definition)');
+  for (const [, url] of all.matchAll(/EventSource\(\s*['"`]([^'"`]+)/g)) assert.equal(url, '/events');
+  const hits = [...all.matchAll(/\.href\s*=[^=]/g)];
+  assert.equal(hits.length, 1, 'exactly one place sets an href');
+  assert.match(all.slice(Math.max(0, hits[0].index - 250), hits[0].index + 150), /safeObsidianHref\(/);
 });
