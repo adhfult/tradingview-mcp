@@ -26,7 +26,7 @@ const RAW_CONFIG = {
   local_api: { enabled: true, port: 8787 },
 };
 
-async function build(t, { env = {}, fetch, dryRun = false, configOverrides = {}, stateDir, lib } = {}) {
+async function build(t, { env = {}, fetch, dryRun = false, configOverrides = {}, stateDir, lib, extra = {} } = {}) {
   const dir = stateDir ?? await mkdtemp(join(tmpdir(), 'watcher-run-'));
   if (!stateDir) t.after(() => rm(dir, { recursive: true, force: true }));
   const { config, errors } = parseConfig({ ...RAW_CONFIG, ...configOverrides, state_dir: dir }, { home: '/home/test' });
@@ -58,6 +58,7 @@ async function build(t, { env = {}, fetch, dryRun = false, configOverrides = {},
     logWrite: (line) => logs.push(line),
     dryRun,
     redact: makeRedactor(fullEnv),
+    ...extra,
   });
   t.after(() => watcher.stop().catch(() => {}));
   return { watcher, clock, lib: fakeLib, calls, logs, printed, dir, fullEnv };
@@ -980,4 +981,139 @@ test('the dashboard trending panel forgets a symbol after remember_hours even wh
   watcher.state.state.trending = { 'stock|gainers': { 'NASDAQ:OLD': clock.now() - 7 * hour, 'NASDAQ:NEW': clock.now() - 5 * hour } };
   const rows = await (await getFrom(watcher, '/api/trending')).json();
   assert.deepEqual(rows.map((r) => r.symbol), ['NASDAQ:NEW'], 'the default remember_hours is 6');
+});
+
+// ---------------------------------------------------------------- 7b: chart images on alerts
+
+const IMG_PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
+const IMAGES_ON = { enabled: true, chromium_path: '/from/config/chromium', max_per_hour: 3, timeout_ms: 4000 };
+const NO_API_IMAGES = (images, dashboard) => ({ local_api: { enabled: false, port: 8787 }, images, ...(dashboard === undefined ? {} : { dashboard }) });
+
+/** A makeRenderer for createWatcher: records the options it was built with and the charts it was asked for. */
+function fakeRendererMaker(impl = async () => IMG_PNG) {
+  const made = [];
+  const charts = [];
+  const state = { closed: 0 };
+  const make = (options) => {
+    made.push(options);
+    return { render: async (chart) => { charts.push(chart); return impl(chart); }, close: async () => { state.closed += 1; } };
+  };
+  return { make, made, charts, state };
+}
+
+async function oneAlert(watcher, lib, clock) {
+  await watcher.start();
+  lib.watchers[0].feed(snapshot([100, 101]));
+  lib.watchers[0].feed(snapshot([100, 101, 102]));
+  clock.advance(1);
+  await settle();
+}
+
+test('images off by default: no renderer is built, the alert is the plain JSON post', async (t) => {
+  const maker = fakeRendererMaker();
+  const { watcher, lib, calls, clock, logs } = await build(t, { configOverrides: NO_API_IMAGES(undefined), extra: { makeRenderer: maker.make } });
+  await oneAlert(watcher, lib, clock);
+  assert.equal(maker.made.length, 0);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].init.headers['content-type'], 'application/json');
+  assert.ok(!logs.some((l) => /image/i.test(l)));
+});
+
+test('images enabled with no browser path says so and runs without images', async (t) => {
+  const maker = fakeRendererMaker();
+  const { watcher, lib, calls, clock, logs } = await build(t, { configOverrides: NO_API_IMAGES({ enabled: true }), extra: { makeRenderer: maker.make } });
+  await oneAlert(watcher, lib, clock);
+  assert.ok(logs.some((l) => l.includes('images disabled: no chromium path')), logs.join('\n'));
+  assert.equal(maker.made.length, 0);
+  assert.equal(calls.length, 1, 'the alert still goes out');
+  assert.equal(calls[0].init.headers['content-type'], 'application/json');
+});
+
+test('a WATCHER_CHROMIUM_PATH that is not an absolute path disables images with the reason', async (t) => {
+  const maker = fakeRendererMaker();
+  const { watcher, logs } = await build(t, { env: { WATCHER_CHROMIUM_PATH: 'chromium' }, configOverrides: NO_API_IMAGES(IMAGES_ON), extra: { makeRenderer: maker.make } });
+  await watcher.start();
+  assert.ok(logs.some((l) => l.includes('images disabled: WATCHER_CHROMIUM_PATH must be an absolute path')), logs.join('\n'));
+});
+
+test('images enabled while the dashboard is off: disabled with the reason, no second server', async (t) => {
+  const maker = fakeRendererMaker();
+  const { watcher, lib, calls, clock, logs } = await build(t, {
+    configOverrides: NO_API_IMAGES(IMAGES_ON, { enabled: false }), extra: { makeRenderer: maker.make },
+  });
+  await oneAlert(watcher, lib, clock);
+  assert.ok(logs.some((l) => l.includes('images disabled: dashboard.enabled is false')), logs.join('\n'));
+  assert.equal(calls[0].init.headers['content-type'], 'application/json');
+});
+
+test('a dry run never makes images', async (t) => {
+  const maker = fakeRendererMaker();
+  const { watcher, lib, clock, printed } = await build(t, { dryRun: true, configOverrides: NO_API_IMAGES(IMAGES_ON), extra: { makeRenderer: maker.make } });
+  await oneAlert(watcher, lib, clock);
+  assert.equal(maker.charts.length, 0);
+  assert.equal(printed.length, 1);
+});
+
+test('images on: the renderer gets the bound dashboard URL, the env browser path, the token and the limits; Discord gets the PNG', async (t) => {
+  const maker = fakeRendererMaker();
+  const dashToken = 'dash-token-0123456789';
+  const { watcher, lib, calls, clock } = await build(t, {
+    env: { WATCHER_CHROMIUM_PATH: '/from/env/chromium', WATCHER_DASHBOARD_TOKEN: dashToken },
+    configOverrides: NO_API_IMAGES(IMAGES_ON),
+    extra: { makeRenderer: maker.make },
+  });
+  await oneAlert(watcher, lib, clock);
+  assert.deepEqual(maker.made, [{
+    baseUrl: `http://127.0.0.1:${dashPort(watcher)}`, token: dashToken, chromiumPath: '/from/env/chromium', maxPerHour: 3, timeoutMs: 4000,
+  }]);
+  assert.equal(maker.charts.length, 1);
+  assert.deepEqual({ ...maker.charts[0], barTime: typeof maker.charts[0].barTime }, {
+    symbol: 'BINANCE:BTCUSDT', timeframe: '15', barTime: 'number', direction: 'up', level: null, ruleId: 'move',
+  });
+  assert.equal(calls.length, 1);
+  assert.ok(calls[0].body instanceof FormData);
+  assert.equal(calls[0].body.get('files[0]').name, 'chart.png');
+  assert.equal(JSON.parse(calls[0].body.get('payload_json')).content, '🟢 BINANCE:BTCUSDT · 15m · pct_move');
+});
+
+test('the browser path comes from the config when the env has none', async (t) => {
+  const maker = fakeRendererMaker();
+  const { watcher, lib, clock } = await build(t, { configOverrides: NO_API_IMAGES(IMAGES_ON), extra: { makeRenderer: maker.make } });
+  await oneAlert(watcher, lib, clock);
+  assert.equal(maker.made[0].chromiumPath, '/from/config/chromium');
+  assert.equal(maker.made[0].token, '');
+});
+
+test('when the image cannot be made the alert is text with a dashboard link, and the reason is logged', async (t) => {
+  const { RenderError } = await import('../../lib/render.mjs');
+  const maker = fakeRendererMaker(async () => { throw new RenderError('timeout', 'no image after 4000 ms'); });
+  const { watcher, lib, calls, clock, logs } = await build(t, { configOverrides: NO_API_IMAGES(IMAGES_ON), extra: { makeRenderer: maker.make } });
+  await oneAlert(watcher, lib, clock);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].init.headers['content-type'], 'application/json');
+  assert.match(calls[0].body.embeds[0].description, new RegExp(`\\nChart: http://127\\.0\\.0\\.1:${dashPort(watcher)}/\\?symbol=BINANCE%3ABTCUSDT&tf=15&t=\\d+$`));
+  assert.ok(logs.some((l) => l.includes('chart image skipped (timeout)')), logs.join('\n'));
+});
+
+test('stop() closes the renderer, and a renderer that was never needed is never built', async (t) => {
+  const unused = fakeRendererMaker();
+  const a = await build(t, { configOverrides: NO_API_IMAGES(IMAGES_ON), extra: { makeRenderer: unused.make } });
+  await a.watcher.start();
+  await a.watcher.stop();
+  assert.equal(unused.made.length, 0, 'no alert, no browser object');
+  const used = fakeRendererMaker();
+  const b = await build(t, { configOverrides: NO_API_IMAGES(IMAGES_ON), extra: { makeRenderer: used.make } });
+  await oneAlert(b.watcher, b.lib, b.clock);
+  await b.watcher.stop();
+  assert.equal(used.state.closed, 1);
+});
+
+test('the dashboard token never reaches a log through the image path', async (t) => {
+  const { RenderError } = await import('../../lib/render.mjs');
+  const dashToken = 'dash-token-0123456789';
+  const maker = fakeRendererMaker(async () => { throw new RenderError('browser', `failed at ${dashToken}`); });
+  const { watcher, lib, clock, logs } = await build(t, { env: { WATCHER_DASHBOARD_TOKEN: dashToken }, configOverrides: NO_API_IMAGES(IMAGES_ON), extra: { makeRenderer: maker.make } });
+  await oneAlert(watcher, lib, clock);
+  assert.ok(logs.some((l) => l.includes('chart image skipped')));
+  assert.ok(!logs.join('\n').includes(dashToken));
 });

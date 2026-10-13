@@ -185,3 +185,13 @@ test('a send that fails still fails (the queue must retry it), with or without a
   const [n] = withImages([failing], { renderer: fakeRenderer(), baseUrl: BASE });
   await assert.rejects(n.send(message({ chart: CHART })), (err) => err.status === 500);
 });
+
+test('baseUrl may be a function, and with no dashboard address the fallback has no link line (nothing to link to)', async () => {
+  const renderer = fakeRenderer(async () => { throw new RenderError('browser', 'the dashboard is not running'); });
+  const [n] = withImages([recorder('discord')], { renderer, baseUrl: () => null });
+  await n.send(message({ chart: CHART }));
+  assert.deepEqual(n.sent[0].lines, message().lines);
+  const [m] = withImages([recorder('discord')], { renderer, baseUrl: () => BASE });
+  await m.send(message({ chart: CHART }));
+  assert.match(m.sent[0].lines.at(-1), /^Chart: http:\/\/127\.0\.0\.1:8788\//);
+});

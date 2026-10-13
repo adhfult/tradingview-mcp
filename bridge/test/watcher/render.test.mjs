@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { createRenderer, deepLink, renderUrl, RenderError } from '../../lib/render.mjs';
+import { createRenderer, dashboardBaseUrl, deepLink, renderUrl, RenderError } from '../../lib/render.mjs';
 import { createFakeClock, settle } from './support.mjs';
 
 const BASE = 'http://127.0.0.1:8788';
@@ -77,6 +77,14 @@ test('deepLink is the dashboard page centred on the alert bar, the same URL the 
   const url = new URL(deepLink(BASE, CHART));
   assert.equal(url.pathname, '/');
   assert.deepEqual(Object.fromEntries(url.searchParams), { symbol: 'BINANCE:BTCUSDT', tf: '60', t: '1760000000' });
+});
+
+test('dashboardBaseUrl turns the address the dashboard bound into a URL this machine can open', () => {
+  assert.equal(dashboardBaseUrl({ host: '127.0.0.1', port: 8788 }), 'http://127.0.0.1:8788');
+  assert.equal(dashboardBaseUrl({ host: '::1', port: 8788 }), 'http://[::1]:8788');
+  assert.equal(dashboardBaseUrl({ host: '0.0.0.0', port: 9000 }), 'http://127.0.0.1:9000', 'bound to every interface: use loopback');
+  assert.equal(dashboardBaseUrl({ host: '::', port: 9000 }), 'http://[::1]:9000');
+  assert.equal(dashboardBaseUrl({ host: '192.168.1.5', port: 9000 }), 'http://192.168.1.5:9000');
 });
 
 // ---------------------------------------------------------------- rendering
