@@ -107,10 +107,10 @@ test('alertMarker: arrow plus glyph, never colour alone; unusable alerts give nu
   const { alertMarker } = await import('../../dashboard/app.mjs');
   const base = { barTime: T, symbol: 'S', timeframe: '60', message: 'Crossed 60000', title: 't' };
   assert.deepEqual(alertMarker({ ...base, direction: 'up', level: 'up' }), {
-    time: T, position: 'belowBar', shape: 'arrowUp', tone: 'up', text: '↑', tooltip: 'Crossed 60000',
+    time: T, position: 'belowBar', shape: 'arrowUp', tone: 'up', text: '↑',
   });
   assert.deepEqual(alertMarker({ ...base, direction: 'down', level: 'down' }), {
-    time: T, position: 'aboveBar', shape: 'arrowDown', tone: 'down', text: '↓', tooltip: 'Crossed 60000',
+    time: T, position: 'aboveBar', shape: 'arrowDown', tone: 'down', text: '↓',
   });
   assert.equal(alertMarker({ ...base, direction: null, level: 'down' })?.shape, 'arrowDown', 'direction missing: use the level');
   assert.equal(alertMarker({ ...base, direction: null, level: 'info' }), null, 'no direction at all: no marker');
