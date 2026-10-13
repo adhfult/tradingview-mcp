@@ -231,6 +231,34 @@ export function createWatcher({
     })
     : null;
 
+  // What the dashboard's health, overview and trending panels read. Plain numbers and flags only: the dashboard
+  // passes on just the fields it lists, and no credential, token or URL is ever put in here.
+  const getStatus = () => {
+    const now = clock.now();
+    const counts = alerts.counts();
+    const { healthy, total } = health.summary();
+    const counters = streams.counters();
+    const today = new Date(now).toISOString().slice(0, 10); // ponytail: UTC date, off by at most a day around midnight New York; use the New York date if that ever matters
+    return {
+      nowMs: now,
+      startedAtMs,
+      loggedIn: credentials !== null,
+      healthy,
+      total,
+      disconnects: counters.disconnects,
+      connectionDrops: counters.connection_drops,
+      queuePending: queue.pending(),
+      sentLastHour: counts.sentLastHour,
+      maxPerHour: config.alerts.max_per_hour,
+      quietNow: alerts.quietNow(),
+      held: counts.held,
+      overflow: counts.overflow,
+      usOpen: isUsRegularHours(now, usCalendar),
+      nextHoliday: [...config.health.us_holidays].sort().find((day) => day >= today) ?? null,
+      trending: store.state.trending,
+    };
+  };
+
   // A dashboard that cannot be created (non-loopback without a token) or bound never stops the watcher:
   // alerts matter more than charts.
   let dashboard = null;
@@ -248,6 +276,7 @@ export function createWatcher({
         timezone: config.timezone,
         home: env.TRADINGVIEW_MCP_HOME || join(homedir(), '.tradingview-mcp'),
         assets: defaultAssets(),
+        getStatus,
         notes: notesConfig.enabled
           ? createNotes({ dir: notesConfig.dir, vault: notesConfig.vault, vaultFolder: notesConfig.vault_folder, clock, logger })
           : null,
