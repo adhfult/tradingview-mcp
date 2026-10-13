@@ -185,6 +185,22 @@ Enabled when `local_api.enabled` is on **and** `WATCHER_LOCAL_TOKEN` is set. It 
 - `POST /notify` with `Authorization: Bearer <WATCHER_LOCAL_TOKEN>` and a JSON body `{"title", "body", "key", "level": "info"|"up"|"down"}` (body up to 8 KB). Returns `202`, `400` for a bad body, or `401` for a bad token. The message goes through the same alert rules.
 - `GET /health` needs no token. It returns `{ok, streams: {healthy, total}, uptime_s, disconnects}` and no secrets.
 
+### Dashboard
+
+A read-only web page served by the watcher process: a candlestick chart per watched stream with your alerts, price levels (from `price_cross` rules) and paper-trade entries and exits on it, the recent alerts, and stream health. It updates live. It never calls TradingView, never writes anything and cannot place a trade. Configure it with `dashboard` in the config: `enabled` (default `true`), `host` (default `127.0.0.1`) and `port` (default `8788`, 1024 to 65535, and not the `local_api` port).
+
+On the Pi, reach it through an SSH tunnel from the machine with the browser:
+
+```bash
+ssh -N -L 8788:127.0.0.1:8788 pi@raspberrypi.local
+```
+
+Then open `http://localhost:8788/`. On a loopback bind no token is needed; the server only accepts a `Host` header naming `localhost`, `127.0.0.1` or `[::1]` (any port, so the tunnel works), which stops a web page from reaching it through DNS rebinding. **The tunnel is the recommended setup.**
+
+If you bind to another address, set `WATCHER_DASHBOARD_TOKEN` to a secret of at least 16 characters, or the dashboard refuses to start (the watcher keeps running and logs why). Open the page once as `http://<pi>:8788/?token=<secret>`; the server stores it in a cookie and redirects to the same URL without the token. Known limit: the `tvw_dash` cookie has `Path=/` and no port scope, so on a non-loopback bind any other HTTP service on the same host also receives it, and traffic is plain HTTP. Prefer the tunnel over this.
+
+The page loads only its own files (no inline script or style, no outside requests), so the strict Content-Security-Policy holds. The chart is TradingView Lightweight Charts; its attribution is in the page footer. Without JavaScript the page shows a plain message. If the dashboard port is taken, the watcher logs it and runs without the dashboard.
+
 ### Open question for live testing
 
 It is not known whether TradingView drops one of two websockets that use the same cookie (for example, the watcher on the Pi and the desktop MCP at the same time). Watch `disconnects` in `/health` and the `disconnected at` log lines, and record what you see.
