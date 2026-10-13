@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { alertDetailRows, countByRuleDay, deepLink, filterAlerts, paperEquity, parseDeepLink, sparkPoints, tabTitle } from '../../dashboard/pure.mjs';
+import { alertDetailRows, countByRuleDay, deepLink, filterAlerts, formatDuration, formatPct, newNoteLink, paperEquity, parseDeepLink, sparkPoints, tabTitle } from '../../dashboard/pure.mjs';
 
 const DAY = 86_400_000;
 const D0 = Date.UTC(2026, 9, 12, 10, 0, 0);
@@ -122,7 +122,8 @@ test('index.html: the ids the P4 modules use are there, once each', async () => 
   const ids = [...text.matchAll(/\sid="([^"]+)"/g)].map((m) => m[1]);
   assert.equal(new Set(ids).size, ids.length, 'no duplicate id');
   for (const id of ['tabs', 'save-png', 'alerts-all-status', 'alerts-all-list', 'filter-rule', 'filter-symbol', 'filter-status', 'alert-counts',
-    'alert-detail', 'detail-title', 'detail-rows', 'detail-status', 'copy-link', 'detail-note', 'detail-close', 'paper-status', 'paper-list']) {
+    'alert-detail', 'detail-title', 'detail-rows', 'detail-status', 'copy-link', 'detail-note', 'detail-close', 'paper-status', 'paper-list',
+    'overview-status', 'overview-list', 'trending-status', 'trending-list', 'health-status', 'health-summary', 'health-streams', 'market-badge', 'login-badge']) {
     assert.ok(idsOf(text).has(id), id);
   }
 });
@@ -130,14 +131,14 @@ test('index.html: the ids the P4 modules use are there, once each', async () => 
 test('index.html: a tab button for each view, and every section belongs to a view', async () => {
   const text = await html();
   const tabs = [...text.matchAll(/<button\b[^>]*\sdata-tab="([^"]+)"/g)].map((m) => m[1]);
-  assert.deepEqual(tabs, ['chart', 'alerts', 'status']);
+  assert.deepEqual(tabs, ['overview', 'chart', 'alerts', 'opportunities', 'status']);
   const sections = [...text.matchAll(/<section\b([^>]*)>/g)].map((m) => m[1]);
   for (const attrs of sections) {
     const view = /\sdata-view="([^"]+)"/.exec(attrs)?.[1];
     assert.ok(tabs.includes(view), `section ${attrs.trim()} has a known data-view`);
   }
   assert.match(text, /<nav\b[^>]*\sid="tabs"[^>]*\saria-label="/, 'the tab bar is a labelled landmark');
-  assert.match(text, /data-tab="chart"[^>]*aria-current="page"/, 'the first tab is current from the start');
+  assert.match(text, /data-tab="overview"[^>]*aria-current="page"/, 'the landing tab is current from the start');
 });
 
 test('index.html: the detail drawer has no href until the page sets one, and is hidden at first', async () => {
@@ -150,4 +151,39 @@ test('index.html: the detail drawer has no href until the page sets one, and is 
 test('index.html: filters have labels, and every select in the page is labelled', async () => {
   const text = await html();
   for (const id of ['filter-rule', 'filter-symbol', 'filter-status']) assert.match(text, new RegExp(`<label[^>]*for="${id}"`), id);
+});
+
+// ---------------------------------------------------------------- P4 step 4: overview, health, opportunities
+
+test('formatDuration: the two largest units, seconds for under a minute, a dash for nonsense', () => {
+  assert.equal(formatDuration(0), '0s');
+  assert.equal(formatDuration(59), '59s');
+  assert.equal(formatDuration(60), '1m');
+  assert.equal(formatDuration(3600), '1h');
+  assert.equal(formatDuration(3 * 3600 + 12 * 60 + 40), '3h 12m');
+  assert.equal(formatDuration(90_061), '1d 1h');
+  assert.equal(formatDuration(-5), '—');
+  assert.equal(formatDuration(null), '—');
+  assert.equal(formatDuration(Number.NaN), '—');
+});
+
+test('formatPct: a sign, two decimals and a percent sign; a dash for no value', () => {
+  assert.equal(formatPct(1.234), '+1.23%');
+  assert.equal(formatPct(-0.5), '-0.50%');
+  assert.equal(formatPct(0), '0.00%');
+  assert.equal(formatPct(null), '—');
+});
+
+test('newNoteLink: an opportunity note for a symbol with no timeframe has its own kind and no double space in the name', () => {
+  const url = newNoteLink({ vault: 'V', folder: 'markets', symbol: 'BINANCE:PEPEUSDT', timeframe: null, time: 1_760_000_000, kind: 'opportunity' });
+  const q = new URL(url).searchParams;
+  assert.equal(q.get('file'), 'markets/BINANCE-PEPEUSDT 2025-10-09 0853');
+  assert.match(q.get('content'), /kind: opportunity/);
+  assert.match(q.get('content'), /symbols: \["BINANCE:PEPEUSDT"\]/);
+  assert.doesNotMatch(q.get('content'), /# BINANCE:PEPEUSDT {2}/);
+});
+
+test('newNoteLink: the kind defaults to note, as before', () => {
+  const url = newNoteLink({ vault: 'V', folder: 'f', symbol: 'X:Y', timeframe: '60', time: 1_760_000_000 });
+  assert.match(new URL(url).searchParams.get('content'), /kind: note/);
 });
