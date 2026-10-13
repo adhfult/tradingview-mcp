@@ -106,3 +106,36 @@ test('an empty frontmatter block is valid and empty', () => {
 test('a non-string input is no frontmatter, not a crash', () => {
   for (const value of [undefined, null, 5, {}]) assert.equal(parseFrontmatter(value), null);
 });
+
+test('a list nested under another mapping is not the key\'s list', () => {
+  assert.deepEqual(parseFrontmatter(note('---', 'symbols:', '  private:', '    - BTCUSDT', 'kind: news', '---', '')).data, { symbols: '', kind: 'news' });
+  assert.deepEqual(parseFrontmatter(note('---', 'meta:', '  a: 1', '  - x', '---', '')).data, { meta: '' });
+});
+
+test('double-quote escapes are YAML escapes; an unknown escape makes the note unreadable', () => {
+  const value = (text) => parseFrontmatter(note('---', `k: ${text}`, '---', ''))?.data.k;
+  assert.equal(value('"a\\nb"'), 'a\nb');
+  assert.equal(value('"tab\\there"'), 'tab\there');
+  assert.equal(value('"\\u0042TC"'), 'BTC');
+  assert.equal(value('"back\\\\slash"'), 'back\\slash');
+  assert.equal(value("'a\\nb'"), 'a\\nb', 'single quotes have no escapes');
+  for (const bad of ['"\\BTCUSDT"', '"\\u00zz"', '"\\u12"', '"end\\"']) assert.equal(value(bad), undefined, bad);
+});
+
+test('an inline list may hold a quoted #; a comment only counts after the closing bracket', () => {
+  assert.deepEqual(parseFrontmatter(note('---', 'source: ["Desk #1", \'b # c\']', '---', '')).data, { source: ['Desk #1', 'b # c'] });
+  assert.deepEqual(parseFrontmatter(note('---', 'symbols: ["A"]   # why', '---', '')).data, { symbols: ['A'] });
+  assert.equal(parseFrontmatter(note('---', 'symbols: ["A"] junk', '---', '')), null);
+  assert.equal(parseFrontmatter(note('---', 'symbols: [a, [b]]', '---', '')), null, 'nested lists are not read');
+});
+
+test('hostile long lines are parsed in linear time (a 16 KB line must not stall the watcher)', () => {
+  const slow = (line) => {
+    const start = Date.now();
+    parseFrontmatter(note('---', line, '---', ''));
+    return Date.now() - start;
+  };
+  for (const line of [`kind: a${' '.repeat(16_000)}x`, `kind: [a${' '.repeat(16_000)}x]`, 'x'.repeat(16_000), `${' '.repeat(16_000)}x:`, `k: ${'a #'.repeat(5000)}`]) {
+    assert.ok(slow(line) < 60, `${line.slice(0, 12)}... took ${slow(line)} ms`);
+  }
+});

@@ -252,12 +252,11 @@ test('nothing is read until a browser asks, and the scan is cached for 30 second
 });
 
 test('concurrent requests share one scan', async (t) => {
-  const { notes, dir } = await setup(t, { 'a.md': note('symbols: [BTCUSDT]') });
-  const first = notes.list(BTC);
-  await writeFile(join(dir, 'b.md'), note('symbols: [BTCUSDT]')); // lands while the first scan is in flight or just after
-  const results = await Promise.all([first, notes.list(BTC), notes.list(BTC)]);
-  assert.equal(results[0].length, results[1].length, 'one scan, one answer');
-  assert.equal(results[1].length, results[2].length);
+  // A missing folder logs once per scan, so three requests at the same moment must log exactly once.
+  const log = logger();
+  const notes = createNotes({ dir: '/nonexistent/notes-folder', vault: 'V', vaultFolder: 'm', clock: createFakeClock(), logger: log });
+  await Promise.all([notes.list(BTC), notes.list(BTC), notes.list(BTC)]);
+  assert.equal(log.logs.filter((l) => l.startsWith('warn')).length, 1);
 });
 
 test('creating the layer touches nothing: a missing folder is only logged when a browser asks, once per scan window, and found later', async (t) => {
@@ -287,4 +286,30 @@ test('a folder that is a file, or unreadable, gives an empty list and no crash',
   await writeFile(join(root, 'afile'), 'x');
   const notes = createNotes({ dir: join(root, 'afile'), vault: 'V', vaultFolder: 'm', clock: createFakeClock(), logger: logger() });
   assert.deepEqual(await notes.list(BTC), []);
+});
+
+test('a title is cut at 200 characters, symbols at 20 entries of at most 64 characters', async (t) => {
+  const many = Array.from({ length: 40 }, (_, i) => `SYM${i}`).concat(['x'.repeat(500)]);
+  const { notes } = await setup(t, {
+    'long-title.md': note('symbols: [BTCUSDT]', `# ${'T'.repeat(15_000)}\nbody`),
+    'many.md': note(`symbols: [BTCUSDT, ${many.join(', ')}]`),
+  });
+  const list = await notes.list(BTC);
+  const longTitle = list.find((n) => n.title.startsWith('TTT'));
+  assert.ok(longTitle.title.length <= 200 && longTitle.title.endsWith('…'));
+  const manySymbols = list.find((n) => n.symbols.includes('SYM0'));
+  assert.equal(manySymbols.symbols.length, 20);
+  assert.ok(manySymbols.symbols.every((s) => s.length <= 64));
+});
+
+test('hostile lines of brackets, underscores and spaces are processed in bounded time', async (t) => {
+  const lines = ['['.repeat(16_000), '[['.repeat(8000), '!['.repeat(8000), ' _'.repeat(8000), ' '.repeat(16_000)];
+  const { notes, clock, dir } = await setup(t);
+  for (const line of lines) {
+    await writeFile(join(dir, 'x.md'), note('symbols: [BTCUSDT]', `# T\n${line}`));
+    clock.advance(CACHE_MS);
+    const start = Date.now();
+    await notes.list(BTC);
+    assert.ok(Date.now() - start < 100, `${line.slice(0, 6)}... took ${Date.now() - start} ms`);
+  }
 });

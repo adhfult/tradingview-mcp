@@ -204,7 +204,7 @@ test('app.mjs: the library attribution logo stays off (it injects a <style> elem
 
 test('index.html: a Notes panel with its status line and list, and an "Add note" link that has no href until the page sets one', async () => {
   const html = await read('index.html');
-  for (const id of ['notes-title', 'notes-status', 'notes-list', 'add-note', 'add-note-hint']) assert.match(html, new RegExp(`\\sid="${id}"`), id);
+  for (const id of ['notes-title', 'notes-status', 'notes-list', 'add-note', 'add-note-hint', 'pick-last']) assert.match(html, new RegExp(`\\sid="${id}"`), id);
   assert.match(html, /<section[^>]*aria-labelledby="notes-title"/);
   assert.match(html, /<a\b[^>]*\sid="add-note"[^>]*\shidden|<a\b[^>]*\shidden[^>]*\sid="add-note"/, 'hidden until a candle is picked');
   assert.doesNotMatch(html, /<a\b[^>]*\sid="add-note"[^>]*\shref=/, 'the href is set by app.mjs, after the scheme check');
@@ -224,7 +224,7 @@ test('app.mjs: the one href assignment sits next to the obsidian:// scheme check
 
 test('app.mjs exports the notes helpers', async () => {
   const app = await import('../../dashboard/app.mjs');
-  for (const name of ['noteMarker', 'safeObsidianHref', 'newNoteLink', 'parseDeepLink', 'centerRange']) assert.equal(typeof app[name], 'function', name);
+  for (const name of ['noteMarker', 'safeObsidianHref', 'setObsidianLink', 'newNoteLink', 'parseDeepLink', 'centerRange']) assert.equal(typeof app[name], 'function', name);
 });
 
 test('noteMarker: a blue circle on the last bar at or before the note\'s time, with the first letter of its kind', async () => {
@@ -239,7 +239,7 @@ test('noteMarker: a blue circle on the last bar at or before the note\'s time, w
   assert.equal(at(null), null, 'no time: the panel only');
   assert.equal(at(T, 'opportunity').text, 'O');
   assert.equal(at(T, 'risk').text, 'R');
-  assert.equal(at(T, 'note').text, 'N');
+  assert.equal(at(T, 'note').text, '•', 'a plain note must not look like news');
   assert.equal(noteMarker({ time: T, kind: 'news' }, []), null, 'no candles loaded');
 });
 
@@ -289,9 +289,9 @@ test('newNoteLink: obsidian://new with the vault, a safe file name and a content
 
 test('newNoteLink: characters Obsidian forbids in a file name never reach the name', async () => {
   const { newNoteLink } = await import('../../dashboard/app.mjs');
-  const link = newNoteLink({ vault: 'V', folder: 'markets', symbol: 'A/B:C*D?E"F<G>H|I\\J', timeframe: 'D', time: 1_760_000_000 });
+  const link = newNoteLink({ vault: 'V', folder: 'markets', symbol: 'A/B:C*D?E"F<G>H|I\\J#K^L[M]N', timeframe: 'D', time: 1_760_000_000 });
   const file = new URLSearchParams(link.slice(link.indexOf('?') + 1)).get('file');
-  assert.match(file, /^markets\/[^\\/:*?"<>|]+$/);
+  assert.match(file, /^markets\/[^\\/:*?"<>|#^\[\]]+$/);
   assert.match(file, / D /);
 });
 
@@ -312,4 +312,21 @@ test('centerRange: a window of bars around the last bar at or before t, or null'
   assert.equal(centerRange(bars, T - 1, 80), null, 'before the first bar');
   assert.equal(centerRange(bars, null, 80), null);
   assert.equal(centerRange([], T, 80), null);
+});
+
+test('setObsidianLink sets an href only for an obsidian:// link, and removes any other', async () => {
+  const { setObsidianLink } = await import('../../dashboard/app.mjs');
+  const element = () => {
+    const attrs = new Map();
+    return { attrs, set href(v) { attrs.set('href', v); }, get href() { return attrs.get('href'); }, removeAttribute: (n) => attrs.delete(n) };
+  };
+  const ok = element();
+  assert.equal(setObsidianLink(ok, 'obsidian://open?vault=V&file=f'), true);
+  assert.equal(ok.href, 'obsidian://open?vault=V&file=f');
+  for (const bad of ['javascript:alert(1)', 'https://evil.example/', '', null, undefined, 5]) {
+    const el = element();
+    el.attrs.set('href', 'obsidian://stale');
+    assert.equal(setObsidianLink(el, bad), false, String(bad));
+    assert.equal(el.href, undefined, `no href left for ${String(bad)}`);
+  }
 });

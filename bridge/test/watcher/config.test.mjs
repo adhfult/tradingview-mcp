@@ -542,6 +542,8 @@ test('dashboard.notes: values are validated with their JSON path', () => {
   assert.match(errs({ ...NOTES, vault_folder: '///' }), /dashboard\.notes\.vault_folder/);
   assert.match(errs({ ...NOTES, vault_folder: '../outside' }), /dashboard\.notes\.vault_folder: .*\.\./);
   assert.match(errs({ ...NOTES, vault_folder: 'a\\b' }), /dashboard\.notes\.vault_folder/);
+  for (const folder of ['.', './markets', 'a//b', 'a/./b', 'a/../b']) assert.match(errs({ ...NOTES, vault_folder: folder }), /dashboard\.notes\.vault_folder/, folder);
+  for (const dir of ['/data/m\u0000x', '/data/m\nx', '/data/m\u007fx']) assert.match(errs({ ...NOTES, dir }), /dashboard\.notes\.dir: .*control/, JSON.stringify(dir));
   assert.match(errs({ ...NOTES, extra: 1 }), /dashboard\.notes.*extra/);
   assert.match(errs([]), /dashboard\.notes: must be an object/);
   assert.match(errs('on'), /dashboard\.notes: must be an object/);
