@@ -521,14 +521,15 @@ function parseNotes(input, errors, home) {
   let dir = text('dir');
   if (dir !== null) {
     dir = expandHome(dir, home);
-    if (!isAbsolute(dir)) errors.push(`${path}.dir: must be an absolute path (or start with ~/)`);
+    if (/[\u0000-\u001f\u007f]/.test(dir)) errors.push(`${path}.dir: must not contain control characters`);
+    else if (!isAbsolute(dir)) errors.push(`${path}.dir: must be an absolute path (or start with ~/)`);
   }
   const vault = text('vault');
   let folder = text('vault_folder');
   if (folder !== null) {
     folder = folder.replace(/^\/+|\/+$/g, '');
-    if (folder === '' || folder.includes('\\') || folder.split('/').includes('..')) {
-      errors.push(`${path}.vault_folder: must be a folder inside the vault, with no backslash and no ".." (for example "markets")`);
+    if (folder.includes('\\') || folder.split('/').some((part) => part === '' || part === '.' || part === '..')) {
+      errors.push(`${path}.vault_folder: must be a folder inside the vault, with no backslash, no empty part and no "." or ".." (for example "markets")`);
     }
   }
   return { enabled, dir, vault, vault_folder: folder };

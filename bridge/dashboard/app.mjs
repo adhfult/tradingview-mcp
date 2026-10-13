@@ -81,7 +81,7 @@ function barAtOrBefore(candleTimes, time) {
 export function noteMarker(note, candleTimes) {
   const time = barAtOrBefore(candleTimes, note.time);
   if (time === null) return null;
-  return { time, position: 'aboveBar', shape: 'circle', tone: 'note', text: String(note.kind ?? 'note').charAt(0).toUpperCase() };
+  return { time, position: 'aboveBar', shape: 'circle', tone: 'note', text: note.kind === 'note' || !note.kind ? '•' : String(note.kind).charAt(0).toUpperCase() };
 }
 
 /** Markers for one stream, ascending by time: the chart library throws on unsorted markers. Notes are already this stream's. */
@@ -111,8 +111,19 @@ export function safeObsidianHref(url) {
   return typeof url === 'string' && /^obsidian:\/\/[^\s\u0000-\u001f\u007f]+$/.test(url) ? url : null;
 }
 
-/** A file name Obsidian accepts: its forbidden characters become "-". */
-const fileSafe = (text) => text.replace(/[\\/:*?"<>|]/g, '-');
+/** The only place an href is set: an obsidian:// link passes the scheme check, anything else leaves the element without one. */
+export function setObsidianLink(el, url) {
+  const safe = safeObsidianHref(url);
+  if (safe === null) {
+    el.removeAttribute('href');
+    return false;
+  }
+  el.href = safe;
+  return true;
+}
+
+/** A file name Obsidian accepts: the characters it forbids in a note name become "-". */
+const fileSafe = (text) => text.replace(/[\\/:*?"<>|#^[\]]/g, '-');
 
 /**
  * `obsidian://new` for a note about one candle. The note is created by Obsidian when the user clicks; this page and
@@ -331,22 +342,13 @@ async function start() {
     if (focused !== undefined) list.querySelector(`button[data-stream="${CSS.escape(focused)}"]`)?.focus();
   }
 
-  /** An Obsidian link: set only after the scheme check, else the element stays plain text. */
-  function setObsidianLink(el, url) {
-    const safe = safeObsidianHref(url);
-    if (safe === null) {
-      el.removeAttribute('href');
-      return false;
-    }
-    el.href = safe;
-    return true;
-  }
-
   const KIND_LABEL = { news: 'News', opportunity: 'Opportunity', risk: 'Risk', note: 'Note' };
 
   function fillNote(li, n) {
     addText(li, 'span', KIND_LABEL[n.kind] ?? 'Note', 'tag').dataset.tone = 'note';
-    setObsidianLink(addText(li, 'a', n.title), n.open);
+    const link = addText(li, 'a', n.title);
+    link.dataset.note = n.open; // lets renderNotes put keyboard focus back after a rebuild
+    setObsidianLink(link, n.open);
     if (Number.isFinite(n.time)) {
       const time = addText(li, 'time', timeText(n.time));
       time.dateTime = new Date(n.time * 1000).toISOString();
@@ -367,7 +369,9 @@ async function start() {
     const signature = JSON.stringify(state.notes);
     if (signature === shown.notes) return;
     shown.notes = signature;
+    const focused = document.activeElement?.dataset?.note;
     renderList(list, state.notes.map((n) => (li) => fillNote(li, n)));
+    if (focused !== undefined) list.querySelector(`a[data-note="${CSS.escape(focused)}"]`)?.focus();
   }
 
   /** "Add note here" appears once a candle has been clicked, and only when the notes layer is on. */
@@ -376,11 +380,13 @@ async function start() {
     const link = $('add-note');
     const info = state.notesInfo;
     const stream = state.selected;
+    const latest = $('pick-last');
     hint.hidden = info?.enabled !== true;
     link.hidden = true;
+    latest.hidden = info?.enabled !== true || state.candles.length === 0; // the keyboard way to choose a candle
     if (info?.enabled !== true || stream === null) return;
     if (state.pick === null) {
-      hint.textContent = 'Click a candle to choose where a new note goes.';
+      hint.textContent = 'Click a candle, or use the newest one, to choose where a new note goes.';
       return;
     }
     hint.textContent = `Candle picked: ${timeText(state.pick)} (the note is stamped ${new Date(state.pick * 1000).toISOString().slice(0, 16).replace('T', ' ')} UTC)`;
@@ -418,7 +424,7 @@ async function start() {
   function centreOnLink() {
     const link = parseDeepLink(location.search);
     const stream = state.selected;
-    if (state.centred || link.t === null || chart === null || stream === null) return;
+    if (state.centred || link.t === null || chart === null || stream === null || state.candles.length === 0) return; // not before there are candles
     if (link.symbol !== stream.symbol || link.timeframe !== stream.timeframe) return;
     state.centred = true;
     const range = centerRange(state.candles.map((c) => c.time), link.t, 80);
@@ -436,6 +442,7 @@ async function start() {
       if (id !== state.loadId) return;
       applyNotes(answer);
       renderNotes();
+      renderAddNote();
       drawMarkers();
     } catch (err) {
       console.error('notes reload failed', err);
@@ -450,7 +457,6 @@ async function start() {
     const stream = state.selected;
     state.loadId += 1;
     const id = state.loadId;
-    state.pick = null;
     const chartNote = (text) => (lib === null ? setStatus('chart-status', NO_CHART, 'error') : setStatus('chart-status', text));
     $('chart').setAttribute('aria-busy', String(lib !== null));
     chartNote('Loading candles');
@@ -508,7 +514,10 @@ async function start() {
       const candles = await getJson(`/api/candles?${new URLSearchParams({ symbol: stream.symbol, tf: stream.timeframe })}`);
       if (id !== state.loadId) return;
       state.candles = candles;
+      if (lib !== null && candles.length > 0) setStatus('chart-status', ''); // candles that arrive after "No candles yet"
       drawChart(false);
+      centreOnLink();
+      renderAddNote();
     } catch (err) {
       console.error('candle reload failed', err);
     }
@@ -538,9 +547,11 @@ async function start() {
     state.notes = []; // nor the old stream's notes shown under the new stream's name
     state.notesInfo = null;
     state.notesError = null;
+    state.pick = null; // a candle picked on the old stream must not build a note for the new one
     shown.notes = '';
     renderList($('notes-list'), []);
     setStatus('notes-status', 'Loading notes');
+    renderAddNote();
     const q = new URLSearchParams({ symbol: stream.symbol, tf: stream.timeframe });
     history.replaceState(null, '', `?${q}`);
     renderPicker();
@@ -621,6 +632,11 @@ async function start() {
     if (next !== undefined) select(next);
   });
   $('retry').addEventListener('click', () => { clearError(); loadStreams(); });
+  $('pick-last').addEventListener('click', () => {
+    state.pick = state.candles.at(-1)?.time ?? null;
+    renderAddNote();
+    if (state.pick !== null) $('add-note').focus();
+  });
   matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyTheme);
   setInterval(renderStreams, 60_000); // "Stale" depends on the clock, not on an event
   setInterval(reloadNotes, 60_000);

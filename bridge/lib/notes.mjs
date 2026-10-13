@@ -20,6 +20,10 @@ export const MAX_NOTE_FILES = 500;
 export const MAX_NOTE_BYTES = 16 * 1024;
 export const EXCERPT_CHARS = 280;
 export const CACHE_MS = 30_000;
+const MAX_LINE = 1024; // markdown is stripped with regexes that are quadratic in line length: bound the line, not just the file
+const TITLE_CHARS = 200;
+const MAX_SYMBOLS = 20;
+const MAX_SYMBOL_CHARS = 64;
 
 const KINDS = new Set(['news', 'opportunity', 'risk']);
 const TIME = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?(Z|[+-]\d{2}:\d{2})?)?$/;
@@ -100,9 +104,11 @@ function plain(text) {
 function readBody(body) {
   let title = null;
   const parts = [];
-  for (const line of body.split('\n')) {
+  for (const full of body.split('\n')) {
+    const line = full.slice(0, MAX_LINE);
     if (title === null && /^# +\S/.test(line)) {
       title = plain(line.slice(2));
+      if (title.length > TITLE_CHARS) title = `${title.slice(0, TITLE_CHARS - 1).trimEnd()}…`;
       continue;
     }
     if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) continue; // horizontal rule
@@ -114,7 +120,9 @@ function readBody(body) {
   return { title: title === '' ? null : title, excerpt };
 }
 
-const symbolsOf = (value) => (Array.isArray(value) ? value : [value]).filter((s) => typeof s === 'string').map((s) => s.trim()).filter((s) => s !== '');
+/** The note's symbols as a short list of short strings: a real symbol is far under 64 characters, and the list goes to the page. */
+const symbolsOf = (value) => (Array.isArray(value) ? value : [value])
+  .filter((s) => typeof s === 'string').map((s) => s.trim()).filter((s) => s !== '' && s.length <= MAX_SYMBOL_CHARS).slice(0, MAX_SYMBOLS);
 
 /** `{vault, folder, list(symbol)}`. `list` resolves to the notes for one stream symbol, newest first. */
 export function createNotes({ dir, vault, vaultFolder, clock, logger }) {

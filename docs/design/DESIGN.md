@@ -26,7 +26,7 @@ The chart library only draws four marker shapes (`arrowUp`, `arrowDown`, `circle
 - Alert up: green `arrowUp`, text "↑"
 - Alert down: red `arrowDown`, text "↓"
 - Paper trade: amber `square`, text "P"
-- Note (P3): blue `circle`
+- Note (P3): blue `circle`, text = first letter of the kind (N news, O opportunity, R risk); a plain note shows "•" so it is not mistaken for news
 
 ## Type
 
