@@ -145,3 +145,77 @@ export function centerRange(candleTimes, t, bars) {
   const index = candleTimes.indexOf(time);
   return { from: index - bars / 2, to: index + bars / 2 };
 }
+
+// ---------------------------------------------------------------- alerts tab, detail drawer, tab title, paper equity
+
+const DETAIL_VALUE_ROWS = 20;
+const DETAIL_TEXT = 200;
+const MAX_UNSEEN = 99;
+
+/** Alerts matching every filter that is not empty (equality on rule id, symbol and status). A new array. */
+export function filterAlerts(alerts, { ruleId = '', symbol = '', status = '' }) {
+  return alerts.filter((a) => (ruleId === '' || a.ruleId === ruleId) && (symbol === '' || a.symbol === symbol) && (status === '' || a.status === status));
+}
+
+/** How many alerts each rule fired per UTC day: [{day, ruleId, count}], newest day first. */
+// ponytail: UTC days, because the page does not know the watcher's timezone; add it to /api/health if the split at midnight UTC confuses.
+export function countByRuleDay(alerts) {
+  const counts = new Map();
+  for (const a of alerts) {
+    const key = `${new Date(a.at).toISOString().slice(0, 10)}|${a.ruleId ?? '(no rule)'}`;
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return [...counts].map(([key, count]) => {
+    const bar = key.indexOf('|');
+    return { day: key.slice(0, bar), ruleId: key.slice(bar + 1), count };
+  }).sort((a, b) => (a.day === b.day ? a.ruleId.localeCompare(b.ruleId) : b.day.localeCompare(a.day)));
+}
+
+const detailText = (value) => {
+  const text = value === null || value === undefined ? 'n/a' : Array.isArray(value) ? value.map(String).join(', ') : String(value);
+  return text.slice(0, DETAIL_TEXT);
+};
+
+/** The detail drawer's rows as [label, text] pairs: the fixed fields, then the alert's `values` table (capped; it is data from the rule evaluators). */
+export function alertDetailRows(alert) {
+  const rows = [
+    ['Rule', alert.ruleId ?? '—'],
+    ['Direction', alert.direction ?? alert.level ?? '—'],
+    ['Message', alert.message ?? alert.title ?? '—'],
+    ['Status', alert.status ?? '—'],
+    ['Symbol', alert.symbol === null || alert.symbol === undefined ? '—' : `${alert.symbol} ${formatTimeframe(alert.timeframe)}`],
+    ['Alerted at', new Date(alert.at).toISOString()],
+  ];
+  if (Number.isFinite(alert.barTime)) rows.push(['Bar time', new Date(alert.barTime * 1000).toISOString()]);
+  if (alert.values !== null && typeof alert.values === 'object') {
+    for (const [key, value] of Object.entries(alert.values).slice(0, DETAIL_VALUE_ROWS)) rows.push([key.slice(0, 60), detailText(value)]);
+  }
+  return rows.map(([label, text]) => [label, detailText(text)]);
+}
+
+/** The query string for a link to a stream (and a bar time, when given); parseDeepLink reads it back. */
+export function deepLink(symbol, timeframe, time) {
+  const q = new URLSearchParams({ symbol, tf: timeframe });
+  if (Number.isFinite(time)) q.set('t', String(time));
+  return `?${q}`;
+}
+
+/** "(3) Market watch" while alerts arrived in a hidden tab; the count stops at 99. */
+export function tabTitle(base, unseen) {
+  return unseen > 0 ? `(${unseen > MAX_UNSEEN ? `${MAX_UNSEEN}+` : unseen}) ${base}` : base;
+}
+
+/**
+ * Cumulative paper return from the journal's exit events, compounded in file order: [{time, value}] with value in percent.
+ * Realised exits only, so it can hide a dip inside a trade that recovered before its exit (the known 6b caveat).
+ */
+export function paperEquity(events) {
+  const points = [];
+  let equity = 1;
+  for (const e of events) {
+    if (e.type !== 'exit' || !Number.isFinite(e.return_pct) || !Number.isFinite(e.bar_time)) continue;
+    equity = Math.max(0, equity * (1 + e.return_pct / 100));
+    points.push({ time: e.bar_time, value: Number(((equity - 1) * 100).toFixed(2)) });
+  }
+  return { points, totalPct: points.at(-1)?.value ?? null, trades: points.length };
+}
