@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@mathieuc/tradingview": "4.0.0",
-    "lightweight-charts": "5.2.1"
+    "lightweight-charts": "5.2.1",
+    "playwright-core": "1.64.0"
   }
 }
