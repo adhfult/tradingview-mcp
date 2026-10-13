@@ -11,11 +11,13 @@
 import { errorMessage } from './errors.mjs';
 import { escapeHtml, htmlTruncate, plainText, truncate } from './format.mjs';
 import { isDiscordWebhookUrl, isTelegramToken } from './config.mjs';
+import { deepLink } from './render.mjs';
 
 export const DISCORD_CONTENT_LIMIT = 2000;
 export const DISCORD_TITLE_LIMIT = 256;
 export const DISCORD_DESCRIPTION_LIMIT = 4096;
 export const TELEGRAM_TEXT_LIMIT = 4096;
+export const TELEGRAM_CAPTION_LIMIT = 1024;
 export const REQUEST_TIMEOUT_MS = 10_000;
 const COLORS = Object.freeze({ up: 0x2ecc71, down: 0xe74c3c, info: 0x3498db });
 
@@ -62,6 +64,20 @@ export function telegramPayload(message, chatId) {
   };
 }
 
+const hasImage = (message) => message.image instanceof Uint8Array && message.image.length > 0;
+const pngBlob = (bytes) => new Blob([bytes], { type: 'image/png' });
+
+/** Discord: the same JSON, as `payload_json` beside the PNG when there is an image; plain JSON otherwise. */
+function discordBody(message) {
+  const payload = discordPayload(message);
+  if (!hasImage(message)) return payload;
+  payload.embeds[0].image = { url: 'attachment://chart.png' };
+  const form = new FormData();
+  form.set('payload_json', JSON.stringify(payload));
+  form.set('files[0]', pngBlob(message.image), 'chart.png');
+  return form;
+}
+
 async function postJson({ label, url, body, fetch, redact, timeoutMs, pickRetryAfter, secrets = [] }) {
   // Scrub the URL (and any other secret part of it) out of anything the transport reports.
   // Node's fetch errors may echo it.
@@ -74,10 +90,12 @@ async function postJson({ label, url, body, fetch, redact, timeoutMs, pickRetryA
   };
   let res;
   try {
+    // A FormData body is sent as is: fetch writes the multipart content-type with its boundary itself.
+    const multipart = body instanceof FormData;
     res = await fetch(url, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
+      headers: multipart ? {} : { 'content-type': 'application/json' },
+      body: multipart ? body : JSON.stringify(body),
       signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (err) {
@@ -118,7 +136,7 @@ export function createDiscordNotifier({
       return postJson({
         label: 'Discord',
         url,
-        body: discordPayload(message),
+        body: discordBody(message),
         fetch,
         redact,
         timeoutMs,
@@ -140,13 +158,26 @@ export function createTelegramNotifier({
   if (!isTelegramToken(token)) throw new TypeError('Telegram notifier needs a bot token');
   if (typeof chatId !== 'string' || chatId === '') throw new TypeError('Telegram notifier needs a chat id');
   const url = `https://api.telegram.org/bot${token}/sendMessage`;
+  const photoUrl = `https://api.telegram.org/bot${token}/sendPhoto`;
   return {
     name: 'telegram',
     send(message) {
+      const payload = telegramPayload(message, chatId);
+      // A caption is capped at 1024 characters. Cutting the alert to fit would lose its text, so a longer one goes as a
+      // plain message and the picture is dropped.
+      const photo = hasImage(message) && payload.text.length <= TELEGRAM_CAPTION_LIMIT;
+      let body = payload;
+      if (photo) {
+        body = new FormData();
+        body.set('chat_id', chatId);
+        body.set('parse_mode', 'HTML');
+        body.set('caption', payload.text);
+        body.set('photo', pngBlob(message.image), 'chart.png');
+      }
       return postJson({
         label: 'Telegram',
-        url,
-        body: telegramPayload(message, chatId),
+        url: photo ? photoUrl : url,
+        body,
         fetch,
         redact,
         timeoutMs,
@@ -155,6 +186,32 @@ export function createTelegramNotifier({
       });
     },
   };
+}
+
+/**
+ * Notifiers that attach a chart image to messages that have a `chart` (rule alerts). The image is made once per message,
+ * on first use, and shared by every channel and every retry. When it cannot be made, the alert goes out as text with a
+ * link to the dashboard chart, and the reason is logged. With no renderer the notifiers are returned unchanged.
+ */
+export function withImages(notifiers, { renderer, baseUrl, log = () => {} }) {
+  if (renderer === null || renderer === undefined) return notifiers;
+  const jobs = new WeakMap();
+  const prepare = (message) => {
+    if (!jobs.has(message)) {
+      jobs.set(message, renderer.render(message.chart).then(
+        (image) => ({ ...message, image }),
+        (err) => {
+          log(`chart image skipped (${err?.reason ?? 'error'}): ${errorMessage(err)}`);
+          return { ...message, lines: [...message.lines, `Chart: ${deepLink(baseUrl, message.chart)}`] };
+        },
+      ));
+    }
+    return jobs.get(message);
+  };
+  return notifiers.map((notifier) => ({
+    ...notifier,
+    send: async (message) => notifier.send(message.chart === undefined ? message : await prepare(message)),
+  }));
 }
 
 /** Dry run: prints each alert through `write` instead of sending it. */

@@ -164,6 +164,20 @@ export function plainText(message) {
   return lines.join('\n');
 }
 
+/**
+ * The price a rule hit is about, for the chart image's level line: the crossed level, the broken extreme or the band
+ * that was broken. Rules without one (and composites, whose values are prefixed per member) have none.
+ */
+function chartLevel(hit) {
+  const v = hit.values ?? {};
+  const pick = {
+    price_cross: v.level,
+    new_extreme: hit.direction === 'down' ? v.prior_low : v.prior_high,
+    bollinger_break: hit.direction === 'down' ? v.lower : v.upper,
+  }[hit.type];
+  return typeof pick === 'number' && Number.isFinite(pick) ? pick : null;
+}
+
 function rule(hit, { timezone, now, dataAtMs, closeTimeSec }) {
   const emoji = LEVEL_EMOJI[hit.direction] ?? LEVEL_EMOJI.info;
   const lines = [hit.message];
@@ -184,6 +198,10 @@ function rule(hit, { timezone, now, dataAtMs, closeTimeSec }) {
     lines,
     url: chartUrl(hit.symbol),
     timestamp: ISO(now),
+    // What the optional chart image is drawn from (lib/render.mjs); the notifiers never print it.
+    chart: {
+      symbol: hit.symbol, timeframe: hit.timeframe, barTime: hit.barTime, direction: hit.direction, level: chartLevel(hit), ruleId: hit.ruleId,
+    },
   };
 }
 

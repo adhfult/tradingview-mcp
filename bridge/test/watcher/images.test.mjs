@@ -12,6 +12,8 @@ const BASE = 'http://127.0.0.1:8788';
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 9, 8, 7]);
 const CHART = { symbol: 'BINANCE:BTCUSDT', timeframe: '60', barTime: 1760000000, direction: 'up', level: 100000, ruleId: 'btc100k' };
 
+const ok = () => jsonResponse(200, {});
+
 const message = (overrides = {}) => ({
   level: 'up',
   title: '🟢 BINANCE:BTCUSDT · 1h · price_cross',
@@ -26,7 +28,7 @@ const bytesOf = async (file) => Buffer.from(await file.arrayBuffer());
 // ---------------------------------------------------------------- Discord
 
 test('Discord with an image: multipart with the same JSON as payload_json and the PNG as files[0]', async () => {
-  const { fetch, calls } = createFakeFetch();
+  const { fetch, calls } = createFakeFetch(ok);
   await createDiscordNotifier({ url: HOOK, fetch }).send(message({ image: PNG }));
   assert.equal(calls.length, 1);
   const { init, body } = calls[0];
@@ -45,7 +47,7 @@ test('Discord with an image: multipart with the same JSON as payload_json and th
 
 test('Discord without an image (or with an empty one) is the plain JSON post it always was', async () => {
   for (const image of [undefined, Buffer.alloc(0)]) {
-    const { fetch, calls } = createFakeFetch();
+    const { fetch, calls } = createFakeFetch(ok);
     await createDiscordNotifier({ url: HOOK, fetch }).send(message({ image }));
     assert.equal(calls[0].init.headers['content-type'], 'application/json');
     assert.deepEqual(calls[0].body, discordPayload(message()));
@@ -64,7 +66,7 @@ test('Discord with an image still reports 429 with retry_after, and never leaks 
 // ---------------------------------------------------------------- Telegram
 
 test('Telegram with an image: sendPhoto multipart with chat_id, the HTML caption, parse_mode and the PNG', async () => {
-  const { fetch, calls } = createFakeFetch();
+  const { fetch, calls } = createFakeFetch(ok);
   await createTelegramNotifier({ token: BOT, chatId: '42', fetch }).send(message({ image: PNG }));
   assert.equal(calls.length, 1);
   assert.equal(calls[0].url, `https://api.telegram.org/bot${BOT}/sendPhoto`);
@@ -84,20 +86,20 @@ test('Telegram caption of exactly 1024 characters still goes as a photo; one mor
   const base = telegramPayload(fits, '42').text.length;
   const exact = message({ lines: ['x'.repeat(1 + 1024 - base)] });
   assert.equal(telegramPayload(exact, '42').text.length, 1024);
-  const first = createFakeFetch();
+  const first = createFakeFetch(ok);
   await createTelegramNotifier({ token: BOT, chatId: '42', fetch: first.fetch }).send({ ...exact, image: PNG });
   assert.match(first.calls[0].url, /sendPhoto$/);
 
   const long = message({ lines: ['x'.repeat(2 + 1024 - base)] });
   assert.equal(telegramPayload(long, '42').text.length, 1025);
-  const second = createFakeFetch();
+  const second = createFakeFetch(ok);
   await createTelegramNotifier({ token: BOT, chatId: '42', fetch: second.fetch }).send({ ...long, image: PNG });
   assert.match(second.calls[0].url, /sendMessage$/);
   assert.deepEqual(second.calls[0].body, telegramPayload(long, '42'), 'the full text, uncut');
 });
 
 test('Telegram without an image is unchanged: sendMessage JSON', async () => {
-  const { fetch, calls } = createFakeFetch();
+  const { fetch, calls } = createFakeFetch(ok);
   await createTelegramNotifier({ token: BOT, chatId: '42', fetch }).send(message());
   assert.match(calls[0].url, /sendMessage$/);
   assert.deepEqual(calls[0].body, telegramPayload(message(), '42'));
