@@ -199,6 +199,8 @@ Then open `http://localhost:8788/`. On a loopback bind no token is needed; the s
 
 If you bind to another address, set `WATCHER_DASHBOARD_TOKEN` to a secret of at least 16 characters, or the dashboard refuses to start (the watcher keeps running and logs why). Open the page once as `http://<pi>:8788/?token=<secret>`; the server stores it in a cookie and redirects to the same URL without the token. Known limit: the `tvw_dash` cookie has `Path=/` and no port scope, so on a non-loopback bind any other HTTP service on the same host also receives it, and traffic is plain HTTP. Prefer the tunnel over this.
 
+At most 5 browser tabs can receive live updates at once; a sixth shows "Live updates off, retrying" and tries again every 15 seconds. A stream is tagged "Stale" when its newest bar is older than three bar periods, so a stock stream shows it overnight and at weekends; the page does not know the market calendar.
+
 The page loads only its own files (no inline script or style, no outside requests), so the strict Content-Security-Policy holds. The chart is TradingView Lightweight Charts; its attribution is in the page footer. Without JavaScript the page shows a plain message. If the dashboard port is taken, the watcher logs it and runs without the dashboard.
 
 ### Open question for live testing
