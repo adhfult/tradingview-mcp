@@ -914,3 +914,88 @@ test('a request timeout after the 405 closes the socket without a second respons
   assert.match(text, /^HTTP\/1\.1 405 /);
   assert.equal(text.match(/HTTP\/1\.1 \d+/g).length, 1, text);
 });
+
+// ---------------------------------------------------------------- P4 panels: overview, health, trending, indicators
+
+const STATUS = {
+  nowMs: 100_000, startedAtMs: 40_000, loggedIn: false, healthy: 2, total: 3, disconnects: 1, connectionDrops: 0, queuePending: 2,
+  sentLastHour: 4, maxPerHour: 10, quietNow: true, held: 1, overflow: 3, usOpen: false, nextHoliday: '2026-11-26',
+  trending: { 'crypto|gainers': { 'BINANCE:BTCUSDT': 95_000, 'BINANCE:PEPEUSDT': 99_000 } },
+  cookie: 'SECRET-COOKIE-VALUE',
+};
+
+test('/api/overview gives one card per stream, from the candles in memory', async (t) => {
+  const { get } = await start(t, { getStatus: () => STATUS });
+  const cards = json(await get('/api/overview'));
+  assert.deepEqual(cards.map((c) => `${c.symbol}|${c.timeframe}`), ['BINANCE:BTCUSDT|60', 'BINANCE:BTCUSDT|15', 'NASDAQ:NVDA|D']);
+  assert.equal(cards[0].price, 20);
+  assert.equal(cards[0].spark.length, 10);
+  assert.equal(cards[0].healthy, true);
+  assert.deepEqual(cards[0].lastAlert, { at: 1000, ruleId: 'lv1', direction: 'up', status: 'sent' });
+  assert.equal(cards[1].price, null);
+  assert.equal(cards[2].sessionOpen, false);
+  assert.ok(!JSON.stringify(cards).includes('not served'));
+});
+
+test('/api/health shows the watcher state, and no field that was not listed (a cookie in the status never leaves)', async (t) => {
+  const { get } = await start(t, { getStatus: () => STATUS });
+  const res = await get('/api/health');
+  const health = json(res);
+  assert.equal(health.uptimeSeconds, 60);
+  assert.equal(health.loggedIn, false);
+  assert.deepEqual([health.queuePending, health.sentLastHour, health.maxPerHour, health.held, health.overflow], [2, 4, 10, 1, 3]);
+  assert.equal(health.streams.length, 3);
+  assert.ok(!res.body.includes('SECRET-COOKIE-VALUE'));
+});
+
+test('/api/trending lists the scan memory newest first, and marks a symbol the watcher follows', async (t) => {
+  const { get } = await start(t, { getStatus: () => STATUS });
+  const rows = json(await get('/api/trending'));
+  assert.deepEqual(rows.map((r) => r.symbol), ['BINANCE:PEPEUSDT', 'BINANCE:BTCUSDT']);
+  assert.equal(rows[0].watched, null);
+  assert.deepEqual(rows[1].watched, { symbol: 'BINANCE:BTCUSDT', timeframe: '60' });
+  assert.equal(rows[1].ageSeconds, 5);
+});
+
+test('/api/indicators draws the rules that apply to the stream, from indicators.mjs, and 404s anything else', async (t) => {
+  const rules = [{ id: 'bb', type: 'bollinger_break', period: 5, stddev: 2 }, { id: 'nv', type: 'rsi_cross', symbol: 'NASDAQ:NVDA' }, ...RULES];
+  const { get } = await start(t, { rules });
+  const out = json(await get('/api/indicators?symbol=BINANCE:BTCUSDT&tf=60'));
+  assert.deepEqual(out.map((o) => o.ruleId), ['bb']);
+  assert.equal(out[0].upper.length, 6, '10 candles, period 5');
+  assert.deepEqual(json(await get('/api/indicators?symbol=NASDAQ:NVDA&tf=D')).map((o) => o.ruleId), ['nv']);
+  assert.deepEqual(json(await get('/api/indicators?symbol=NASDAQ:NVDA&tf=D'))[0].series, [], 'no candles yet: empty, not an error');
+  for (const query of ['', 'symbol=BINANCE:BTCUSDT', 'tf=60', 'symbol=NOPE&tf=60', 'symbol=BINANCE:BTCUSDT&tf=1']) {
+    assert.equal((await get(`/api/indicators?${query}`)).status, 404, query);
+  }
+});
+
+test('the panel endpoints work with no getStatus at all (nulls, not errors)', async (t) => {
+  const { get } = await start(t);
+  assert.equal(json(await get('/api/health')).loggedIn, null);
+  assert.deepEqual(json(await get('/api/trending')), []);
+  assert.equal(json(await get('/api/overview'))[2].sessionOpen, null);
+});
+
+test('the panel endpoints follow the same rules as every route: 401 without the token, 403 for a foreign Host, 405 for POST, headers on all', async (t) => {
+  const secured = await start(t, { host: '0.0.0.0', token: TOKEN, getStatus: () => STATUS });
+  const loopback = await start(t, { getStatus: () => STATUS });
+  const paths = ['/api/overview', '/api/health', '/api/trending', '/api/indicators?symbol=BINANCE:BTCUSDT&tf=60'];
+  for (const path of paths) {
+    assert.equal((await secured.get(path)).status, 401, path);
+    assert.equal((await secured.get(path, { headers: { authorization: `Bearer ${TOKEN}` } })).status, 200, path);
+    assert.equal((await loopback.get(path, { headers: { host: 'evil.example' } })).status, 403, path);
+    assert.equal((await loopback.get(path, { method: 'POST' })).status, 405, path);
+  }
+});
+
+test('a status function that throws is a generic 500 with the headers, and the server keeps serving', async (t) => {
+  const { get, logs } = await start(t, { getStatus: () => { throw new Error('status exploded'); } });
+  for (const path of ['/api/health', '/api/trending', '/api/overview']) {
+    const res = await get(path);
+    assert.equal(res.status, 500, path);
+    assert.ok(!res.body.includes('exploded'));
+  }
+  assert.ok(logs.some((l) => l.includes('status exploded')));
+  assert.equal((await get('/api/streams')).status, 200);
+});
