@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { alertDetailRows, countByRuleDay, deepLink, filterAlerts, formatDuration, formatPct, newNoteLink, overlayLabel, paperEquity, parseDeepLink, sparkPoints, tabTitle } from '../../dashboard/pure.mjs';
+import { alertDetailRows, countByRuleDay, deepLink, filterAlerts, formatDuration, formatPct, newNoteLink, overlayLabel, paperEquity, parseDeepLink, previewSummary, ghostMarkers, sparkPoints, tabTitle } from '../../dashboard/pure.mjs';
 
 const DAY = 86_400_000;
 const D0 = Date.UTC(2026, 9, 12, 10, 0, 0);
@@ -123,7 +123,7 @@ test('index.html: the ids the P4 modules use are there, once each', async () => 
   assert.equal(new Set(ids).size, ids.length, 'no duplicate id');
   for (const id of ['tabs', 'save-png', 'alerts-all-status', 'alerts-all-list', 'filter-rule', 'filter-symbol', 'filter-status', 'alert-counts',
     'alert-detail', 'detail-title', 'detail-rows', 'detail-status', 'copy-link', 'detail-note', 'detail-close', 'paper-status', 'paper-list',
-    'overview-status', 'overview-list', 'trending-status', 'trending-list', 'health-status', 'health-summary', 'health-streams', 'market-badge', 'login-badge', 'overlay-controls']) {
+    'overview-status', 'overview-list', 'trending-status', 'trending-list', 'health-status', 'health-summary', 'health-streams', 'market-badge', 'login-badge', 'overlay-controls', 'preview-controls', 'preview-rule', 'preview-status']) {
     assert.ok(idsOf(text).has(id), id);
   }
 });
@@ -192,4 +192,35 @@ test('overlayLabel: says what is drawn and which rule it belongs to', () => {
   assert.equal(overlayLabel({ ruleId: 'rsi14', type: 'rsi_cross', period: 14, levels: [30, 70] }), 'RSI 14, levels 30 and 70 (rule rsi14)');
   assert.equal(overlayLabel({ ruleId: 'bb', type: 'bollinger_break', period: 20, stddev: 2 }), 'Bollinger bands 20, 2 deviations (rule bb)');
   assert.equal(overlayLabel({ ruleId: 'x', type: 'rsi_cross', period: 2, levels: [50] }), 'RSI 2, levels 50 (rule x)');
+});
+
+// ---------------------------------------------------------------- rule noise preview (B6)
+
+test('ghostMarkers: a small grey arrow on each hit bar, up below and down above, in time order, only on loaded bars', () => {
+  const bars = [100, 200, 300];
+  const markers = ghostMarkers([{ time: 300, direction: 'down' }, { time: 100, direction: 'up' }, { time: 50, direction: 'up' }, { time: 200, direction: 'sideways' }], bars);
+  assert.deepEqual(markers, [
+    { time: 100, position: 'belowBar', shape: 'arrowUp', tone: 'ghost', size: 0.6, text: '' },
+    { time: 300, position: 'aboveBar', shape: 'arrowDown', tone: 'ghost', size: 0.6, text: '' },
+  ]);
+});
+
+test('ghostMarkers: no hits, no markers', () => {
+  assert.deepEqual(ghostMarkers([], [1, 2]), []);
+});
+
+test('previewSummary: counts the signals, names the rule and the bars, and says what it is not', () => {
+  const text = previewSummary({ ruleId: 'rsi14', barsChecked: 300, hits: [{}, {}, {}] });
+  assert.match(text, /3 signals/);
+  assert.match(text, /rule rsi14/);
+  assert.match(text, /last 300 closed bars/);
+  assert.match(text, /not a prediction/i);
+  assert.match(text, /cooldown/i, 'says the cooldown, caps and quiet hours are not applied');
+  assert.doesNotMatch(text, /profit|money|win|gain|earn/i, 'never talks about making money');
+});
+
+test('previewSummary: one signal, no signals and no bars read correctly', () => {
+  assert.match(previewSummary({ ruleId: 'r', barsChecked: 40, hits: [{}] }), /^1 signal from rule r in the last 40 closed bars/);
+  assert.match(previewSummary({ ruleId: 'r', barsChecked: 40, hits: [] }), /^No signals from rule r in the last 40 closed bars/);
+  assert.match(previewSummary({ ruleId: 'r', barsChecked: 0, hits: [] }), /^No closed bars to look at yet/);
 });
