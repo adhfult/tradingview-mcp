@@ -1,0 +1,96 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { alertDetailRows, countByRuleDay, deepLink, filterAlerts, paperEquity, parseDeepLink, tabTitle } from '../../dashboard/pure.mjs';
+
+const DAY = 86_400_000;
+const D0 = Date.UTC(2026, 9, 12, 10, 0, 0);
+const alert = (extra) => ({
+  at: D0, kind: 'rule', level: 'up', title: 't', status: 'sent', ruleId: 'r1', symbol: 'BINANCE:BTCUSDT', timeframe: '60', barTime: 1_760_000_000, direction: 'up', message: 'm', values: null, ...extra,
+});
+
+// ---------------------------------------------------------------- B8: alerts tab
+
+test('filterAlerts: empty filters keep everything; each filter narrows on equality; the input is not changed', () => {
+  const list = [alert({}), alert({ ruleId: 'r2' }), alert({ symbol: 'NASDAQ:NVDA', status: 'held' }), alert({ ruleId: null, symbol: null, kind: 'health' })];
+  const copy = JSON.stringify(list);
+  assert.equal(filterAlerts(list, { ruleId: '', symbol: '', status: '' }).length, 4);
+  assert.deepEqual(filterAlerts(list, { ruleId: 'r2', symbol: '', status: '' }).map((a) => a.ruleId), ['r2']);
+  assert.equal(filterAlerts(list, { ruleId: '', symbol: 'NASDAQ:NVDA', status: '' }).length, 1);
+  assert.equal(filterAlerts(list, { ruleId: '', symbol: '', status: 'held' }).length, 1);
+  assert.equal(filterAlerts(list, { ruleId: 'r1', symbol: 'BINANCE:BTCUSDT', status: 'sent' }).length, 1);
+  assert.equal(filterAlerts(list, { ruleId: 'nope', symbol: '', status: '' }).length, 0);
+  assert.equal(JSON.stringify(list), copy);
+});
+
+test('countByRuleDay: one row per rule per UTC day, newest day first, alerts with no rule counted under "(no rule)"', () => {
+  const rows = countByRuleDay([
+    alert({ at: D0 }), alert({ at: D0 + 1000 }), alert({ at: D0 + DAY, ruleId: 'r2' }), alert({ at: D0, ruleId: null }), alert({ at: D0 - DAY }),
+  ]);
+  assert.deepEqual(rows, [
+    { day: '2026-10-13', ruleId: 'r2', count: 1 },
+    { day: '2026-10-12', ruleId: '(no rule)', count: 1 },
+    { day: '2026-10-12', ruleId: 'r1', count: 2 },
+    { day: '2026-10-11', ruleId: 'r1', count: 1 },
+  ]);
+  assert.deepEqual(countByRuleDay([]), []);
+});
+
+// ---------------------------------------------------------------- B4: alert detail
+
+test('alertDetailRows: label and text pairs only, with the values table flattened', () => {
+  const rows = alertDetailRows(alert({ values: { rsi: 71.2, levels: [70, 80], note: null }, message: 'RSI rose through 70' }));
+  const as = Object.fromEntries(rows);
+  assert.equal(as.Rule, 'r1');
+  assert.equal(as.Direction, 'up');
+  assert.equal(as.Message, 'RSI rose through 70');
+  assert.equal(as.Status, 'sent');
+  assert.equal(as.Symbol, 'BINANCE:BTCUSDT 1h');
+  assert.equal(as['rsi'], '71.2');
+  assert.equal(as['levels'], '70, 80');
+  assert.equal(as['note'], 'n/a');
+  assert.ok(rows.every((r) => r.length === 2 && typeof r[0] === 'string' && typeof r[1] === 'string'));
+});
+
+test('alertDetailRows: an alert recorded before meta existed still gives rows, and a hostile values table is capped', () => {
+  const old = alertDetailRows({ at: D0, kind: 'health', level: 'down', title: 'stream down', status: 'sent', ruleId: null, symbol: null, timeframe: null, barTime: null, direction: null, message: null, values: null });
+  assert.ok(old.length >= 2);
+  assert.equal(Object.fromEntries(old).Rule, '—');
+  const many = Object.fromEntries(Array.from({ length: 100 }, (_, i) => [`k${i}`, 'x'.repeat(5000)]));
+  const rows = alertDetailRows(alert({ values: many }));
+  assert.ok(rows.length <= 30, `${rows.length} rows`);
+  assert.ok(rows.every(([, v]) => v.length <= 200));
+});
+
+test('deepLink builds the query the page reads back with parseDeepLink', () => {
+  const q = deepLink('BINANCE:BTCUSDT', '60', 1_760_000_000);
+  assert.deepEqual(parseDeepLink(q), { symbol: 'BINANCE:BTCUSDT', timeframe: '60', t: 1_760_000_000 });
+  assert.deepEqual(parseDeepLink(deepLink('A&B=C#D', 'D')), { symbol: 'A&B=C#D', timeframe: 'D', t: null });
+  assert.ok(q.startsWith('?'));
+});
+
+// ---------------------------------------------------------------- B10: tab title
+
+test('tabTitle: a count in brackets when alerts arrived while hidden, the plain name otherwise', () => {
+  assert.equal(tabTitle('Market watch', 0), 'Market watch');
+  assert.equal(tabTitle('Market watch', 2), '(2) Market watch');
+  assert.equal(tabTitle('Market watch', 150), '(99+) Market watch');
+  assert.equal(tabTitle('Market watch', -1), 'Market watch');
+});
+
+// ---------------------------------------------------------------- B11: realised paper equity
+
+const exit = (return_pct, bar_time) => ({ type: 'exit', return_pct, bar_time, price: 1, ts: null });
+
+test('paperEquity: compounds the realised exits in order and says how many trades', () => {
+  const out = paperEquity([{ type: 'start', bar_time: 1, return_pct: null }, { type: 'entry', bar_time: 2, return_pct: null }, exit(10, 3), exit(-10, 5), { type: 'summary', return_pct: 99, bar_time: 9 }]);
+  assert.equal(out.trades, 2);
+  assert.deepEqual(out.points, [{ time: 3, value: 10 }, { time: 5, value: -1 }]);
+  assert.equal(out.totalPct, -1);
+});
+
+test('paperEquity: no exits gives no points and a null total; unusable exits are skipped; a loss of 100% or more stops at -100', () => {
+  assert.deepEqual(paperEquity([]), { points: [], totalPct: null, trades: 0 });
+  assert.equal(paperEquity([exit(null, 3), exit(Number.NaN, 4), exit(5, null)]).trades, 0);
+  const wiped = paperEquity([exit(-150, 3), exit(50, 4)]);
+  assert.deepEqual(wiped.points.map((p) => p.value), [-100, -100]);
+});
