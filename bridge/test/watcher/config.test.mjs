@@ -9,6 +9,7 @@ import {
 const here = dirname(fileURLToPath(import.meta.url));
 const EXAMPLE = join(here, '..', '..', 'watcher.config.example.json');
 const HOME = '/home/tester';
+const NOTES_OFF = { enabled: false, dir: null, vault: null, vault_folder: null };
 
 function base(overrides = {}) {
   return {
@@ -472,18 +473,21 @@ test('a composite takes the generic rule keys: max_per_day, expires, calendar, s
 test('dashboard defaults: on, loopback only, port 8788', () => {
   const { config, errors } = parseConfig(base(), { home: HOME });
   assert.deepEqual(errors, []);
-  assert.deepEqual(config.dashboard, { enabled: true, host: '127.0.0.1', port: 8788 });
+  assert.deepEqual(config.dashboard, { enabled: true, host: '127.0.0.1', port: 8788, notes: NOTES_OFF });
 });
 
-test('the example config sets the dashboard block explicitly', async () => {
+test('the example config sets the dashboard block explicitly, with the notes layer off', async () => {
   const { config, errors } = await loadConfig(EXAMPLE, { home: HOME });
   assert.deepEqual(errors, []);
-  assert.deepEqual(config.dashboard, { enabled: true, host: '127.0.0.1', port: 8788 });
+  assert.deepEqual(config.dashboard, {
+    enabled: true, host: '127.0.0.1', port: 8788,
+    notes: { enabled: false, dir: join(HOME, 'notes/markets'), vault: 'ObsidianVault', vault_folder: 'markets' },
+  });
 });
 
 test('dashboard values are validated with their JSON path', () => {
   const run = (dashboard) => parseConfig(base({ dashboard }), { home: HOME });
-  assert.deepEqual(run({ enabled: false, host: '::1', port: 9000 }).config.dashboard, { enabled: false, host: '::1', port: 9000 });
+  assert.deepEqual(run({ enabled: false, host: '::1', port: 9000 }).config.dashboard, { enabled: false, host: '::1', port: 9000, notes: NOTES_OFF });
   assert.match(run({ port: 80 }).errors.join('\n'), /dashboard\.port: must be at least 1024/);
   assert.match(run({ port: 70000 }).errors.join('\n'), /dashboard\.port: must be at most 65535/);
   assert.match(run({ port: 8788.5 }).errors.join('\n'), /dashboard\.port/);
@@ -503,4 +507,42 @@ test('the dashboard port must differ from the local API port', () => {
 test('the port clash is caught even when the dashboard block is left out (the default 8788 applies)', () => {
   const { errors } = parseConfig(base({ local_api: { port: 8788 } }), { home: HOME });
   assert.match(errors.join('\n'), /dashboard\.port: must differ from local_api\.port \(8788\)/);
+});
+
+// ---------------------------------------------------------------- dashboard.notes
+
+const NOTES = { enabled: true, dir: '/data/vault/markets', vault: 'My Vault', vault_folder: 'markets' };
+const runNotes = (notes) => parseConfig(base({ dashboard: { notes } }), { home: HOME });
+
+test('dashboard.notes: a full block is kept, ~ in dir is expanded, slashes around vault_folder are trimmed', () => {
+  assert.deepEqual(runNotes(NOTES).config.dashboard.notes, NOTES);
+  assert.deepEqual(runNotes(NOTES).errors, []);
+  assert.equal(runNotes({ ...NOTES, dir: '~/vault/markets' }).config.dashboard.notes.dir, join(HOME, 'vault/markets'));
+  assert.equal(runNotes({ ...NOTES, vault_folder: '/Markets/Watch/' }).config.dashboard.notes.vault_folder, 'Markets/Watch');
+});
+
+test('dashboard.notes: off needs no paths; on needs dir, vault and vault_folder', () => {
+  assert.deepEqual(runNotes({ enabled: false }).errors, []);
+  assert.deepEqual(runNotes({ enabled: false }).config.dashboard.notes, NOTES_OFF);
+  assert.deepEqual(runNotes({}).config.dashboard.notes, NOTES_OFF);
+  for (const key of ['dir', 'vault', 'vault_folder']) {
+    const { [key]: _omitted, ...rest } = NOTES;
+    assert.match(runNotes(rest).errors.join('\n'), new RegExp(`dashboard\\.notes\\.${key}: is required when notes are enabled`), key);
+  }
+});
+
+test('dashboard.notes: values are validated with their JSON path', () => {
+  const errs = (notes) => runNotes(notes).errors.join('\n');
+  assert.match(errs({ ...NOTES, enabled: 'yes' }), /dashboard\.notes\.enabled/);
+  assert.match(errs({ ...NOTES, dir: '' }), /dashboard\.notes\.dir: must be a non-empty string/);
+  assert.match(errs({ ...NOTES, dir: 7 }), /dashboard\.notes\.dir: must be a non-empty string/);
+  assert.match(errs({ ...NOTES, dir: 'relative/markets' }), /dashboard\.notes\.dir: must be an absolute path/);
+  assert.match(errs({ ...NOTES, vault: '' }), /dashboard\.notes\.vault: must be a non-empty string/);
+  assert.match(errs({ ...NOTES, vault_folder: '' }), /dashboard\.notes\.vault_folder/);
+  assert.match(errs({ ...NOTES, vault_folder: '///' }), /dashboard\.notes\.vault_folder/);
+  assert.match(errs({ ...NOTES, vault_folder: '../outside' }), /dashboard\.notes\.vault_folder: .*\.\./);
+  assert.match(errs({ ...NOTES, vault_folder: 'a\\b' }), /dashboard\.notes\.vault_folder/);
+  assert.match(errs({ ...NOTES, extra: 1 }), /dashboard\.notes.*extra/);
+  assert.match(errs([]), /dashboard\.notes: must be an object/);
+  assert.match(errs('on'), /dashboard\.notes: must be an object/);
 });
