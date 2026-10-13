@@ -548,3 +548,37 @@ test('dashboard.notes: values are validated with their JSON path', () => {
   assert.match(errs([]), /dashboard\.notes: must be an object/);
   assert.match(errs('on'), /dashboard\.notes: must be an object/);
 });
+
+const IMAGES_OFF = { enabled: false, chromium_path: '', max_per_hour: 6, timeout_ms: 10000 };
+
+test('images default to off, with the documented limits', () => {
+  const { config, errors } = parseConfig(base(), { home: HOME });
+  assert.deepEqual(errors, []);
+  assert.deepEqual(config.images, IMAGES_OFF);
+});
+
+test('the example config has an images block that is off', async () => {
+  const { config, errors } = await loadConfig(EXAMPLE, { home: HOME });
+  assert.deepEqual(errors, []);
+  assert.deepEqual(config.images, IMAGES_OFF);
+});
+
+test('images values are validated with their JSON path', () => {
+  const run = (images) => parseConfig(base({ images }), { home: HOME });
+  assert.deepEqual(
+    run({ enabled: true, chromium_path: '/usr/bin/chromium', max_per_hour: 3, timeout_ms: 5000 }).config.images,
+    { enabled: true, chromium_path: '/usr/bin/chromium', max_per_hour: 3, timeout_ms: 5000 },
+  );
+  assert.equal(run({ chromium_path: '~/bin/chrome' }).config.images.chromium_path, join(HOME, 'bin/chrome'));
+  assert.match(run({ enabled: 'yes' }).errors.join('\n'), /images\.enabled/);
+  assert.match(run({ chromium_path: 7 }).errors.join('\n'), /images\.chromium_path: must be a string/);
+  assert.match(run({ chromium_path: 'chromium' }).errors.join('\n'), /images\.chromium_path: must be an absolute path/);
+  assert.match(run({ chromium_path: '/a\nb' }).errors.join('\n'), /images\.chromium_path: must not contain control characters/);
+  assert.match(run({ max_per_hour: 0 }).errors.join('\n'), /images\.max_per_hour: must be at least 1/);
+  assert.match(run({ max_per_hour: 1.5 }).errors.join('\n'), /images\.max_per_hour/);
+  assert.match(run({ max_per_hour: 61 }).errors.join('\n'), /images\.max_per_hour: must be at most 60/);
+  assert.match(run({ timeout_ms: 500 }).errors.join('\n'), /images\.timeout_ms: must be at least 1000/);
+  assert.match(run({ timeout_ms: 60001 }).errors.join('\n'), /images\.timeout_ms: must be at most 60000/);
+  assert.match(run({ extra: 1 }).errors.join('\n'), /images.*extra/);
+  assert.match(run([]).errors.join('\n'), /images: must be an object/);
+});
