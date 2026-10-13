@@ -187,3 +187,24 @@ test('a failing log sink never throws into the caller', () => {
   const log = createLogger({ write: () => { throw new Error('closed pipe'); }, now: () => 0 });
   assert.doesNotThrow(() => log.info('still fine'));
 });
+
+test('a rule alert carries the facts the chart image needs, and the rule level when the rule has one', () => {
+  const run = (type, direction, values) => renderRuleAlert({
+    ruleId: 'r1', type, symbol: 'X:Y', timeframe: '60', barTime: 1_700_000_000, direction, values, message: 'm',
+  }, { timezone: 'UTC', now: Date.UTC(2026, 0, 1) }).chart;
+  const base = { symbol: 'X:Y', timeframe: '60', barTime: 1_700_000_000, ruleId: 'r1' };
+  assert.deepEqual(run('price_cross', 'up', { close: 101, prev_close: 99, level: 100 }), { ...base, direction: 'up', level: 100 });
+  assert.equal(run('new_extreme', 'up', { close: 5, prior_high: 4.5 }).level, 4.5);
+  assert.equal(run('new_extreme', 'down', { close: 3, prior_low: 3.5 }).level, 3.5);
+  assert.equal(run('bollinger_break', 'up', { close: 9, upper: 8, middle: 7, lower: 6 }).level, 8);
+  assert.equal(run('bollinger_break', 'down', { close: 5, upper: 8, middle: 7, lower: 6 }).level, 6);
+  for (const [type, values] of [['pct_move', { pct: 3 }], ['rsi_cross', { rsi: 71 }], ['volume_spike', { volume: 5 }], ['all_of', { 'a.level': 3 }]]) {
+    assert.equal(run(type, 'up', values).level, null, `${type} has no price level to draw`);
+  }
+  assert.equal(run('price_cross', 'up', { level: 'abc' }).level, null, 'a level that is not a number is dropped');
+});
+
+test('only rule alerts have a chart: trending, health and notify messages do not', () => {
+  assert.equal('chart' in renderHeartbeat({ uptimeSeconds: 5, healthy: 1, total: 1, alerts24h: 0, credentials: false, now: Date.UTC(2026, 0, 1), timezone: 'UTC' }), false);
+  assert.equal('chart' in renderTest(Date.UTC(2026, 0, 1)), false);
+});
