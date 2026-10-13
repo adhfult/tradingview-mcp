@@ -28,7 +28,7 @@
 | 7a P1: dashboard server | **done** | 36a9ddc .. b66a2f5 | bridge 519 pass | Read-only server with auth, headers, SSE, journals. Reviewed (Fable + Codex Sol); FIFO-safe bounded reads, no double response. Details in `phase-7a-p1.md` |
 | 7a P2: dashboard page | **done** | 7639fb6 .. 35774ec | bridge 531 pass | `index.html`, `style.css`, `app.mjs`, design tokens; CSP-clean (chart logo off, footer notice). Details in `phase-7a-p2.md` |
 | 7a P3: Obsidian notes layer | **done** | 733ac46 .. a88a29d | bridge 594 pass | `frontmatter.mjs`, `notes.mjs`, `/api/notes`, `dashboard.notes` (off by default), notes panel, markers, "Add note here", deep link. Fable + Codex Sol found about 20 issues (quadratic regexes, uncapped title, YAML escapes, keyboard note creation, stale add-note link), all fixed with tests first. Details in `phase-7a-p3.md` |
-| 7a P4: extra panels | not started | – | – | Design section 9 (B1-B11); B6 last, as its own commit |
+| 7a P4: extra panels | **in progress** | b38420b .. 226394e | bridge 642 pass | B1-B5 and B7-B11 done (tabs, overview, health, opportunities, alerts tab, drawer, overlays, PNG, badges); B6 rule noise preview and the wrap-up review still to do. Plan `docs/plans/phase-7a-p4.md`, handoff `HANDOFF.md` |
 | 7b: alert images | not started | – | – | – |
 | 7c: PyneCore | not started | – | – | – |
 
