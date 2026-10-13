@@ -1,0 +1,5 @@
+/* The alert image: one fixed-size frame, so every picture has the same shape. */
+body.render { margin: 0; background: var(--surface); }
+#frame { width: 960px; height: 540px; display: flex; flex-direction: column; background: var(--surface); }
+#frame #chart { flex: 1; min-height: 0; }
+#credit { margin: 0; padding: 2px var(--s2); font-size: 11px; color: var(--muted); }

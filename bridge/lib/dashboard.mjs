@@ -76,12 +76,15 @@ export function defaultAssets() {
     '/assets/overview-view.mjs': file('../dashboard/overview-view.mjs'),
     '/assets/status-view.mjs': file('../dashboard/status-view.mjs'),
     '/assets/style.css': file('../dashboard/style.css'),
+    '/render': file('../dashboard/render.html'),
+    '/assets/render-page.mjs': file('../dashboard/render-page.mjs'),
+    '/assets/render.css': file('../dashboard/render.css'),
     '/assets/lightweight-charts.mjs': file('../node_modules/lightweight-charts/dist/lightweight-charts.standalone.production.mjs'),
   };
 }
 
 const assetType = (urlPath) => {
-  if (urlPath === '/') return 'text/html; charset=utf-8';
+  if (urlPath === '/' || urlPath === '/render') return 'text/html; charset=utf-8';
   return urlPath.endsWith('.css') ? 'text/css; charset=utf-8' : 'text/javascript; charset=utf-8';
 };
 

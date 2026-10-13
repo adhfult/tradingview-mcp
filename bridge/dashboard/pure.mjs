@@ -148,6 +148,36 @@ export function centerRange(candleTimes, t, bars) {
   return { from: index - bars / 2, to: index + bars / 2 };
 }
 
+// ---------------------------------------------------------------- the image page (/render)
+
+export const RENDER_BARS = 120;
+const RENDER_NUMBER = /^-?\d{1,15}(\.\d{1,15})?(e-?\d{1,3})?$/;
+
+/** The query the alert-image renderer opens. Every value is checked: the page draws only what passes. */
+export function parseRenderQuery(search) {
+  const q = new URLSearchParams(search);
+  const level = q.get('level');
+  const direction = q.get('dir');
+  const rule = q.get('rule');
+  return {
+    symbol: q.get('symbol'),
+    timeframe: q.get('tf'),
+    t: parseDeepLink(search).t,
+    direction: direction === 'up' || direction === 'down' ? direction : null,
+    level: level !== null && RENDER_NUMBER.test(level) && Number.isFinite(Number(level)) ? Number(level) : null,
+    rule: rule === null ? null : rule.slice(0, 60),
+  };
+}
+
+/** What the image shows: the last RENDER_BARS candles, an arrow on the alert's bar if it is still in view, and the rule's level. */
+export function renderPlan(candles, query) {
+  const shown = candles.slice(-RENDER_BARS);
+  const time = barAtOrBefore(shown.map((c) => c.time), query.t);
+  const marker = time === null ? null : alertMarker({ barTime: time, direction: query.direction });
+  const level = query.level === null ? null : { price: query.level, title: query.rule ?? '' };
+  return { candles: shown, marker, level };
+}
+
 // ---------------------------------------------------------------- alerts tab, detail drawer, tab title, paper equity
 
 const DETAIL_VALUE_ROWS = 20;
