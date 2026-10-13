@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { healthView, indicatorsView, overviewView, trendingView } from '../../lib/dashboard-views.mjs';
+import { healthView, indicatorsView, overviewView, previewView, previewableRules, trendingView } from '../../lib/dashboard-views.mjs';
 import { bollinger, rsi } from '../../lib/indicators.mjs';
 
 const T0 = 1_760_000_000;
@@ -172,4 +172,65 @@ test('indicatorsView: too few candles gives empty series, not an error', () => {
   assert.equal(out.length, 2);
   assert.deepEqual(out[0].series, []);
   assert.deepEqual(out[1].upper, []);
+});
+
+// ---------------------------------------------------------------- rule preview (B6)
+
+// Closes alternate 104 / 106 around a level of 105: every closed bar after the first is a cross, up on odd
+// indexes and down on even ones. The last candle is the forming bar and must never be judged.
+const FLIP = candles(20, (i) => (i % 2 === 1 ? 106 : 104));
+const CROSS = { id: 'x105', type: 'price_cross', level: 105 };
+const preview = (over = {}) => previewView({ rule: CROSS, stream: BTC, candles: FLIP, nowMs: now, timezone: 'UTC', inSession: () => true, ...over });
+
+test('previewView: the hits are the real evaluator run on each closed bar, and the forming bar is left out', () => {
+  const view = preview();
+  assert.equal(view.ruleId, 'x105');
+  assert.equal(view.barsChecked, 19, '20 candles, the last is still forming');
+  assert.equal(view.hits.length, 18, 'a cross on every closed bar but the first');
+  assert.deepEqual(view.hits[0], { time: T0 + 3600, direction: 'up', message: 'Crossed 105 upward' });
+  assert.equal(view.hits[1].direction, 'down');
+  assert.equal(view.hits.at(-1).time, T0 + 18 * 3600);
+  assert.ok(!view.hits.some((h) => h.time === T0 + 19 * 3600), 'the forming bar would have crossed up; it is not a hit');
+});
+
+test('previewView: only the last `bars` closed bars are looked at', () => {
+  const view = preview({ bars: 5 });
+  assert.equal(view.barsChecked, 5);
+  assert.deepEqual(view.hits.map((h) => h.time), [14, 15, 16, 17, 18].map((i) => T0 + i * 3600));
+});
+
+test('previewView: the gates are the watcher\'s, applied per bar (calendar by each bar\'s own open time)', () => {
+  const session = { ...CROSS, calendar: 'us_session' };
+  const view = preview({ rule: session, inSession: (ms) => (ms / 1000 - T0) / 3600 >= 10 });
+  assert.deepEqual(view.hits.map((h) => h.time), [10, 11, 12, 13, 14, 15, 16, 17, 18].map((i) => T0 + i * 3600));
+  assert.deepEqual(preview({ rule: { ...CROSS, expires: '2020-01-01' } }).hits, [], 'an expired rule cannot hit');
+});
+
+test('previewView: composites run through the same evaluator, with the member gates', () => {
+  const both = { id: 'both', type: 'all_of', members: [CROSS, { id: 'dead', type: 'price_cross', level: 105, expires: '2020-01-01' }] };
+  assert.deepEqual(preview({ rule: both }).hits, [], 'a dead member blocks an all_of');
+  const either = { id: 'either', type: 'any_of', members: both.members };
+  assert.equal(preview({ rule: either }).hits.length, 18);
+});
+
+test('previewView: too few candles is an empty answer, not an error', () => {
+  assert.deepEqual(preview({ candles: [] }), { ruleId: 'x105', symbol: BTC.symbol, timeframe: BTC.timeframe, barsChecked: 0, hits: [] });
+  assert.equal(preview({ candles: FLIP.slice(0, 1) }).barsChecked, 0, 'one candle is only the forming bar');
+});
+
+test('previewView does not change the candles it is given', () => {
+  const copy = JSON.stringify(FLIP);
+  preview();
+  assert.equal(JSON.stringify(FLIP), copy);
+});
+
+test('previewableRules: the live top-level rules that apply to the stream, ids and types only', () => {
+  const rules = [
+    { id: 'a', type: 'price_cross', level: 1, secret: 'no' },
+    { id: 'btc', type: 'pct_move', symbol: BTC.symbol },
+    { id: 'nv', type: 'pct_move', symbol: NVDA.symbol },
+    { id: 'quarter', type: 'pct_move', timeframes: ['15'] },
+    { id: 'old', type: 'pct_move', expires: '2020-01-01' },
+  ];
+  assert.deepEqual(previewableRules({ rules, stream: BTC, nowMs: now, timezone: 'UTC' }), [{ id: 'a', type: 'price_cross' }, { id: 'btc', type: 'pct_move' }]);
 });

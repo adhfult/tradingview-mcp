@@ -1002,3 +1002,89 @@ test('a status function that throws is a generic 500 with the headers, and the s
   assert.ok(logs.some((l) => l.includes('status exploded')));
   assert.equal((await get('/api/streams')).status, 200);
 });
+
+// ---------------------------------------------------------------- rule preview (B6)
+
+const PREVIEW_RULES = [
+  { id: 'x', type: 'price_cross', level: 15.5, symbol: 'BINANCE:BTCUSDT' },
+  { id: 'us', type: 'price_cross', level: 15.5, calendar: 'us_session' },
+  { id: 'nv', type: 'price_cross', level: 1, symbol: 'NASDAQ:NVDA' },
+  { id: 'q', type: 'price_cross', level: 1, timeframes: ['15'] },
+  { id: 'old', type: 'price_cross', level: 1, expires: '2020-01-01' },
+];
+const BTC60 = '/api/preview?symbol=BINANCE:BTCUSDT&tf=60';
+
+test('/api/preview lists the rules that can be previewed on a stream, and nothing but ids and types', async (t) => {
+  const { get } = await start(t, { rules: PREVIEW_RULES });
+  assert.deepEqual(json(await get(BTC60)), { rules: [{ id: 'x', type: 'price_cross' }, { id: 'us', type: 'price_cross' }] });
+});
+
+test('/api/preview?rule= gives the hits of one rule over the closed bars, from the real evaluator', async (t) => {
+  const { get } = await start(t, { rules: PREVIEW_RULES });
+  const out = json(await get(`${BTC60}&rule=x`));
+  // closes are 11..20, the level 15.5 is crossed up by candle 5 (15 -> 16); candle 9 is the forming bar.
+  assert.deepEqual(out, { ruleId: 'x', symbol: 'BINANCE:BTCUSDT', timeframe: '60', barsChecked: 9, hits: [{ time: 1_760_000_000 + 5 * 3600, direction: 'up', message: 'Crossed 15.5 upward' }] });
+});
+
+test('/api/preview uses the watcher\'s session check for a us_session rule', async (t) => {
+  const closed = await start(t, { rules: PREVIEW_RULES, inSession: () => false });
+  assert.deepEqual(json(await closed.get(`${BTC60}&rule=us`)).hits, []);
+  const open = await start(t, { rules: PREVIEW_RULES, inSession: () => true });
+  assert.equal(json(await open.get(`${BTC60}&rule=us`)).hits.length, 1);
+});
+
+test('/api/preview is a 404 for a missing parameter, an unknown stream or rule, a rule for another stream and an expired rule', async (t) => {
+  const { get } = await start(t, { rules: PREVIEW_RULES });
+  for (const query of ['', 'symbol=BINANCE:BTCUSDT', 'tf=60', 'symbol=NOPE&tf=60&rule=x', 'symbol=BINANCE:BTCUSDT&tf=1&rule=x', `${BTC60.slice(13)}&rule=nope`,
+    `${BTC60.slice(13)}&rule=nv`, `${BTC60.slice(13)}&rule=q`, `${BTC60.slice(13)}&rule=old`, `${BTC60.slice(13)}&rule=__proto__`, `${BTC60.slice(13)}&rule=`]) {
+    assert.equal((await get(`/api/preview?${query}`)).status, 404, query);
+  }
+});
+
+test('/api/preview with no candles yet is an empty answer', async (t) => {
+  const { get } = await start(t, { rules: PREVIEW_RULES });
+  const out = json(await get('/api/preview?symbol=BINANCE:BTCUSDT&tf=15&rule=us'));
+  assert.deepEqual([out.barsChecked, out.hits], [0, []]);
+});
+
+test('/api/preview looks at no more than 300 closed bars', async (t) => {
+  const many = Array.from({ length: 450 }, (_, i) => candle(i, { close: i % 2 === 1 ? 20 : 10 }));
+  const streams = { list: () => STREAMS, candles: (key) => (key === 'BINANCE:BTCUSDT|60' ? many.slice() : []) };
+  const { get } = await start(t, { rules: [{ id: 'x', type: 'price_cross', level: 15 }], streams });
+  const out = json(await get(`${BTC60}&rule=x`));
+  assert.equal(out.barsChecked, 300);
+  assert.equal(out.hits.length, 300);
+  assert.equal(out.hits.at(-1).time, many[448].time, 'the newest closed bar is the second to last candle');
+});
+
+test('/api/preview is worked out once per (stream, rule, last closed bar): same answer until a bar closes', async (t) => {
+  const live = Array.from({ length: 6 }, (_, i) => candle(i, { close: 10 }));
+  const streams = { list: () => STREAMS, candles: (key) => (key === 'BINANCE:BTCUSDT|60' ? live.map((c) => ({ ...c })) : []) };
+  const { get } = await start(t, { rules: [{ id: 'x', type: 'price_cross', level: 15 }], streams });
+  assert.equal(json(await get(`${BTC60}&rule=x`)).hits.length, 0);
+  live[2].close = 20; // a closed bar changes under it; the answer must come from the cache
+  live[5].close = 11; // so does the forming bar, which is not part of the key
+  assert.equal(json(await get(`${BTC60}&rule=x`)).hits.length, 0, 'served from the cache');
+  live.push(candle(6, { close: 10 })); // a bar closed: a new key, so it is worked out again
+  const fresh = json(await get(`${BTC60}&rule=x`));
+  assert.deepEqual(fresh.hits.map((h) => h.direction), ['up', 'down']);
+});
+
+test('/api/preview: simultaneous requests all get the same answer', async (t) => {
+  const { get } = await start(t, { rules: PREVIEW_RULES });
+  const all = await Promise.all(Array.from({ length: 12 }, (_, i) => get(`${BTC60}&rule=${i % 2 === 0 ? 'x' : 'us'}`)));
+  assert.ok(all.every((r) => r.status === 200));
+  const bodies = new Set(all.filter((_, i) => i % 2 === 0).map((r) => r.body));
+  assert.equal(bodies.size, 1);
+});
+
+test('/api/preview follows the same rules as every route: 401 without the token, 403 for a foreign Host, 405 for POST, headers on all', async (t) => {
+  const secured = await start(t, { host: '0.0.0.0', token: TOKEN, rules: PREVIEW_RULES });
+  const loopback = await start(t, { rules: PREVIEW_RULES });
+  for (const path of [BTC60, `${BTC60}&rule=x`]) {
+    assert.equal((await secured.get(path)).status, 401, path);
+    assert.equal((await secured.get(path, { headers: { authorization: `Bearer ${TOKEN}` } })).status, 200, path);
+    assert.equal((await loopback.get(path, { headers: { host: 'evil.example' } })).status, 403, path);
+    assert.equal((await loopback.get(path, { method: 'POST' })).status, 405, path);
+  }
+});
