@@ -21,10 +21,12 @@ Candle bodies reuse `--up` / `--down`; the chart library takes them as options r
 
 ## Markers (never colour alone: each has a shape and a glyph)
 
-- Alert up: green triangle pointing up, text "↑"
-- Alert down: red triangle pointing down, text "↓"
-- Paper trade: amber square, text "P"
-- Note (P3): blue circle
+The chart library only draws four marker shapes (`arrowUp`, `arrowDown`, `circle`, `square`), so the up and down markers are its arrows, not triangles.
+
+- Alert up: green `arrowUp`, text "↑"
+- Alert down: red `arrowDown`, text "↓"
+- Paper trade: amber `square`, text "P"
+- Note (P3): blue `circle`
 
 ## Type
 
