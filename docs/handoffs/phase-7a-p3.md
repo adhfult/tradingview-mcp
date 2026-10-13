@@ -40,6 +40,24 @@ Mutation check (commit first, each mutant `node --check`ed, failing test names r
 - A deep link whose `t` is before the 300 loaded candles shows a status line instead of loading more history.
 - P4 extra panels, 7b image alerts, `STATUS.md` (integrator only).
 
-## Review
+## Review (regime 11)
 
-(filled in below after the regime-11 reviews)
+Two read-only reviewers, each given the design section and a saved diff file (not the transcript): a **Fable** subagent and **Codex Sol** (`gpt-6.1-sol`, high) through `inv.sh`. Every finding was checked against the code or reproduced before it was fixed. Both reviewers found nothing in path handling beyond the one race below, `obsidian://` encoding and scheme enforcement, DOM text insertion, auth, Host checks or headers.
+
+Fixed (tests committed failing first, `4cf75dd`):
+- **Quadratic regexes (both reviewers, measured).** One hostile 16 KB line cost about 400 ms; 500 such files would have frozen the watcher (alerts, websocket) for about 200 s per scan. Lines are now cut at 1024 characters before markdown stripping, and the frontmatter key and comment regexes became linear scans. Tests time hostile inputs.
+- **Uncapped `title` and `symbols`** (both): title cut at 200 characters; symbols at most 20 entries of at most 64 characters.
+- **Parser mistakes (Codex):** a list nested under another mapping became the key's list; `"\BTCUSDT"` parsed as a symbol and `"\u0042"` as `u0042` (now real YAML escapes, unknown ones make the note unreadable); a `#` inside a quoted list item cut the list (`["Desk #1"]` dropped a valid note).
+- **Config (both):** a NUL or control character in `dir` passed validation; `vault_folder` of `.`, `./x` or `a//b` was accepted.
+- **Page:** stale "Add note here" link after switching streams (it would have made a note for the old stream); deep-link centring consumed before any candles existed; the 60 s reload did not restore the add-note hint after an earlier failure and dropped keyboard focus on a rebuilt note list; the picked candle was lost on every SSE reconnect; "No candles yet" stayed after candles arrived.
+- **Keyboard access (Fable):** the only way to pick a candle was a mouse click. A "Use newest candle" button now gives a keyboard path (arbitrary candles still need a click or the `t` link).
+- **Plain notes looked like news (Fable):** both showed `N`; a plain note now shows "•".
+- **Obsidian file names (Fable):** `#`, `^`, `[` and `]` are also replaced in the "Add note" file name.
+- **Tests that proved less than they claimed:** the href test checked proximity, not enforcement (now `setObsidianLink` is exported and tested with a stub element); the "concurrent requests share one scan" test depended on thread timing (now counts the once-per-scan warning).
+
+Not fixed, on purpose:
+- **Directory swapped for a symlink between `lstat` and `open` (Codex).** `O_NOFOLLOW` covers only the last path component. Exploiting it needs someone who can already replace the notes folder or its parent, which is write access to your vault. A fix would need `realpath` per scan or `openat`, which Node lacks. Documented here.
+- Fable's note that `encodeURIComponent` throws on a lone surrogate in a vault name: contrived, the note is skipped with a warning.
+- Double-quote and block-scalar YAML features beyond the subset (`|`, `>`, anchors) are unsupported by design.
+
+After the fixes: **594 tests, 594 pass** (`timeout 200 npm test --prefix bridge`; note that plain `npm test` inside `bridge/` hung once for me, the `--prefix` form from the repo root is the one that works), `--check-config` prints `OK`, and a second browser run confirmed the keyboard button, the add-note link hiding on a stream switch and a clean console.
