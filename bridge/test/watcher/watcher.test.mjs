@@ -921,3 +921,38 @@ test('the dashboard token never reaches a log, even through a ?token= visit', as
   await watcher.stop();
   assert.ok(!logs.join('\n').includes(DASH_TOKEN));
 });
+
+// ---------------------------------------------------------------- dashboard status (P4)
+
+test('the dashboard health panel reads the live watcher numbers and never a credential', async (t) => {
+  const { watcher, fullEnv } = await build(t, { configOverrides: NO_API });
+  await watcher.start();
+  const res = await getFrom(watcher, '/api/health');
+  const health = await res.json();
+  assert.equal(health.loggedIn, true);
+  assert.deepEqual([health.healthy, health.total], [0, 1]);
+  assert.deepEqual([health.maxPerHour, health.sentLastHour, health.held, health.overflow, health.queuePending], [20, 0, 0, 0, 0]);
+  assert.equal(health.quietNow, false);
+  assert.equal(health.usOpen, false, 'the fake clock is a Saturday');
+  assert.match(health.nextHoliday, /^\d{4}-\d{2}-\d{2}$/);
+  assert.ok(health.nextHoliday >= '2026-10-10');
+  assert.ok(health.uptimeSeconds >= 0);
+  const text = JSON.stringify(health);
+  for (const secret of [WEBHOOK, TOKEN, TV_SESSION, TV_SIGN, fullEnv.TRADINGVIEW_MCP_HOME]) assert.ok(!text.includes(secret), 'a secret reached /api/health');
+});
+
+test('the dashboard health panel says anonymous when there are no TradingView credentials', async (t) => {
+  const { watcher } = await build(t, { env: { TRADINGVIEW_SESSION_ID: '', TRADINGVIEW_SESSION_SIGN: '' }, configOverrides: NO_API });
+  await watcher.start();
+  assert.equal((await (await getFrom(watcher, '/api/health')).json()).loggedIn, false);
+});
+
+test('the dashboard trending panel reads the scanner memory in the state', async (t) => {
+  const { watcher, clock } = await build(t, { configOverrides: NO_API });
+  await watcher.start();
+  watcher.state.state.trending = { 'crypto|gainers': { 'BINANCE:BTCUSDT': clock.now() - 30_000 } };
+  const rows = await (await getFrom(watcher, '/api/trending')).json();
+  assert.equal(rows.length, 1);
+  assert.deepEqual([rows[0].market, rows[0].kind, rows[0].symbol, rows[0].ageSeconds], ['crypto', 'gainers', 'BINANCE:BTCUSDT', 30]);
+  assert.deepEqual(rows[0].watched, { symbol: 'BINANCE:BTCUSDT', timeframe: '15' });
+});
