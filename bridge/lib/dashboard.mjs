@@ -26,6 +26,7 @@ import { constants } from 'node:fs';
 import { open, readFile, readdir, lstat } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
+import { healthView, indicatorsView, overviewView, trendingView } from './dashboard-views.mjs';
 import { errorMessage } from './errors.mjs';
 import { parseGauntletReport, parsePaperJournal } from './journals.mjs';
 import { tokenMatches, tokensEqual } from './localapi.mjs';
@@ -169,10 +170,12 @@ async function newestFiles(dir, pattern) {
  * `streams` has list() and candles(key). `getAlerts()` returns the stored history (oldest first).
  * `rules` and `timezone` come from the config, `home` is $TRADINGVIEW_MCP_HOME, `assets` maps URL paths to files.
  * `notes` is a notes layer (lib/notes.mjs) or null/absent when the Obsidian notes are off.
+ * `getStatus()` returns the watcher's current numbers for the health, overview and trending panels (see
+ * lib/dashboard-views.mjs for the fields it may carry; any other field is ignored). Absent: those panels show nulls.
  * Throws when a non-loopback host has no usable token. `listen()` rejects on a bind error (e.g. EADDRINUSE).
  */
 export function createDashboard({
-  host = '127.0.0.1', port, token = '', bus, streams, getAlerts, rules, timezone, home, assets, notes = null, clock = realTimers, logger,
+  host = '127.0.0.1', port, token = '', bus, streams, getAlerts, rules, timezone, home, assets, notes = null, getStatus = () => ({}), clock = realTimers, logger,
 }) {
   const loopback = LOOPBACK_BIND.has(String(host).toLowerCase());
   if (!loopback && token.length < MIN_REMOTE_TOKEN) {
@@ -258,6 +261,24 @@ export function createDashboard({
         .filter((r) => r.type === 'price_cross' && (r.symbol === undefined || r.symbol === symbol) && !ruleExpired(r, now, timezone))
         .map((r) => ({ ruleId: r.id, level: r.level, timeframes: r.timeframes ?? null }));
       return sendJson(res, 200, levels);
+    }],
+
+    ['/api/overview', (res) => sendJson(res, 200, overviewView({
+      list: streams.list(), candlesOf: (key) => streams.candles(key), alerts: getAlerts(), status: getStatus(),
+    }))],
+
+    ['/api/health', (res) => sendJson(res, 200, healthView(getStatus(), streams.list()))],
+
+    ['/api/trending', (res) => sendJson(res, 200, trendingView(getStatus().trending, streams.list(), clock.now()))],
+
+    // Server-side so the chart draws the same numbers the rules use (lib/indicators.mjs), never its own maths.
+    ['/api/indicators', (res, params) => {
+      const found = findStream(params);
+      const candles = found === undefined ? null : streams.candles(found.key);
+      if (candles === null) return sendError(res, 404, 'not found');
+      return sendJson(res, 200, indicatorsView({
+        rules, stream: found, candles: candles.slice(-limitOf(params.get('limit'), DEFAULT_CANDLES)), nowMs: clock.now(), timezone,
+      }));
     }],
 
     // The notes come from one fixed folder; the request only names a stream, and only that stream's own symbol goes on.

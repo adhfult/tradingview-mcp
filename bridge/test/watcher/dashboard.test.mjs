@@ -920,7 +920,6 @@ test('a request timeout after the 405 closes the socket without a second respons
 const STATUS = {
   nowMs: 100_000, startedAtMs: 40_000, loggedIn: false, healthy: 2, total: 3, disconnects: 1, connectionDrops: 0, queuePending: 2,
   sentLastHour: 4, maxPerHour: 10, quietNow: true, held: 1, overflow: 3, usOpen: false, nextHoliday: '2026-11-26',
-  trending: { 'crypto|gainers': { 'BINANCE:BTCUSDT': 95_000, 'BINANCE:PEPEUSDT': 99_000 } },
   cookie: 'SECRET-COOKIE-VALUE',
 };
 
@@ -949,8 +948,11 @@ test('/api/health shows the watcher state, and no field that was not listed (a c
 });
 
 test('/api/trending lists the scan memory newest first, and marks a symbol the watcher follows', async (t) => {
-  const { get } = await start(t, { getStatus: () => STATUS });
-  const rows = json(await get('/api/trending'));
+  let clock;
+  const trending = () => ({ 'crypto|gainers': { 'BINANCE:BTCUSDT': clock.now() - 5000, 'BINANCE:PEPEUSDT': clock.now() - 1000 } });
+  const started = await start(t, { getStatus: () => ({ ...STATUS, trending: trending() }) });
+  clock = started.clock;
+  const rows = json(await started.get('/api/trending'));
   assert.deepEqual(rows.map((r) => r.symbol), ['BINANCE:PEPEUSDT', 'BINANCE:BTCUSDT']);
   assert.equal(rows[0].watched, null);
   assert.deepEqual(rows[1].watched, { symbol: 'BINANCE:BTCUSDT', timeframe: '60' });
@@ -963,8 +965,9 @@ test('/api/indicators draws the rules that apply to the stream, from indicators.
   const out = json(await get('/api/indicators?symbol=BINANCE:BTCUSDT&tf=60'));
   assert.deepEqual(out.map((o) => o.ruleId), ['bb']);
   assert.equal(out[0].upper.length, 6, '10 candles, period 5');
-  assert.deepEqual(json(await get('/api/indicators?symbol=NASDAQ:NVDA&tf=D')).map((o) => o.ruleId), ['nv']);
-  assert.deepEqual(json(await get('/api/indicators?symbol=NASDAQ:NVDA&tf=D'))[0].series, [], 'no candles yet: empty, not an error');
+  const nvda = json(await get('/api/indicators?symbol=NASDAQ:NVDA&tf=D'));
+  assert.deepEqual(nvda.map((o) => o.ruleId), ['bb', 'nv'], 'a rule with no symbol applies to every stream');
+  assert.deepEqual(nvda[1].series, [], 'no candles yet: empty, not an error');
   for (const query of ['', 'symbol=BINANCE:BTCUSDT', 'tf=60', 'symbol=NOPE&tf=60', 'symbol=BINANCE:BTCUSDT&tf=1']) {
     assert.equal((await get(`/api/indicators?${query}`)).status, 404, query);
   }
