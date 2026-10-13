@@ -25,13 +25,16 @@
 | W1: watcher daily cap + expiry | **done** | 4d552f3, a2868fc, 828a8b1, 639c4f0 | bridge 377 pass | `max_per_day` + `expires` per rule. Fable + Luna Max fixed 4 findings (held alerts using the cap with `digest_after_quiet` off, `tick()` pruning future-dated counts, `__proto__` rule id, a weak test). Details in `watcher-w1.md` |
 | W2: watcher calendar gating | **done** | 531ca61, 5ca3437, 2c5178b | bridge 404 pass | `calendar: us_session` per rule, gated on the closed bar's open, 2027 holidays, stale-list warning. Fable + Luna Max both found the gate dropped the last bar of each stock session (`closeTime` is the next candle's open); fixed with gapped-stream tests. Details in `watcher-w2.md` |
 | W3: watcher AND/OR rules | **done** | b472d54 .. see `git log` | bridge 429 pass | `all_of` / `any_of` over plain rules, one level. Fable + Luna Max found 3 real issues (dedupe key lacked direction, member expiry/calendar bypassed in composites, dead bars check), all fixed with tests that failed first. Details in `watcher-w3.md` |
-| 7a: dashboard | not started | – | – | – |
+| 7a P1: dashboard server | **done** | 36a9ddc .. b66a2f5 | bridge 519 pass | Read-only server with auth, headers, SSE, journals. Reviewed (Fable + Codex Sol); FIFO-safe bounded reads, no double response. Details in `phase-7a-p1.md` |
+| 7a P2: dashboard page | **done** | 7639fb6 .. 35774ec | bridge 531 pass | `index.html`, `style.css`, `app.mjs`, design tokens; CSP-clean (chart logo off, footer notice). Details in `phase-7a-p2.md` |
+| 7a P3: Obsidian notes layer | **done** | 733ac46 .. a88a29d | bridge 594 pass | `frontmatter.mjs`, `notes.mjs`, `/api/notes`, `dashboard.notes` (off by default), notes panel, markers, "Add note here", deep link. Fable + Codex Sol found about 20 issues (quadratic regexes, uncapped title, YAML escapes, keyboard note creation, stale add-note link), all fixed with tests first. Details in `phase-7a-p3.md` |
+| 7a P4: extra panels | not started | – | – | Design section 9 (B1-B11); B6 last, as its own commit |
 | 7b: alert images | not started | – | – | – |
 | 7c: PyneCore | not started | – | – | – |
 
-## Current step (2026-10-12)
-Phases 0-6b and watchers W1, W2 and W3 are done on this branch (python 1024 pass, bridge 429 pass). Pushed to origin through W2 (f06e840); W3 commits are local.
-1. **Next piece** (state the regime line first, see `docs/plans/panwatch-ideas-and-pi-footprint.md`): Phase **7a** (`docs/handoffs/phase-7.md`), or the open items below. W4 (backup data source) needs a new Opus High plan-mode session and a night of the watcher on the Pi first.
+## Current step (2026-10-13)
+Phases 0-6b, watchers W1-W3 and dashboard pieces 7a P1-P3 are done on this branch (bridge 594 pass). Pushed to origin through W2 (f06e840); everything after that (W3 and 7a P1-P3, 48 commits) is local, and the user said to hold the push until the work is done.
+1. **Next piece** (state the regime line first, see `docs/plans/panwatch-ideas-and-pi-footprint.md`): 7a **P4** extra panels (`phase-7a-design.md` section 9, regime 3), then 7b. W4 (backup data source) needs a new Opus High plan-mode session and a night of the watcher on the Pi first.
 2. Then 7a, 7b, 7c (`phase-7.md`). W4 (ccxt backup source) starts with a new Opus High plan-mode session, and only after the watcher has run a night on the Pi.
 3. **Finally:** the checks in "Checks only Adham can run" and the Pi checklist. Add: one live TradingView run of `strategy_gauntlet` (confirms the daily-bar `time` assumption in `drop_forming_bar`, which the paper trader also relies on) and one real use of the two prompts.
 4. Paper trader limits to remember (`phase-6b.md`): paper drawdown uses realised exits while the backtest's is mark-to-market, so a deep dip inside a trade that recovers before exit could hide a divergence.
