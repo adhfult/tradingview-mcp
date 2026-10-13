@@ -255,3 +255,24 @@ export function overlayLabel(indicator) {
   if (indicator.type === 'rsi_cross') return `RSI ${indicator.period}, levels ${indicator.levels.join(' and ')} (rule ${indicator.ruleId})`;
   return `Bollinger bands ${indicator.period}, ${indicator.stddev} deviations (rule ${indicator.ruleId})`;
 }
+
+/**
+ * Where a rule fired in the past, as small grey arrows (the chart library cannot draw hollow markers; grey and
+ * small is what tells them from real alerts). Only bars that are loaded; the library throws on unsorted markers.
+ */
+export function ghostMarkers(hits, candleTimes) {
+  const loaded = new Set(candleTimes);
+  return hits
+    .filter((h) => loaded.has(h.time) && (h.direction === 'up' || h.direction === 'down'))
+    .map((h) => ({ time: h.time, position: h.direction === 'up' ? 'belowBar' : 'aboveBar', shape: h.direction === 'up' ? 'arrowUp' : 'arrowDown', tone: 'ghost', size: 0.6, text: '' }))
+    .sort((a, b) => a.time - b.time);
+}
+
+/** The line under the preview: the count, and plainly what the count is not. */
+export function previewSummary(view) {
+  if (view.barsChecked === 0) return 'No closed bars to look at yet.';
+  const n = view.hits.length;
+  const count = n === 0 ? 'No signals' : `${n} ${n === 1 ? 'signal' : 'signals'}`;
+  return `${count} from rule ${view.ruleId} in the last ${view.barsChecked} closed bars (small grey arrows on the chart). `
+    + 'Signals only: cooldowns, daily limits and quiet hours are not applied, so fewer alerts would actually have been sent. This is not a prediction.';
+}

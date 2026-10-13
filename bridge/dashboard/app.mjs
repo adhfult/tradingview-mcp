@@ -15,7 +15,7 @@
 import { closeDetail, fillAlert, initDetail, openDetail, renderAlertsTab } from './alerts-view.mjs';
 import { $, addText, cssVar, errorText, getJson, renderList, saveCanvasPng, setStatus, timeText } from './dom.mjs';
 import {
-  buildMarkers, centerRange, classifyBar, deepLink, formatTimeframe, isStale, newNoteLink, overlayLabel, parseDeepLink, setObsidianLink, streamKey, tabTitle,
+  buildMarkers, centerRange, classifyBar, deepLink, formatTimeframe, ghostMarkers, isStale, newNoteLink, overlayLabel, parseDeepLink, previewSummary, setObsidianLink, streamKey, tabTitle,
 } from './pure.mjs';
 import { renderOverview, renderTrending } from './overview-view.mjs';
 import { renderBadges, renderHealth, renderPaper } from './status-view.mjs';
@@ -33,7 +33,7 @@ async function start() {
   const state = {
     streams: [], selected: null, candles: [], alerts: [], paper: [], levels: [], loadId: 0, wasConnected: false, loadFailed: false,
     notes: [], notesInfo: null, notesError: null, pick: null, centred: false,
-    tab: 'overview', fitPending: false, indicators: [], overlaysOn: new Set(), allAlerts: null, filters: { ruleId: '', symbol: '', status: '' }, unseen: 0,
+    tab: 'overview', fitPending: false, indicators: [], overlaysOn: new Set(), previewRules: [], previewRule: '', preview: null, allAlerts: null, filters: { ruleId: '', symbol: '', status: '' }, unseen: 0,
   };
   const shown = { alerts: '', streams: '', picker: '', notes: '' }; // what is on screen, so an unchanged list is not rebuilt (it would drop keyboard focus and re-announce)
   const NO_CHART = 'The chart library could not be loaded, so there is no chart. Alerts and streams still work.';
@@ -44,6 +44,7 @@ async function start() {
   let priceLines = [];
   let overlaySeries = [];
   let overlaySignature = '';
+  let previewSignature = '';
   const baseTitle = document.title;
 
   try {
@@ -91,9 +92,12 @@ async function start() {
 
   function drawMarkers() {
     if (markerPlugin === null || state.selected === null) return;
-    const colours = { up: cssVar('--up'), down: cssVar('--down'), paper: cssVar('--paper'), note: cssVar('--note') };
+    const colours = { up: cssVar('--up'), down: cssVar('--down'), paper: cssVar('--paper'), note: cssVar('--note'), ghost: cssVar('--muted') };
     const { symbol, timeframe } = state.selected;
-    markerPlugin.setMarkers(buildMarkers(state.alerts, state.paper, symbol, timeframe, state.notes, state.candles.map((c) => c.time))
+    const times = state.candles.map((c) => c.time);
+    const ghosts = state.preview === null ? [] : ghostMarkers(state.preview.hits, times);
+    markerPlugin.setMarkers([...buildMarkers(state.alerts, state.paper, symbol, timeframe, state.notes, times), ...ghosts]
+      .sort((a, b) => a.time - b.time) // one sorted list: the library keeps a single set of markers per series
       .map(({ tone, ...marker }) => ({ ...marker, color: colours[tone] })));
   }
 
@@ -169,6 +173,62 @@ async function start() {
     }
     renderOverlayControls();
     drawOverlays();
+  }
+
+  /** The rule picker for the noise preview: rebuilt only when the list of rules changed, so a choice is not lost on a reload. */
+  function renderPreviewControls() {
+    const box = $('preview-controls');
+    box.hidden = state.previewRules.length === 0 || lib === null;
+    const signature = JSON.stringify(state.previewRules);
+    if (signature === previewSignature) return;
+    previewSignature = signature;
+    const select = $('preview-rule');
+    select.replaceChildren(new Option('Off', ''), ...state.previewRules.map((r) => new Option(`${r.id} (${r.type})`, r.id)));
+    if (!state.previewRules.some((r) => r.id === state.previewRule)) {
+      state.previewRule = '';
+      state.preview = null;
+    }
+    select.value = state.previewRule;
+  }
+
+  async function loadPreviewOptions() {
+    const stream = state.selected;
+    if (stream === null) return;
+    const id = state.loadId;
+    try {
+      const out = await getJson(`/api/preview?${new URLSearchParams({ symbol: stream.symbol, tf: stream.timeframe })}`);
+      if (id !== state.loadId) return;
+      state.previewRules = out.rules;
+    } catch (err) {
+      console.error('rule preview list failed', err); // the preview is an extra; the chart must not suffer for it
+      state.previewRules = [];
+    }
+    renderPreviewControls();
+    if (state.previewRule !== '') loadPreview();
+  }
+
+  /** Asks the server where the chosen rule fired over the last closed bars (the server caches it until a bar closes). */
+  async function loadPreview() {
+    const stream = state.selected;
+    if (stream === null || state.previewRule === '') {
+      state.preview = null;
+      setStatus('preview-status', '');
+      drawMarkers();
+      return;
+    }
+    const id = state.loadId;
+    const rule = state.previewRule;
+    try {
+      const view = await getJson(`/api/preview?${new URLSearchParams({ symbol: stream.symbol, tf: stream.timeframe, rule })}`);
+      if (id !== state.loadId || rule !== state.previewRule) return;
+      state.preview = view;
+      setStatus('preview-status', previewSummary(view));
+    } catch (err) {
+      if (id !== state.loadId || rule !== state.previewRule) return;
+      state.preview = null;
+      setStatus('preview-status', `Could not load the preview: ${errorText(err)}`, 'error');
+    }
+    drawMarkers();
   }
 
   /** `fit` is for a first load or a stream change; a reload at a new bar keeps the zoom the user chose. */
@@ -391,6 +451,7 @@ async function start() {
       renderNotes();
       renderAddNote();
       loadIndicators();
+      loadPreviewOptions();
     } catch (err) {
       if (id !== state.loadId) return;
       $('chart').setAttribute('aria-busy', 'false');
@@ -415,6 +476,7 @@ async function start() {
       centreOnLink();
       renderAddNote();
       if (state.overlaysOn.size > 0) loadIndicators(); // the lines extend with each new bar
+      if (state.previewRule !== '') loadPreview(); // the server answers from its cache until a bar closes
     } catch (err) {
       console.error('candle reload failed', err);
     }
@@ -448,6 +510,11 @@ async function start() {
     state.indicators = []; // nor the old stream's lines drawn on the new stream's chart
     drawOverlays();
     renderOverlayControls();
+    state.previewRules = []; // nor its rule choice or ghost markers
+    state.previewRule = '';
+    state.preview = null;
+    setStatus('preview-status', '');
+    renderPreviewControls();
     shown.notes = '';
     renderList($('notes-list'), []);
     setStatus('notes-status', 'Loading notes');
@@ -645,6 +712,10 @@ async function start() {
   }
   initDetail(async (alert) => {
     await navigator.clipboard.writeText(`${location.origin}${location.pathname}${deepLink(alert.symbol, alert.timeframe, alert.barTime)}`);
+  });
+  $('preview-rule').addEventListener('change', (event) => {
+    state.previewRule = event.target.value;
+    loadPreview();
   });
   $('save-png').addEventListener('click', () => {
     if (chart === null || state.selected === null) return;

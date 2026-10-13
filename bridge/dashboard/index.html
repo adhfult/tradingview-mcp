@@ -46,6 +46,12 @@
     <div id="chart" aria-busy="true"></div>
     <button id="save-png" type="button" hidden>Save chart as PNG</button>
     <fieldset id="overlay-controls" class="overlays" hidden><legend>What the rules see</legend></fieldset>
+    <fieldset id="preview-controls" class="overlays" hidden>
+      <legend>Rule noise preview</legend>
+      <label for="preview-rule">Show where a rule would have fired</label>
+      <select id="preview-rule"><option value="">Off</option></select>
+      <p id="preview-status" class="status" aria-live="polite" hidden></p>
+    </fieldset>
     <p id="add-note-hint" class="status" hidden></p>
     <button id="pick-last" type="button" hidden>Use newest candle</button>
     <a id="add-note" class="button" hidden>Add note here</a>
