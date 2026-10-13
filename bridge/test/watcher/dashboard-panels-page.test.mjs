@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { alertDetailRows, countByRuleDay, deepLink, filterAlerts, formatDuration, formatPct, newNoteLink, paperEquity, parseDeepLink, sparkPoints, tabTitle } from '../../dashboard/pure.mjs';
+import { alertDetailRows, countByRuleDay, deepLink, filterAlerts, formatDuration, formatPct, newNoteLink, overlayLabel, paperEquity, parseDeepLink, sparkPoints, tabTitle } from '../../dashboard/pure.mjs';
 
 const DAY = 86_400_000;
 const D0 = Date.UTC(2026, 9, 12, 10, 0, 0);
@@ -123,7 +123,7 @@ test('index.html: the ids the P4 modules use are there, once each', async () => 
   assert.equal(new Set(ids).size, ids.length, 'no duplicate id');
   for (const id of ['tabs', 'save-png', 'alerts-all-status', 'alerts-all-list', 'filter-rule', 'filter-symbol', 'filter-status', 'alert-counts',
     'alert-detail', 'detail-title', 'detail-rows', 'detail-status', 'copy-link', 'detail-note', 'detail-close', 'paper-status', 'paper-list',
-    'overview-status', 'overview-list', 'trending-status', 'trending-list', 'health-status', 'health-summary', 'health-streams', 'market-badge', 'login-badge']) {
+    'overview-status', 'overview-list', 'trending-status', 'trending-list', 'health-status', 'health-summary', 'health-streams', 'market-badge', 'login-badge', 'overlay-controls']) {
     assert.ok(idsOf(text).has(id), id);
   }
 });
@@ -186,4 +186,10 @@ test('newNoteLink: an opportunity note for a symbol with no timeframe has its ow
 test('newNoteLink: the kind defaults to note, as before', () => {
   const url = newNoteLink({ vault: 'V', folder: 'f', symbol: 'X:Y', timeframe: '60', time: 1_760_000_000 });
   assert.match(new URL(url).searchParams.get('content'), /kind: note/);
+});
+
+test('overlayLabel: says what is drawn and which rule it belongs to', () => {
+  assert.equal(overlayLabel({ ruleId: 'rsi14', type: 'rsi_cross', period: 14, levels: [30, 70] }), 'RSI 14, levels 30 and 70 (rule rsi14)');
+  assert.equal(overlayLabel({ ruleId: 'bb', type: 'bollinger_break', period: 20, stddev: 2 }), 'Bollinger bands 20, 2 deviations (rule bb)');
+  assert.equal(overlayLabel({ ruleId: 'x', type: 'rsi_cross', period: 2, levels: [50] }), 'RSI 2, levels 50 (rule x)');
 });
