@@ -50,7 +50,7 @@ Fixed:
 - **Alerts tab (Sol, Luna).** A filter value that left the history showed "Any" while still hiding every row (now reset); an alert arriving over SSE while the list was being fetched could be dropped (the fetch repeats once if an event arrived meanwhile).
 - **Login badge (Luna).** "logged in" only meant both cookies are set; it now says "login cookies set", and the Status table "cookies set".
 - **Stale tabs (Luna).** Opportunities and Status were fetched only when opened; the 60-second refresh now covers them while open.
-- **Wording (Luna, Fable).** "last 300 bars" became "up to 299"; "fewer alerts" became "the same or fewer" (zero signals mean zero alerts, never fewer alerts than signals' complement); the README no longer says composite members cannot be previewed on their own, they are not offered separately because they are only offered when they are top-level rules.
+- **Wording (Luna, Fable).** "last 300 bars" became "up to 299"; "fewer alerts" became "the same or fewer" (the old text implied there would always be fewer, but with nothing held back the counts are equal); the README no longer says a composite's members are only previewed through the composite: a member that is also a top-level rule is offered on its own.
 
 Not fixed, on purpose:
 - **Overlay lines on a forming bar (Sol).** The RSI and Bollinger lines are fetched when a bar closes or a stream is opened, so their last point (the forming bar) is behind the candle until then. The rules judge closed bars only, so no alert depends on it. Refreshing every second would cost a server computation per tick.
