@@ -1107,3 +1107,13 @@ test('/api/trending drops symbols older than the watcher\'s remember_hours', asy
   clock = started.clock;
   assert.deepEqual(json(await started.get('/api/trending')).map((r) => r.symbol), ['BINANCE:PEPEUSDT']);
 });
+
+test('/api/preview keeps one answer per stream: the same rule on two streams with the same candles is not shared', async (t) => {
+  const same = Array.from({ length: 10 }, (_, i) => candle(i));
+  const streams = { list: () => STREAMS, candles: (key) => (key === 'BINANCE:BTCUSDT|60' || key === 'NASDAQ:NVDA|D' ? same.map((c) => ({ ...c })) : []) };
+  const { get } = await start(t, { rules: [{ id: 'x', type: 'price_cross', level: 15.5 }], streams });
+  const btc = json(await get(`${BTC60}&rule=x`));
+  const nvda = json(await get('/api/preview?symbol=NASDAQ:NVDA&tf=D&rule=x'));
+  assert.deepEqual([btc.symbol, btc.timeframe], ['BINANCE:BTCUSDT', '60']);
+  assert.deepEqual([nvda.symbol, nvda.timeframe], ['NASDAQ:NVDA', 'D']);
+});
