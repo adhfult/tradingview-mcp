@@ -108,3 +108,46 @@ test('sparkPoints: no values, or only unusable ones, give an empty string', () =
   assert.equal(sparkPoints([null, Number.NaN, Infinity], 100, 20), '');
   assert.equal(sparkPoints([1, null, 3], 100, 20), '0,20 100,0', 'unusable values are skipped');
 });
+
+// ---------------------------------------------------------------- index.html: tabs, alerts tab, drawer, paper, PNG button
+
+import { readFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
+
+const html = () => readFile(fileURLToPath(new URL('../../dashboard/index.html', import.meta.url)), 'utf8');
+const idsOf = (text) => new Set([...text.matchAll(/\sid="([^"]+)"/g)].map((m) => m[1]));
+
+test('index.html: the ids the P4 modules use are there, once each', async () => {
+  const text = await html();
+  const ids = [...text.matchAll(/\sid="([^"]+)"/g)].map((m) => m[1]);
+  assert.equal(new Set(ids).size, ids.length, 'no duplicate id');
+  for (const id of ['tabs', 'save-png', 'alerts-all-status', 'alerts-all-list', 'filter-rule', 'filter-symbol', 'filter-status', 'alert-counts',
+    'alert-detail', 'detail-title', 'detail-rows', 'detail-status', 'copy-link', 'detail-note', 'detail-close', 'paper-status', 'paper-list']) {
+    assert.ok(idsOf(text).has(id), id);
+  }
+});
+
+test('index.html: a tab button for each view, and every section belongs to a view', async () => {
+  const text = await html();
+  const tabs = [...text.matchAll(/<button\b[^>]*\sdata-tab="([^"]+)"/g)].map((m) => m[1]);
+  assert.deepEqual(tabs, ['chart', 'alerts', 'status']);
+  const sections = [...text.matchAll(/<section\b([^>]*)>/g)].map((m) => m[1]);
+  for (const attrs of sections) {
+    const view = /\sdata-view="([^"]+)"/.exec(attrs)?.[1];
+    assert.ok(tabs.includes(view), `section ${attrs.trim()} has a known data-view`);
+  }
+  assert.match(text, /<nav\b[^>]*\sid="tabs"[^>]*\saria-label="/, 'the tab bar is a labelled landmark');
+  assert.match(text, /data-tab="chart"[^>]*aria-current="page"/, 'the first tab is current from the start');
+});
+
+test('index.html: the detail drawer has no href until the page sets one, and is hidden at first', async () => {
+  const text = await html();
+  assert.doesNotMatch(text, /<a\b[^>]*\sid="detail-note"[^>]*\shref=/);
+  assert.match(text, /<aside\b[^>]*\sid="alert-detail"[^>]*\shidden/);
+  assert.match(text, /<aside\b[^>]*\sid="alert-detail"[^>]*aria-labelledby="detail-title"/);
+});
+
+test('index.html: filters have labels, and every select in the page is labelled', async () => {
+  const text = await html();
+  for (const id of ['filter-rule', 'filter-symbol', 'filter-status']) assert.match(text, new RegExp(`<label[^>]*for="${id}"`), id);
+});
