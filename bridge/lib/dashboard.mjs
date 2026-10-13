@@ -26,7 +26,7 @@ import { constants } from 'node:fs';
 import { open, readFile, readdir, lstat } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
-import { healthView, indicatorsView, overviewView, trendingView } from './dashboard-views.mjs';
+import { healthView, indicatorsView, overviewView, previewableRules, previewView, trendingView } from './dashboard-views.mjs';
 import { errorMessage } from './errors.mjs';
 import { parseGauntletReport, parsePaperJournal } from './journals.mjs';
 import { tokenMatches, tokensEqual } from './localapi.mjs';
@@ -174,13 +174,14 @@ async function newestFiles(dir, pattern) {
 /**
  * `streams` has list() and candles(key). `getAlerts()` returns the stored history (oldest first).
  * `rules` and `timezone` come from the config, `home` is $TRADINGVIEW_MCP_HOME, `assets` maps URL paths to files.
+ * `inSession(ms)` says whether a bar that opened at `ms` is in the US session (for the rule preview; default: always).
  * `notes` is a notes layer (lib/notes.mjs) or null/absent when the Obsidian notes are off.
  * `getStatus()` returns the watcher's current numbers for the health, overview and trending panels (see
  * lib/dashboard-views.mjs for the fields it may carry; any other field is ignored). Absent: those panels show nulls.
  * Throws when a non-loopback host has no usable token. `listen()` rejects on a bind error (e.g. EADDRINUSE).
  */
 export function createDashboard({
-  host = '127.0.0.1', port, token = '', bus, streams, getAlerts, rules, timezone, home, assets, notes = null, getStatus = () => ({}), clock = realTimers, logger,
+  host = '127.0.0.1', port, token = '', bus, streams, getAlerts, rules, timezone, home, assets, notes = null, getStatus = () => ({}), inSession = () => true, clock = realTimers, logger,
 }) {
   const loopback = LOOPBACK_BIND.has(String(host).toLowerCase());
   if (!loopback && token.length < MIN_REMOTE_TOKEN) {
@@ -190,6 +191,7 @@ export function createDashboard({
   const files = new Map(); // URL path -> {body, type}, loaded once in listen()
   const clients = new Set();
   const bars = new Map(); // stream key -> {sentAt, timer, pending}
+  const previews = new Map(); // stream key + rule id -> {lastClosed, view}; one entry per pair, so at most streams x rules
   let heartbeat = null;
 
   // ------------------------------------------------------------ responses
@@ -284,6 +286,29 @@ export function createDashboard({
       return sendJson(res, 200, indicatorsView({
         rules, stream: found, candles: candles.slice(-limitOf(params.get('limit'), DEFAULT_CANDLES)), nowMs: clock.now(), timezone,
       }));
+    }],
+
+    // Without `rule`: which rules can be previewed on this stream. With it: where that rule would have hit over the last
+    // 300 closed bars (lib/dashboard-views.mjs). The work is synchronous, so only one runs at a time; it is kept per
+    // (stream, rule, last closed bar), so a browser asking again costs nothing until a bar closes.
+    // ponytail: about 25 ms per rule at 400 bars, 65 ms for a composite at 1000, 370 ms at 5000; a worker thread if snapshots ever get that long.
+    ['/api/preview', (res, params) => {
+      const found = findStream(params);
+      const candles = found === undefined ? null : streams.candles(found.key);
+      if (candles === null) return sendError(res, 404, 'not found');
+      const nowMs = clock.now();
+      const options = previewableRules({ rules, stream: found, nowMs, timezone });
+      const id = params.get('rule');
+      if (id === null) return sendJson(res, 200, { rules: options });
+      const rule = options.some((o) => o.id === id) ? rules.find((r) => r.id === id) : undefined;
+      if (rule === undefined) return sendError(res, 404, 'not found');
+      const cacheKey = `${found.key}|${id}`;
+      const lastClosed = candles.length > 1 ? candles.at(-2).time : null;
+      const cached = previews.get(cacheKey);
+      if (cached !== undefined && cached.lastClosed === lastClosed) return sendJson(res, 200, cached.view);
+      const view = previewView({ rule, stream: found, candles, nowMs, timezone, inSession });
+      previews.set(cacheKey, { lastClosed, view });
+      return sendJson(res, 200, view);
     }],
 
     // The notes come from one fixed folder; the request only names a stream, and only that stream's own symbol goes on.

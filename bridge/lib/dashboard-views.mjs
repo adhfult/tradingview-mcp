@@ -5,10 +5,12 @@
  * does not reach the page until it is listed here.
  */
 import { bollinger, rsi } from './indicators.mjs';
-import { normalizeRule, ruleApplies, ruleExpired } from './rules.mjs';
+import { selectActive } from './gates.mjs';
+import { evaluateRules, normalizeRule, ruleApplies, ruleExpired } from './rules.mjs';
 
 const SPARK_BARS = 60;
 const MAX_TRENDING = 200;
+export const PREVIEW_BARS = 300;
 const MAX_ERROR_CODE = 64;
 
 const orNull = (value) => (value === undefined ? null : value);
@@ -139,4 +141,28 @@ export function indicatorsView({ rules, stream, candles, nowMs, timezone }) {
     }
   }
   return out;
+}
+
+/** The rules a stream can preview: top-level, live and applying to it. Ids and types only. */
+export function previewableRules({ rules, stream, nowMs, timezone }) {
+  return rules.filter((r) => ruleApplies(r, stream) && !ruleExpired(r, nowMs, timezone)).map((r) => ({ id: r.id, type: r.type }));
+}
+
+/**
+ * Where one rule would have hit over the last `bars` closed bars: the real evaluator on each prefix of the
+ * candles, behind the watcher's own gates (selectActive, judged per bar from its open time). Rule hits only: no
+ * cooldown, daily cap or quiet hours, because those depend on what was sent, so this is a count of signals and
+ * not of alerts. The last candle is still forming and is never judged. `candles` ends with the forming bar.
+ */
+export function previewView({ rule, stream, candles, nowMs, timezone, inSession, bars = PREVIEW_BARS }) {
+  const closed = candles.slice(0, -1);
+  const first = Math.max(0, closed.length - bars);
+  const hits = [];
+  for (let i = first; i < closed.length; i += 1) {
+    const active = selectActive([rule], { now: nowMs, timezone, inSession: inSession(closed[i].time * 1000) });
+    for (const hit of evaluateRules(active, stream, closed.slice(0, i + 1))) {
+      hits.push({ time: hit.barTime, direction: hit.direction, message: hit.message });
+    }
+  }
+  return { ruleId: rule.id, symbol: stream.symbol, timeframe: stream.timeframe, barsChecked: closed.length - first, hits };
 }

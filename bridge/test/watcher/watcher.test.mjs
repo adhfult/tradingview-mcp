@@ -956,3 +956,19 @@ test('the dashboard trending panel reads the scanner memory in the state', async
   assert.deepEqual([rows[0].market, rows[0].kind, rows[0].symbol, rows[0].ageSeconds], ['crypto', 'gainers', 'BINANCE:BTCUSDT', 30]);
   assert.deepEqual(rows[0].watched, { symbol: 'BINANCE:BTCUSDT', timeframe: '15' });
 });
+
+// ---------------------------------------------------------------- dashboard rule preview (B6)
+
+test('the dashboard preview uses the watcher\'s session calendar, judged by each bar\'s own open time and not the clock', async (t) => {
+  // The test clock is a Saturday; the bars below are Monday 2026-10-12, opening 09:00 EDT, 09:15, 09:30, ... Each
+  // closes 1% above the last, so the 0.5% rule hits on every closed bar but the first; only the bars opening
+  // 09:30 or later are in session.
+  const { watcher, lib } = await build(t, { configOverrides: ruleWith({ calendar: 'us_session' }) });
+  await watcher.start();
+  const startTime = Date.parse('2026-10-12T13:00:00Z') / 1000;
+  lib.watchers[0].feed(snapshot([100, 101, 102.01, 103.03, 104.06, 105.1], { startTime, step: 900 }));
+  await settle();
+  const out = await (await getFrom(watcher, '/api/preview?symbol=BINANCE:BTCUSDT&tf=15&rule=move')).json();
+  assert.deepEqual(out.hits.map((h) => new Date(h.time * 1000).toISOString().slice(11, 16)), ['13:30', '13:45', '14:00']);
+  assert.equal(out.barsChecked, 5, 'six candles, the last is still forming');
+});

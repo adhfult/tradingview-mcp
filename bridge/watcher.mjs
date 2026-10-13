@@ -271,6 +271,7 @@ export function createWatcher({
         home: env.TRADINGVIEW_MCP_HOME || join(homedir(), '.tradingview-mcp'),
         assets: defaultAssets(),
         getStatus,
+        inSession: (ms) => isUsRegularHours(ms, usCalendar),
         notes: notesConfig.enabled
           ? createNotes({ dir: notesConfig.dir, vault: notesConfig.vault, vaultFolder: notesConfig.vault_folder, clock, logger })
           : null,
