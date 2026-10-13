@@ -26,7 +26,8 @@ import { createLocalApi } from './lib/localapi.mjs';
 import { createQueue } from './lib/queue.mjs';
 import { buildNotifiers, createStdoutNotifier } from './lib/notifiers.mjs';
 import { createLogger, renderNotify, renderRuleAlert, renderTest } from './lib/format.mjs';
-import { evaluateRules, ruleExpired } from './lib/rules.mjs';
+import { evaluateRules } from './lib/rules.mjs';
+import { selectActive } from './lib/gates.mjs';
 import { buildUsCalendar, createScanner, isUsRegularHours } from './lib/scanner.mjs';
 import { createStateStore } from './lib/state.mjs';
 import { createStreams } from './lib/stream.mjs';
@@ -122,14 +123,7 @@ export function createWatcher({
     // delivery cannot drop it. Not by closeTime: that is the next candle's open, which for a stock stream is the
     // next morning, and not by open + timeframe either, because the last bar of the day can be shorter.
     const inSession = isUsRegularHours(closed.at(-1).time * 1000, usCalendar);
-    const live = (rule) => !ruleExpired(rule, clock.now(), config.timezone) && (rule.calendar !== 'us_session' || inSession);
-    // A composite's members are held to the same gates: a dead member cannot hit, so it blocks an all_of and is
-    // simply absent from an any_of.
-    const active = config.rules.filter(live).flatMap((rule) => {
-      if (!rule.members) return [rule];
-      const members = rule.members.filter(live);
-      return rule.type === 'all_of' && members.length < rule.members.length ? [] : [{ ...rule, members }];
-    });
+    const active = selectActive(config.rules, { now: clock.now(), timezone: config.timezone, inSession });
     const hits = evaluateRules(active, stream, closed);
     for (const hit of hits) {
       const message = renderRuleAlert(hit, {
