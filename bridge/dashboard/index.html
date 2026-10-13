@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Market watch</title>
+<link rel="stylesheet" href="/assets/style.css">
+<script type="module" src="/assets/app.mjs"></script>
+</head>
+<body>
+<header class="bar">
+  <h1>Market watch</h1>
+  <p id="live-badge" class="badge" role="status" data-state="connecting"><span class="dot" aria-hidden="true"></span><span id="live-text">Connecting</span></p>
+  <div class="picker">
+    <label for="stream-picker">Stream</label>
+    <select id="stream-picker" disabled></select>
+  </div>
+</header>
+
+<div id="page-error" class="banner" role="alert" hidden>
+  <p id="page-error-text"></p>
+  <button id="retry" type="button">Retry</button>
+</div>
+
+<main>
+  <section class="panel chart-panel" aria-labelledby="chart-title">
+    <h2 id="chart-title">Chart</h2>
+    <p id="chart-status" class="status">Loading candles</p>
+    <div id="chart" aria-busy="true"></div>
+  </section>
+
+  <section class="panel" aria-labelledby="alerts-title">
+    <h2 id="alerts-title">Alerts</h2>
+    <p id="alerts-status" class="status">Loading alerts</p>
+    <ol id="alerts-list" class="list" aria-live="polite"></ol>
+  </section>
+
+  <section class="panel" aria-labelledby="streams-title">
+    <h2 id="streams-title">Streams</h2>
+    <p id="streams-status" class="status">Loading streams</p>
+    <ul id="streams-list" class="list"></ul>
+  </section>
+</main>
+
+<noscript><p class="banner">This page needs JavaScript to draw the chart and update live. Alerts are still sent to your notifiers.</p></noscript>
+
+<footer>
+  <p>Charts by <a href="https://www.tradingview.com/" target="_blank" rel="noopener noreferrer">TradingView</a> Lightweight Charts. Read-only: this page never places a trade.</p>
+</footer>
+</body>
+</html>
