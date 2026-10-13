@@ -257,3 +257,6 @@ paper-journal*
 *.env
 !.env.example
 !*.env.example
+
+# Playwright MCP scratch (screenshots, logs)
+.playwright-mcp/
