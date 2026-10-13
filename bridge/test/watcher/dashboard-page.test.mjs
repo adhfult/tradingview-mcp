@@ -5,6 +5,8 @@ import { readFile } from 'node:fs/promises';
 import http from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { createDashboard, defaultAssets } from '../../lib/dashboard.mjs';
+import { parseFrontmatter } from '../../lib/frontmatter.mjs';
+import { parseNoteTime } from '../../lib/notes.mjs';
 
 const dir = (name) => fileURLToPath(new URL(`../../dashboard/${name}`, import.meta.url));
 const read = (name) => readFile(dir(name), 'utf8');
@@ -196,4 +198,118 @@ test('the real files are served by createDashboard with the real allowlist', asy
 test('app.mjs: the library attribution logo stays off (it injects a <style> element, which the CSP blocks)', async () => {
   const code = (await read('app.mjs')).replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, ''); // a comment must not satisfy this
   assert.match(code, /attributionLogo:\s*false/);
+});
+
+// ---------------------------------------------------------------- notes: index.html
+
+test('index.html: a Notes panel with its status line and list, and an "Add note" link that has no href until the page sets one', async () => {
+  const html = await read('index.html');
+  for (const id of ['notes-title', 'notes-status', 'notes-list', 'add-note', 'add-note-hint']) assert.match(html, new RegExp(`\\sid="${id}"`), id);
+  assert.match(html, /<section[^>]*aria-labelledby="notes-title"/);
+  assert.match(html, /<a\b[^>]*\sid="add-note"[^>]*\shidden|<a\b[^>]*\shidden[^>]*\sid="add-note"/, 'hidden until a candle is picked');
+  assert.doesNotMatch(html, /<a\b[^>]*\sid="add-note"[^>]*\shref=/, 'the href is set by app.mjs, after the scheme check');
+  assert.doesNotMatch(html, /obsidian:/i, 'no hard-coded Obsidian link in the page');
+});
+
+// ---------------------------------------------------------------- notes: app.mjs (static)
+
+test('app.mjs: the one href assignment sits next to the obsidian:// scheme check', async () => {
+  const js = (await read('app.mjs')).replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, '');
+  const hits = [...js.matchAll(/\.href\s*=[^=]/g)];
+  assert.equal(hits.length, 1, 'exactly one place sets an href');
+  assert.match(js.slice(Math.max(0, hits[0].index - 250), hits[0].index + 150), /safeObsidianHref\(/);
+});
+
+// ---------------------------------------------------------------- notes: pure functions
+
+test('app.mjs exports the notes helpers', async () => {
+  const app = await import('../../dashboard/app.mjs');
+  for (const name of ['noteMarker', 'safeObsidianHref', 'newNoteLink', 'parseDeepLink', 'centerRange']) assert.equal(typeof app[name], 'function', name);
+});
+
+test('noteMarker: a blue circle on the last bar at or before the note\'s time, with the first letter of its kind', async () => {
+  const { noteMarker } = await import('../../dashboard/app.mjs');
+  const bars = [T, T + 3600, T + 7200];
+  const at = (time, kind = 'news') => noteMarker({ time, kind, title: 'x' }, bars);
+  assert.deepEqual(at(T + 1800), { time: T, position: 'aboveBar', shape: 'circle', tone: 'note', text: 'N' });
+  assert.equal(at(T + 3600).time, T + 3600, 'a time exactly on a bar opens that bar');
+  assert.equal(at(T + 7199).time, T + 3600);
+  assert.equal(at(T + 999_999).time, T + 7200, 'after the last bar: the last bar');
+  assert.equal(at(T - 1), null, 'before the first loaded bar: not on this chart');
+  assert.equal(at(null), null, 'no time: the panel only');
+  assert.equal(at(T, 'opportunity').text, 'O');
+  assert.equal(at(T, 'risk').text, 'R');
+  assert.equal(at(T, 'note').text, 'N');
+  assert.equal(noteMarker({ time: T, kind: 'news' }, []), null, 'no candles loaded');
+});
+
+test('buildMarkers: notes join the alert and paper markers, still ascending by time', async () => {
+  const { buildMarkers } = await import('../../dashboard/app.mjs');
+  const bars = [T, T + 3600, T + 7200, T + 10_800];
+  const alerts = [{ symbol: 'S', timeframe: '60', barTime: T + 7200, direction: 'up', level: 'up', message: 'm' }];
+  const paper = [{ symbol: 'S', timeframe: '60', events: [{ type: 'entry', bar_time: T + 3600, price: 1 }] }];
+  const notes = [{ time: T + 10_900, kind: 'risk' }, { time: T + 100, kind: 'news' }, { time: null, kind: 'news' }];
+  const markers = buildMarkers(alerts, paper, 'S', '60', notes, bars);
+  assert.deepEqual(markers.map((m) => [m.time, m.tone]), [[T, 'note'], [T + 3600, 'paper'], [T + 7200, 'up'], [T + 10_800, 'note']]);
+  assert.deepEqual(buildMarkers(alerts, paper, 'S', '60').map((m) => m.tone), ['paper', 'up'], 'the notes arguments are optional');
+});
+
+test('safeObsidianHref: only a link that starts with exactly obsidian:// is accepted', async () => {
+  const { safeObsidianHref } = await import('../../dashboard/app.mjs');
+  const ok = 'obsidian://open?vault=My%20Vault&file=markets%2Fbtc';
+  assert.equal(safeObsidianHref(ok), ok);
+  assert.equal(safeObsidianHref('obsidian://new?vault=V&file=f&content=%23'), 'obsidian://new?vault=V&file=f&content=%23');
+  for (const bad of [
+    'javascript:alert(1)', 'data:text/html,x', 'https://evil.example/', '//evil.example', 'obsidian:/open', 'obsidian:open', 'OBSIDIAN://open',
+    ' obsidian://open', 'x obsidian://open', 'obsidian://open with space', 'obsidian://open\nx', 'obsidian://open\t', 'obsidian://\u0000', '', 'obsidian://',
+    null, undefined, 5, {}, ['obsidian://open'],
+  ]) {
+    assert.equal(safeObsidianHref(bad), null, JSON.stringify(bad));
+  }
+});
+
+test('newNoteLink: obsidian://new with the vault, a safe file name and a content block the notes layer reads back', async () => {
+  const { newNoteLink, safeObsidianHref } = await import('../../dashboard/app.mjs');
+  const link = newNoteLink({ vault: 'My Vault & Co=1#2', folder: 'my markets', symbol: 'BINANCE:BTCUSDT', timeframe: '60', time: 1_760_000_000 });
+  assert.equal(safeObsidianHref(link), link);
+  assert.match(link, /^obsidian:\/\/new\?/);
+  assert.doesNotMatch(link, /[ +]/, 'spaces are %20 and nothing is a plus sign');
+  const pairs = link.slice('obsidian://new?'.length).split('&');
+  assert.deepEqual(pairs.map((p) => p.split('=')[0]), ['vault', 'file', 'content'], 'a & or = in a value never splits a parameter');
+  assert.ok(pairs.every((p) => p.split('=').length === 2));
+  const params = new URLSearchParams(link.slice(link.indexOf('?') + 1));
+  assert.equal(params.get('vault'), 'My Vault & Co=1#2');
+  assert.equal(params.get('file'), 'my markets/BINANCE-BTCUSDT 1h 2025-10-09 0853');
+  const parsed = parseFrontmatter(params.get('content'));
+  assert.notEqual(parsed, null, 'the pre-filled content is readable frontmatter');
+  assert.deepEqual(parsed.data.symbols, ['BINANCE:BTCUSDT']);
+  assert.equal(parseNoteTime(parsed.data.time), 1_760_000_000);
+  assert.equal(parsed.data.kind, 'note');
+});
+
+test('newNoteLink: characters Obsidian forbids in a file name never reach the name', async () => {
+  const { newNoteLink } = await import('../../dashboard/app.mjs');
+  const link = newNoteLink({ vault: 'V', folder: 'markets', symbol: 'A/B:C*D?E"F<G>H|I\\J', timeframe: 'D', time: 1_760_000_000 });
+  const file = new URLSearchParams(link.slice(link.indexOf('?') + 1)).get('file');
+  assert.match(file, /^markets\/[^\\/:*?"<>|]+$/);
+  assert.match(file, / 1D /);
+});
+
+test('parseDeepLink: symbol, tf and t from the query string; a bad t is null', async () => {
+  const { parseDeepLink } = await import('../../dashboard/app.mjs');
+  assert.deepEqual(parseDeepLink('?symbol=BINANCE:BTCUSDT&tf=60&t=1760000000'), { symbol: 'BINANCE:BTCUSDT', timeframe: '60', t: 1_760_000_000 });
+  assert.deepEqual(parseDeepLink('?symbol=BINANCE%3ABTCUSDT&tf=60'), { symbol: 'BINANCE:BTCUSDT', timeframe: '60', t: null });
+  assert.deepEqual(parseDeepLink(''), { symbol: null, timeframe: null, t: null });
+  for (const t of ['abc', '-5', '1e9', '1.5', '', '0', '99999999999999', ' 5']) assert.equal(parseDeepLink(`?symbol=S&tf=60&t=${t}`).t, null, `t=${t}`);
+});
+
+test('centerRange: a window of bars around the last bar at or before t, or null', async () => {
+  const { centerRange } = await import('../../dashboard/app.mjs');
+  const bars = Array.from({ length: 100 }, (_, i) => T + i * 3600);
+  assert.deepEqual(centerRange(bars, bars[50], 80), { from: 10, to: 90 });
+  assert.deepEqual(centerRange(bars, bars[50] + 1800, 80), { from: 10, to: 90 }, 'between bars: the earlier one');
+  assert.deepEqual(centerRange(bars, bars[99] + 99_999, 80), { from: 59, to: 139 }, 'after the end: centred on the last bar');
+  assert.equal(centerRange(bars, T - 1, 80), null, 'before the first bar');
+  assert.equal(centerRange(bars, null, 80), null);
+  assert.equal(centerRange([], T, 80), null);
 });
