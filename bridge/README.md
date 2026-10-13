@@ -176,6 +176,7 @@ Logs go to stderr. Every line is redacted. A disconnect is logged with its time,
 - `health`: `stream_down_minutes` and `daily_heartbeat` (`HH:MM`, or `null` to turn it off).
 - `state_dir`: where `state.json` lives. Writes are atomic.
 - `local_api`: `enabled` and `port` (1024 to 65535). The API listens on `127.0.0.1` only.
+- `images`: `enabled` (default `false`), `chromium_path`, `max_per_hour` (1 to 60, default 6) and `timeout_ms` (1000 to 60000, default 10000). See "Chart images on alerts".
 - `limits.max_streams`: the number of symbol x timeframe streams (at most 25, the hard cap).
 
 ### Local API
@@ -244,6 +245,28 @@ On the Chart tab, "Rule noise preview" lets you pick one rule and see small grey
 - It is not a prediction and says nothing about whether acting on a signal would have made or lost money.
 - Only the bars the watcher holds in memory are looked at, so a stream just started shows fewer than 300. Only live rules that apply to the stream are offered; a composite is previewed as a whole.
 - It costs about 25 ms of CPU per rule at 400 bars (65 ms for a composite at 1000), done once per rule per closed bar and kept until the next bar closes; it is read-only like the rest of the dashboard. The chart library cannot draw hollow markers, so they are small and grey instead.
+
+### Chart images on alerts
+
+Off by default. When on, a rule alert on Discord or Telegram carries a PNG of the chart: the last 120 candles the watcher holds, an arrow on the alert's bar, and the rule's price level when it has one (`price_cross` level, `new_extreme` high or low, the Bollinger band that was broken; other rules and `all_of` / `any_of` have no single level, so only the arrow). Trending, health and heartbeat messages never get a picture.
+
+To turn it on:
+
+1. Install a browser. On the Pi: `sudo apt install chromium` (the path is `/usr/bin/chromium`). Nothing is downloaded by this project: `playwright-core` is only the remote control, and `npm install` is run with `--ignore-scripts`.
+2. Set `"images": {"enabled": true, "chromium_path": "/usr/bin/chromium"}` in the config, or put the path in `WATCHER_CHROMIUM_PATH` (the environment wins).
+3. The dashboard must be enabled: the picture is made by opening the dashboard's own `/render` page, so there is no second server.
+
+If images are on but cannot work (no browser path, a relative path, the dashboard off), the watcher logs `images disabled: <reason>` once and runs without them.
+
+How it behaves:
+
+- **The browser is started when an alert needs a picture and closed after 30 seconds idle.** One Chromium measured about 360 MB (proportional memory, 11 processes) after one render on an x86 desktop with Chrome; measure it on the Pi before leaving this on, because the Pi budget is about 3 GB for everything. A render takes about 1.5 s on a warm desktop, longer on the Pi.
+- One picture is made per alert and shared by Discord and Telegram, and a retry does not render again. At most `max_per_hour` pictures an hour; `timeout_ms` covers start-up, loading and the screenshot. Failed renders count toward the hour.
+- **When a picture cannot be made** (cap, timeout, browser missing or crashed) the alert is sent as the usual text plus a line `Chart: <dashboard link>` that opens the dashboard on that bar, and the reason is logged. With `127.0.0.1` that link works through the SSH tunnel only. A slow render holds its alert for at most `timeout_ms` (renders run one at a time, so a burst of alerts queues behind it), and an alert is never dropped because of a picture. When images are off, alerts are unchanged.
+- Discord gets the picture as an attachment in the embed. Telegram gets it as a photo with the alert text as the caption; Telegram allows 1024 characters in a caption, so a longer alert is sent as a plain message without the picture instead of being cut.
+- The browser only talks to the dashboard: any other request is blocked, and a `WATCHER_DASHBOARD_TOKEN` goes in a request header, never in a URL. Run as root (a container or a root service) and Chromium is started with `--no-sandbox`, which it needs there; run the Pi service as a normal user to keep the sandbox.
+- The picture is always the light theme and carries the Lightweight Charts credit line.
+- Try it once by hand: run the tests with `WATCHER_TEST_CHROMIUM=/usr/bin/chromium npm test --prefix bridge`; two extra tests then make a real PNG.
 
 ### Open question for live testing
 

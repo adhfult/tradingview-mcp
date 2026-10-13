@@ -1117,3 +1117,22 @@ test('the dashboard token never reaches a log through the image path', async (t)
   assert.ok(logs.some((l) => l.includes('chart image skipped')));
   assert.ok(!logs.join('\n').includes(dashToken));
 });
+
+test('real browser, end to end: a rule alert reaches Discord with a real PNG of the dashboard chart (set WATCHER_TEST_CHROMIUM)', { skip: !process.env.WATCHER_TEST_CHROMIUM }, async (t) => {
+  const { watcher, lib, calls, clock } = await build(t, {
+    env: { WATCHER_CHROMIUM_PATH: process.env.WATCHER_TEST_CHROMIUM },
+    configOverrides: NO_API_IMAGES({ enabled: true, timeout_ms: 20_000 }),
+  });
+  await watcher.start();
+  const closes = Array.from({ length: 60 }, (_, i) => 100 + (i % 7));
+  lib.watchers[0].feed(snapshot(closes));
+  lib.watchers[0].feed(snapshot([...closes, 130])); // one bar closes with a 20% move
+  clock.advance(1);
+  for (let i = 0; i < 200 && calls.length === 0; i += 1) await new Promise((resolve) => setTimeout(resolve, 50)); // a real browser takes real time
+  assert.equal(calls.length, 1);
+  const file = calls[0].body.get('files[0]');
+  const png = Buffer.from(await file.arrayBuffer());
+  assert.deepEqual([...png.subarray(0, 8)], [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  assert.ok(png.length > 5000, `a drawn chart (${png.length} bytes)`);
+  await watcher.stop();
+});
