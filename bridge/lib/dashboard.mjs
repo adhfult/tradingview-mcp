@@ -69,6 +69,8 @@ export function defaultAssets() {
   return {
     '/': file('../dashboard/index.html'),
     '/assets/app.mjs': file('../dashboard/app.mjs'),
+    '/assets/pure.mjs': file('../dashboard/pure.mjs'),
+    '/assets/dom.mjs': file('../dashboard/dom.mjs'),
     '/assets/style.css': file('../dashboard/style.css'),
     '/assets/lightweight-charts.mjs': file('../node_modules/lightweight-charts/dist/lightweight-charts.standalone.production.mjs'),
   };

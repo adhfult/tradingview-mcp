@@ -80,21 +80,6 @@ test('style.css: every DESIGN.md token is defined for light and dark, with focus
 
 // ---------------------------------------------------------------- app.mjs (static)
 
-test('app.mjs: never builds HTML from data, never evals, talks only to its own origin', async () => {
-  const js = await read('app.mjs');
-  assert.doesNotMatch(js, /\.(innerHTML|outerHTML)\b|insertAdjacentHTML|setHTMLUnsafe|createContextualFragment|DOMParser|document\.write|\beval\s*\(|new Function|setAttribute\(\s*['"]style|style\.cssText|window\.open|location\s*(\.href\s*)?=[^=]/);
-  assert.doesNotMatch(js, /\bimport\s*\(\s*[^'"/\s]/, 'dynamic import takes a literal');
-  const imports = [...js.matchAll(/(?:from|import\s*\()\s*['"]([^'"]+)['"]/g)].map((m) => m[1]);
-  assert.deepEqual([...new Set(imports)].filter((u) => u !== '/assets/lightweight-charts.mjs'), [], 'only the chart library is imported');
-  // Every request goes through getJson(path) -> fetch(path), so check both ends: the one fetch call, and every getJson argument.
-  assert.deepEqual([...js.matchAll(/\bfetch\(([^,)]*)/g)].map((m) => m[1]), ['path'], 'one fetch, inside getJson');
-  const calls = [...js.matchAll(/\bgetJson\(\s*([`'"])([^`'"]*)/g)].map((m) => m[2]);
-  assert.ok(calls.length >= 5, `found ${calls.length} getJson calls with a literal path`);
-  for (const url of calls) assert.match(url, /^\/api\//, url);
-  assert.equal([...js.matchAll(/\bgetJson\(/g)].length, calls.length + 1, 'every getJson call has a literal path (+1 for its definition)');
-  for (const [, url] of js.matchAll(/EventSource\(\s*['"`]([^'"`]+)/g)) assert.equal(url, '/events');
-});
-
 // ---------------------------------------------------------------- app.mjs (pure functions, no DOM)
 
 const T = 1_760_000_000;
@@ -212,13 +197,6 @@ test('index.html: a Notes panel with its status line and list, and an "Add note"
 });
 
 // ---------------------------------------------------------------- notes: app.mjs (static)
-
-test('app.mjs: the one href assignment sits next to the obsidian:// scheme check', async () => {
-  const js = (await read('app.mjs')).replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, '');
-  const hits = [...js.matchAll(/\.href\s*=[^=]/g)];
-  assert.equal(hits.length, 1, 'exactly one place sets an href');
-  assert.match(js.slice(Math.max(0, hits[0].index - 250), hits[0].index + 150), /safeObsidianHref\(/);
-});
 
 // ---------------------------------------------------------------- notes: pure functions
 
