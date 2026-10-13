@@ -203,6 +203,32 @@ At most 5 browser tabs can receive live updates at once; a sixth shows "Live upd
 
 The page loads only its own files (no inline script or style, no outside requests), so the strict Content-Security-Policy holds. The chart is TradingView Lightweight Charts; its attribution is in the page footer. Without JavaScript the page shows a plain message. If the dashboard port is taken, the watcher logs it and runs without the dashboard.
 
+#### Obsidian notes on the chart
+
+Notes you keep in Obsidian (news, an opportunity, a risk) can show on a stream's chart as small blue circles (N news, O opportunity, R risk, N plain note) at the candle they relate to, and in a "Notes" panel. Clicking a note opens it in Obsidian. It is **off by default** because it needs a folder:
+
+```json
+"dashboard": {"notes": {"enabled": true, "dir": "~/notes/markets", "vault": "ObsidianVault", "vault_folder": "markets"}}
+```
+
+`dir` is the real folder on the machine running the watcher (an absolute path, `~` allowed). `vault` is the vault's name in Obsidian and `vault_folder` is the same folder as seen from the vault's root; both are used only to build `obsidian://` links. A note is shown only if it is a `.md` file **directly** in `dir` (subfolders are not read) and its properties have `symbols`:
+
+```
+---
+symbols: [BINANCE:BTCUSDT]    # or the block list Obsidian writes; a ticker alone (BTCUSDT) also matches
+time: 2026-10-12T14:30:00Z    # optional. A date alone means the end of that UTC day; no zone means UTC
+kind: news                    # news, opportunity or risk; anything else shows as "note"
+---
+# The title is the first "# " heading, else the file name
+Body text. Only an excerpt of about 280 characters is sent to the page.
+```
+
+A note with no `time` appears only in the panel. A marker sits on the last bar at or before `time`; a note older than the loaded candles has no marker. Click a candle, then "Add note here", to open a pre-filled new note in Obsidian (the file name has no `:` because Obsidian forbids it, so `BINANCE:BTCUSDT` becomes `BINANCE-BTCUSDT`). A link such as `http://localhost:8788/?symbol=BINANCE:BTCUSDT&tf=60&t=<unix seconds>` opens that stream with the chart centred on `t`; paste one into a note to link back to the chart.
+
+What it does and does not do: the watcher only reads that one folder, never writes into your vault, and nothing in a request picks a file. Symlinks, other file types and notes without `symbols` are never read, at most the newest 500 files are looked at, only the first 16 KB of each is read, and the result is cached for 30 seconds. `obsidian://` links only work in a browser on a machine with Obsidian installed (your PC, directly or through the tunnel), not on the Pi's own screen.
+
+**Getting the vault to the Pi** is not built in. If the watcher runs on the Pi and the vault is on your PC, the `markets` folder has to exist on the Pi: the boring options are Syncthing sending only that folder one way (send only on the PC), or a `git pull` timer on the Pi. If you run the watcher in WSL on the PC, point `dir` at the vault folder (under `/mnt/c/...`, slower to read, which the cache hides).
+
 ### Open question for live testing
 
 It is not known whether TradingView drops one of two websockets that use the same cookie (for example, the watcher on the Pi and the desktop MCP at the same time). Watch `disconnects` in `/health` and the `disconnected at` log lines, and record what you see.
