@@ -15,7 +15,7 @@
 import { closeDetail, fillAlert, initDetail, openDetail, renderAlertsTab } from './alerts-view.mjs';
 import { $, addText, cssVar, errorText, getJson, renderList, saveCanvasPng, setStatus, timeText } from './dom.mjs';
 import {
-  buildMarkers, centerRange, classifyBar, deepLink, formatTimeframe, isStale, newNoteLink, parseDeepLink, setObsidianLink, streamKey, tabTitle,
+  buildMarkers, centerRange, classifyBar, deepLink, formatTimeframe, isStale, newNoteLink, overlayLabel, parseDeepLink, setObsidianLink, streamKey, tabTitle,
 } from './pure.mjs';
 import { renderOverview, renderTrending } from './overview-view.mjs';
 import { renderBadges, renderHealth, renderPaper } from './status-view.mjs';
@@ -33,7 +33,7 @@ async function start() {
   const state = {
     streams: [], selected: null, candles: [], alerts: [], paper: [], levels: [], loadId: 0, wasConnected: false, loadFailed: false,
     notes: [], notesInfo: null, notesError: null, pick: null, centred: false,
-    tab: 'overview', fitPending: false, allAlerts: null, filters: { ruleId: '', symbol: '', status: '' }, unseen: 0,
+    tab: 'overview', fitPending: false, indicators: [], overlaysOn: new Set(), allAlerts: null, filters: { ruleId: '', symbol: '', status: '' }, unseen: 0,
   };
   const shown = { alerts: '', streams: '', picker: '', notes: '' }; // what is on screen, so an unchanged list is not rebuilt (it would drop keyboard focus and re-announce)
   const NO_CHART = 'The chart library could not be loaded, so there is no chart. Alerts and streams still work.';
@@ -42,6 +42,8 @@ async function start() {
   let series = null;
   let markerPlugin = null;
   let priceLines = [];
+  let overlaySeries = [];
+  let overlaySignature = '';
   const baseTitle = document.title;
 
   try {
@@ -106,6 +108,69 @@ async function start() {
       }));
   }
 
+  /** The rules' own indicator lines (from the server, which uses the same maths as the rules), for the boxes that are ticked. */
+  function drawOverlays() {
+    if (chart === null) return;
+    for (const line of overlaySeries) chart.removeSeries(line);
+    overlaySeries = [];
+    const line = (data, color, pane) => {
+      const added = chart.addSeries(lib.LineSeries, { color, lineWidth: 1, priceLineVisible: false, lastValueVisible: false }, pane);
+      added.setData(data);
+      overlaySeries.push(added);
+      return added;
+    };
+    for (const ind of state.indicators) {
+      if (!state.overlaysOn.has(ind.ruleId)) continue;
+      if (ind.type === 'bollinger_break') {
+        line(ind.upper, cssVar('--muted'), 0);
+        line(ind.middle, cssVar('--accent'), 0);
+        line(ind.lower, cssVar('--muted'), 0);
+      } else {
+        const rsi = line(ind.series, cssVar('--accent'), 1);
+        for (const level of ind.levels) rsi.createPriceLine({ price: level, color: cssVar('--paper'), lineWidth: 1, lineStyle: lib.LineStyle.Dashed, axisLabelVisible: true, title: String(level) });
+      }
+    }
+  }
+
+  /** One checkbox per drawable rule; rebuilt only when the set of rules changed, so a tick is not lost on a reload. */
+  function renderOverlayControls() {
+    const box = $('overlay-controls');
+    box.hidden = state.indicators.length === 0 || lib === null;
+    const signature = JSON.stringify(state.indicators.map((i) => i.ruleId));
+    if (signature === overlaySignature) return;
+    overlaySignature = signature;
+    box.replaceChildren(...[...box.querySelectorAll('legend')]);
+    for (const ind of state.indicators) {
+      const label = document.createElement('label');
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.checked = state.overlaysOn.has(ind.ruleId);
+      input.addEventListener('change', () => {
+        if (input.checked) state.overlaysOn.add(ind.ruleId);
+        else state.overlaysOn.delete(ind.ruleId);
+        drawOverlays();
+      });
+      label.append(input, ` ${overlayLabel(ind)}`);
+      box.append(label);
+    }
+  }
+
+  async function loadIndicators() {
+    const stream = state.selected;
+    if (stream === null) return;
+    const id = state.loadId;
+    try {
+      const indicators = await getJson(`/api/indicators?${new URLSearchParams({ symbol: stream.symbol, tf: stream.timeframe })}`);
+      if (id !== state.loadId) return;
+      state.indicators = indicators;
+    } catch (err) {
+      console.error('indicator overlays failed', err); // the chart itself must not suffer for them
+      state.indicators = [];
+    }
+    renderOverlayControls();
+    drawOverlays();
+  }
+
   /** `fit` is for a first load or a stream change; a reload at a new bar keeps the zoom the user chose. */
   function drawChart(fit) {
     ensureChart();
@@ -125,6 +190,7 @@ async function start() {
     series.applyOptions(seriesOptions());
     drawLevels();
     drawMarkers();
+    drawOverlays();
   }
 
   // ------------------------------------------------------------ lists
@@ -324,6 +390,7 @@ async function start() {
       renderAlerts();
       renderNotes();
       renderAddNote();
+      loadIndicators();
     } catch (err) {
       if (id !== state.loadId) return;
       $('chart').setAttribute('aria-busy', 'false');
@@ -347,6 +414,7 @@ async function start() {
       drawChart(false);
       centreOnLink();
       renderAddNote();
+      if (state.overlaysOn.size > 0) loadIndicators(); // the lines extend with each new bar
     } catch (err) {
       console.error('candle reload failed', err);
     }
@@ -377,6 +445,9 @@ async function start() {
     state.notesInfo = null;
     state.notesError = null;
     state.pick = null; // a candle picked on the old stream must not build a note for the new one
+    state.indicators = []; // nor the old stream's lines drawn on the new stream's chart
+    drawOverlays();
+    renderOverlayControls();
     shown.notes = '';
     renderList($('notes-list'), []);
     setStatus('notes-status', 'Loading notes');

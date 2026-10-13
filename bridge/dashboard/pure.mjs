@@ -249,3 +249,9 @@ export function formatPct(value) {
   if (!Number.isFinite(value)) return '—';
   return `${value > 0 ? '+' : ''}${value.toFixed(2)}%`;
 }
+
+/** The checkbox label for one /api/indicators entry. */
+export function overlayLabel(indicator) {
+  if (indicator.type === 'rsi_cross') return `RSI ${indicator.period}, levels ${indicator.levels.join(' and ')} (rule ${indicator.ruleId})`;
+  return `Bollinger bands ${indicator.period}, ${indicator.stddev} deviations (rule ${indicator.ruleId})`;
+}
