@@ -8,6 +8,7 @@ import net from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createDashboard, MAX_SSE_CLIENTS, COALESCE_MS, HEARTBEAT_MS } from '../../lib/dashboard.mjs';
+import { createNotes } from '../../lib/notes.mjs';
 import { createFakeClock } from './support.mjs';
 
 const TOKEN = 'a-long-enough-token-1234567890';
@@ -306,6 +307,102 @@ test('/api/levels returns the live price_cross levels for a symbol, including ru
   for (const query of ['symbol=NOPE', '', 'symbol=__proto__']) {
     assert.equal((await get(`/api/levels?${query}`)).status, 404, query);
   }
+});
+
+// ---------------------------------------------------------------- notes
+
+const noteFile = (front, body = '# A title\nBody text.\n') => `---\n${front}\n---\n${body}`;
+const NOTES_URL = '/api/notes?symbol=BINANCE:BTCUSDT&tf=60';
+
+/** A real notes layer over a temp folder with a BTC note, an NVDA note and an essay with no symbols. */
+async function withNotes(t, extra = {}) {
+  const root = await mkdtemp(join(tmpdir(), 'dash-notes-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const dir = join(root, 'markets');
+  await mkdir(dir);
+  await writeFile(join(dir, 'btc.md'), noteFile('symbols: [BINANCE:BTCUSDT]\ntime: 2026-10-12T14:30:00Z\nkind: news', '# ETF\nApproved.'));
+  await writeFile(join(dir, 'nvda.md'), noteFile('symbols: [NVDA]'));
+  await writeFile(join(dir, 'essay.md'), '# Not a market note\nNo frontmatter.');
+  await writeFile(join(root, 'outside.md'), noteFile('symbols: [BTCUSDT]'));
+  const notes = createNotes({ dir, vault: 'My Vault', vaultFolder: 'markets', clock: createFakeClock(), logger: { info() {}, warn() {}, error() {} } });
+  return { notes, dir, root, ...extra };
+}
+
+test('/api/notes with the notes layer off: 200, enabled false, no notes', async (t) => {
+  const { get } = await start(t);
+  const res = await get(NOTES_URL);
+  assert.equal(res.status, 200);
+  assert.deepEqual(json(res), { enabled: false, vault: null, folder: null, notes: [] });
+});
+
+test('/api/notes returns the notes for the stream, in the documented shape, and nothing else', async (t) => {
+  const { notes } = await withNotes(t);
+  const { get } = await start(t, { notes });
+  const res = await get(NOTES_URL);
+  assert.equal(res.status, 200);
+  assert.equal(res.headers['content-type'], 'application/json; charset=utf-8');
+  assert.deepEqual(json(res), {
+    enabled: true,
+    vault: 'My Vault',
+    folder: 'markets',
+    notes: [{
+      title: 'ETF',
+      kind: 'news',
+      time: Date.parse('2026-10-12T14:30:00Z') / 1000,
+      symbols: ['BINANCE:BTCUSDT'],
+      excerpt: 'Approved.',
+      open: 'obsidian://open?vault=My%20Vault&file=markets%2Fbtc',
+    }],
+  });
+  assert.deepEqual(json(await get('/api/notes?symbol=NASDAQ:NVDA&tf=D')).notes.map((n) => n.open), ['obsidian://open?vault=My%20Vault&file=markets%2Fnvda']);
+  assert.deepEqual(json(await get('/api/notes?symbol=BINANCE:BTCUSDT&tf=15')).notes.map((n) => n.title), ['ETF'], 'notes belong to the symbol, every timeframe of it');
+  assert.ok(!res.body.includes('Not a market note'), 'a note with no symbols is never served');
+});
+
+test('/api/notes: an unknown stream or a missing parameter is the same 404 as the other routes, and reads nothing', async (t) => {
+  const asked = [];
+  const notes = { vault: 'V', folder: 'f', list: async (symbol) => { asked.push(symbol); return []; } };
+  const { get } = await start(t, { notes });
+  for (const query of ['', 'symbol=BINANCE:BTCUSDT', 'tf=60', 'symbol=NOPE&tf=60', 'symbol=BINANCE:BTCUSDT&tf=999', 'symbol=__proto__&tf=60', 'symbol=../../etc/passwd&tf=60', 'symbol=%2e%2e%2f&tf=60']) {
+    const res = await get(`/api/notes?${query}`);
+    assert.equal(res.status, 404, query);
+    assert.deepEqual(json(res), { error: 'not found' });
+  }
+  assert.deepEqual(asked, [], 'no request value ever reached the notes layer');
+});
+
+test('/api/notes: a request cannot pick a file or a folder; only a stream\'s own symbol is passed on', async (t) => {
+  const asked = [];
+  const notes = { vault: 'V', folder: 'f', list: async (symbol) => { asked.push(symbol); return []; } };
+  const { get } = await start(t, { notes });
+  const res = await get(`${NOTES_URL}&file=../../etc/passwd&dir=/etc&path=/etc/passwd&vault=evil&folder=/`);
+  assert.equal(res.status, 200);
+  assert.deepEqual(asked, ['BINANCE:BTCUSDT']);
+  assert.equal(json(res).vault, 'V');
+});
+
+test('/api/notes follows the same rules as every route: 401 without the token, 403 for a foreign Host, 405 for POST, headers on all', async (t) => {
+  const { notes } = await withNotes(t);
+  const secured = await start(t, { notes, host: '0.0.0.0', token: TOKEN });
+  assert.equal((await secured.get(NOTES_URL)).status, 401);
+  assert.equal((await secured.get(NOTES_URL, { headers: { authorization: 'Bearer wrong' } })).status, 401);
+  assert.equal((await secured.get(NOTES_URL, { headers: { authorization: `Bearer ${TOKEN}` } })).status, 200);
+  assert.equal((await secured.get(NOTES_URL, { method: 'POST', headers: { authorization: `Bearer ${TOKEN}` } })).status, 405);
+  const loopback = await start(t, { notes });
+  assert.equal((await loopback.get(NOTES_URL)).status, 200);
+  assert.equal((await loopback.get(NOTES_URL, { headers: { host: 'evil.example' } })).status, 403);
+  assert.equal((await loopback.get(NOTES_URL, { method: 'POST' })).status, 405);
+});
+
+test('/api/notes: a notes layer that fails is a generic 500 and the server keeps serving', async (t) => {
+  const notes = { vault: 'V', folder: 'f', list: async () => { throw new Error('notes exploded'); } };
+  const { get, logs } = await start(t, { notes });
+  const res = await get(NOTES_URL);
+  assert.equal(res.status, 500);
+  assert.deepEqual(json(res), { error: 'internal error' });
+  assert.ok(!res.body.includes('exploded'));
+  assert.ok(logs.some((l) => l.startsWith('error') && l.includes('notes exploded')));
+  assert.equal((await get('/api/streams')).status, 200);
 });
 
 // ---------------------------------------------------------------- journals
