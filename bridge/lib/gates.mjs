@@ -6,8 +6,8 @@ import { ruleExpired } from './rules.mjs';
  * onClosedBar in watcher.mjs). A composite's members are held to the same gates: a dead member cannot hit,
  * so it blocks an all_of and is simply absent from an any_of.
  *
- * One function for the watcher and the dashboard's rule preview, so the preview cannot drift from the real
- * behaviour. Returns new objects where a composite changed; the input is never mutated.
+ * One function for the watcher and the dashboard's rule preview, so the gates themselves cannot drift apart.
+ * Returns new objects where a composite changed; the input is never mutated.
  */
 export function selectActive(rules, { now, timezone, inSession }) {
   const live = (rule) => !ruleExpired(rule, now, timezone) && (rule.calendar !== 'us_session' || inSession);

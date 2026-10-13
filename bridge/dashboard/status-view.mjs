@@ -10,7 +10,7 @@ export function renderHealth(h) {
   setStatus('health-status', '');
   const facts = [
     ['Uptime', formatDuration(h.uptimeSeconds)],
-    ['TradingView login', yesNo(h.loggedIn, 'logged in', 'anonymous')],
+    ['TradingView login', yesNo(h.loggedIn, 'cookies set', 'anonymous')],
     ['Streams healthy', h.healthy === null ? 'unknown' : `${h.healthy} of ${h.total}`],
     ['Stream failures, lost connections', `${num(h.disconnects)}, ${num(h.connectionDrops)}`],
     ['Notifications waiting to send', num(h.queuePending)],
@@ -52,7 +52,7 @@ function setBadge(id, text, state) {
 /** The header's market clock and login badges; hidden while the watcher has not said. */
 export function renderBadges(h) {
   setBadge('market-badge', h.usOpen === null ? '' : `US market ${h.usOpen ? 'open' : 'closed'}`, h.usOpen ? 'live' : 'connecting');
-  setBadge('login-badge', h.loggedIn === null ? '' : `TradingView: ${h.loggedIn ? 'logged in' : 'anonymous'}`, h.loggedIn ? 'live' : 'connecting');
+  setBadge('login-badge', h.loggedIn === null ? '' : `TradingView: ${h.loggedIn ? 'login cookies set' : 'anonymous'}`, h.loggedIn ? 'live' : 'connecting');
 }
 
 /** `journals` is /api/paper: [{strategy, symbol, timeframe, events}]. */

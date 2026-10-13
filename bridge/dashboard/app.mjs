@@ -33,7 +33,7 @@ async function start() {
   const state = {
     streams: [], selected: null, candles: [], alerts: [], paper: [], levels: [], loadId: 0, wasConnected: false, loadFailed: false,
     notes: [], notesInfo: null, notesError: null, pick: null, centred: false,
-    tab: 'overview', fitPending: false, indicators: [], overlaysOn: new Set(), previewRules: [], previewRule: '', preview: null, allAlerts: null, filters: { ruleId: '', symbol: '', status: '' }, unseen: 0,
+    tab: 'overview', fitPending: false, indicators: [], overlaysOn: new Set(), previewRules: [], previewRule: '', preview: null, alertEvents: 0, allAlerts: null, filters: { ruleId: '', symbol: '', status: '' }, unseen: 0,
   };
   const shown = { alerts: '', streams: '', picker: '', notes: '' }; // what is on screen, so an unchanged list is not rebuilt (it would drop keyboard focus and re-announce)
   const NO_CHART = 'The chart library could not be loaded, so there is no chart. Alerts and streams still work.';
@@ -168,6 +168,7 @@ async function start() {
       if (id !== state.loadId) return;
       state.indicators = indicators;
     } catch (err) {
+      if (id !== state.loadId) return; // a late failure for a stream that has been left must not clear the new one's lines
       console.error('indicator overlays failed', err); // the chart itself must not suffer for them
       state.indicators = [];
     }
@@ -200,6 +201,7 @@ async function start() {
       if (id !== state.loadId) return;
       state.previewRules = out.rules;
     } catch (err) {
+      if (id !== state.loadId) return;
       console.error('rule preview list failed', err); // the preview is an extra; the chart must not suffer for it
       state.previewRules = [];
     }
@@ -537,12 +539,15 @@ async function start() {
   }
 
   async function loadAllAlerts() {
+    const before = state.alertEvents;
     try {
       state.allAlerts = await getJson(`/api/alerts?limit=${ALL_ALERTS_LIMIT}`);
       renderAlertsTab(state.allAlerts, state.filters, openDetailFor);
     } catch (err) {
       setStatus('alerts-all-status', `Could not load alerts: ${errorText(err)}`, 'error');
+      return;
     }
+    if (state.alertEvents !== before) loadAllAlerts(); // an alert arrived while the list was in flight: it may be missing from it
   }
 
   async function loadStatusTab() {
@@ -636,6 +641,7 @@ async function start() {
   }
 
   function onAlert(alert) {
+    state.alertEvents += 1;
     state.alerts = [alert, ...state.alerts].slice(0, ALERT_LIMIT);
     const list = $('alerts-list');
     const li = document.createElement('li'); // one new row: rebuilding the list would make a screen reader read all of it again
@@ -732,6 +738,8 @@ async function start() {
   setInterval(() => { // the overview's "ago" text and the badges depend on the clock and on counters, not on an event
     loadHealth();
     if (state.tab === 'overview') loadOverview();
+    if (state.tab === 'opportunities') loadTrending(); // new scan results, and the "seen ... ago" text
+    if (state.tab === 'status') loadStatusTab(); // a paper exit
   }, 60_000);
 
   connect();

@@ -250,6 +250,7 @@ export function createWatcher({
       usOpen: isUsRegularHours(now, usCalendar),
       nextHoliday: [...config.health.us_holidays].sort().find((day) => day >= today) ?? null,
       trending: store.state.trending,
+      trendingRememberMs: config.trending.remember_hours * 3_600_000,
     };
   };
 

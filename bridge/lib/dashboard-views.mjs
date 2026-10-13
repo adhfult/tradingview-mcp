@@ -6,11 +6,12 @@
  */
 import { bollinger, rsi } from './indicators.mjs';
 import { selectActive } from './gates.mjs';
-import { evaluateRules, normalizeRule, ruleApplies, ruleExpired } from './rules.mjs';
+import { barsNeeded, evaluateRules, normalizeRule, ruleApplies, ruleExpired } from './rules.mjs';
 
 const SPARK_BARS = 60;
 const MAX_TRENDING = 200;
 export const PREVIEW_BARS = 300;
+const RSI_WARMUP_PERIODS = 5; // Wilder smoothing never forgets its seed; after 5 periods the seed weighs under 1%
 const MAX_ERROR_CODE = 64;
 
 const orNull = (value) => (value === undefined ? null : value);
@@ -79,11 +80,12 @@ export function overviewView({ list, candlesOf, alerts, status }) {
 
 /**
  * The trending scan's memory ("market|kind" -> {SYMBOL: last seen ms}) as flat rows, newest first.
- * The scanner already forgets symbols older than remember_hours, so everything here is current.
- * `watched` is the stream to open when the symbol is one the watcher follows (exact symbol match).
+ * `rememberMs` (remember_hours in ms) drops older symbols here too: the scanner only prunes when it scans, and a
+ * closed market or a failed scan would leave stale ones. `watched` is the stream to open when the symbol is one the watcher follows (exact symbol match).
  */
-export function trendingView(trending, list, nowMs) {
+export function trendingView(trending, list, nowMs, rememberMs) {
   const rows = [];
+  const keepMs = Number.isFinite(rememberMs) ? rememberMs : Infinity;
   if (trending !== null && typeof trending === 'object') {
     for (const [bucket, seen] of Object.entries(trending)) {
       const bar = bucket.indexOf('|');
@@ -91,7 +93,7 @@ export function trendingView(trending, list, nowMs) {
       const market = bucket.slice(0, bar);
       const kind = bucket.slice(bar + 1);
       for (const [symbol, lastSeenAt] of Object.entries(seen)) {
-        if (!Number.isFinite(lastSeenAt)) continue;
+        if (!Number.isFinite(lastSeenAt) || nowMs - lastSeenAt > keepMs) continue;
         const stream = list.find((s) => s.symbol === symbol);
         rows.push({
           market,
@@ -148,15 +150,26 @@ export function previewableRules({ rules, stream, nowMs, timezone }) {
   return rules.filter((r) => ruleApplies(r, stream) && !ruleExpired(r, nowMs, timezone)).map((r) => ({ id: r.id, type: r.type }));
 }
 
+/** Closed bars a rule needs behind it before the preview will judge a bar: its own minimum, five periods for RSI, the slowest member for a composite. */
+export function warmupBars(raw) {
+  const rule = normalizeRule(raw);
+  if (rule.members) return Math.max(0, ...rule.members.map(warmupBars));
+  const needed = barsNeeded(rule);
+  return rule.type === 'rsi_cross' ? Math.max(needed, RSI_WARMUP_PERIODS * rule.period) : needed;
+}
+
 /**
  * Where one rule would have hit over the last `bars` closed bars: the real evaluator on each prefix of the
  * candles, behind the watcher's own gates (selectActive, judged per bar from its open time). Rule hits only: no
  * cooldown, daily cap or quiet hours, because those depend on what was sent, so this is a count of signals and
  * not of alerts. The last candle is still forming and is never judged. `candles` ends with the forming bar.
+ * The watcher judged each bar with a full snapshot behind it, and this only has the prefix up to the bar, so
+ * the first bars (less history than the rule needs, see warmupBars) are skipped and not counted in `barsChecked`.
+ * Not exact: an RSI bar just past the warm-up can differ slightly from what the watcher saw.
  */
 export function previewView({ rule, stream, candles, nowMs, timezone, inSession, bars = PREVIEW_BARS }) {
   const closed = candles.slice(0, -1);
-  const first = Math.max(0, closed.length - bars);
+  const first = Math.max(0, closed.length - bars, warmupBars(rule) - 1);
   const hits = [];
   for (let i = first; i < closed.length; i += 1) {
     const active = selectActive([rule], { now: nowMs, timezone, inSession: inSession(closed[i].time * 1000) });
@@ -164,5 +177,5 @@ export function previewView({ rule, stream, candles, nowMs, timezone, inSession,
       hits.push({ time: hit.barTime, direction: hit.direction, message: hit.message });
     }
   }
-  return { ruleId: rule.id, symbol: stream.symbol, timeframe: stream.timeframe, barsChecked: closed.length - first, hits };
+  return { ruleId: rule.id, symbol: stream.symbol, timeframe: stream.timeframe, barsChecked: Math.max(0, closed.length - first), hits };
 }

@@ -231,18 +231,18 @@ What it does and does not do: the watcher only reads that one folder, never writ
 
 #### Tabs and panels
 
-The page has five tabs: **Overview** (one card per stream with the last price, change, a sparkline and its health), **Chart** (the chart, its alerts and notes), **Alerts** (the stored history with filters for rule, symbol and status, and a count per rule per day; click one for the detail drawer with its numbers, "copy chart link" and "add note"), **Opportunities** (what the trending scan saw lately, within `remember_hours`) and **Status** (watcher health, paper-trade equity of realised exits only, gauntlet reports). The header shows the market clock, TradingView logged in or anonymous, and live or reconnecting; the tab title shows `(2)` when alerts arrive while the tab is hidden. "Save chart as PNG" downloads the chart.
+The page has five tabs: **Overview** (one card per stream with the last price, change, a sparkline and its health), **Chart** (the chart, its alerts and notes), **Alerts** (the stored history with filters for rule, symbol and status, and a count per rule per day; click one for the detail drawer with its numbers, "copy chart link" and "add note"), **Opportunities** (what the trending scan saw lately, within `remember_hours`) and **Status** (watcher health, paper-trade equity of realised exits only, gauntlet reports). The header shows the market clock, whether TradingView login cookies are set (not that they are still valid) or the watcher is anonymous, and live or reconnecting; the tab title shows `(2)` when alerts arrive while the tab is hidden. "Save chart as PNG" downloads the chart.
 
 "What the rules see" (Chart tab) draws the RSI and Bollinger lines of your `rsi_cross` and `bollinger_break` rules. The numbers come from the watcher (the same code the rules use), never from the browser, so the lines cannot disagree with the alerts. Rules inside an `all_of` / `any_of` are not drawn.
 
 #### Rule noise preview
 
-On the Chart tab, "Rule noise preview" lets you pick one rule and see small grey arrows where it **would have fired** over the last 300 closed bars, with a count. Use it to tune a threshold before it spams you. What it is and is not:
+On the Chart tab, "Rule noise preview" lets you pick one rule and see small grey arrows where it **would have fired** over the last closed bars (up to 299: the watcher holds 300 candles and one is still forming), with a count. Use it to tune a threshold before it spams you. What it is and is not:
 
-- It runs the real rule code on each past bar, behind the same gates as the watcher (`expires`, `calendar: us_session`, members of `all_of` / `any_of`; the session is judged from each bar's own open time).
-- It shows **signals**, not alerts: cooldowns, `max_per_day`, `max_per_hour` and quiet hours depend on what was actually sent, so they are not applied and fewer alerts would really have gone out.
+- It runs the real rule code on each past bar, behind the same gates as the watcher (`expires`, `calendar: us_session`, members of `all_of` / `any_of`; the session is judged from each bar's own open time). A rule needs history first, so the oldest bars (its own minimum, five periods for RSI, the slowest member for a composite) are not judged and not counted. Close to that edge an RSI bar can differ a little from what the watcher saw.
+- It shows **signals**, not alerts: cooldowns, `max_per_day`, `max_per_hour` and quiet hours depend on what was actually sent, so they are not applied and the alerts really sent would be the same or fewer.
 - It is not a prediction and says nothing about whether acting on a signal would have made or lost money.
-- Only the bars the watcher holds in memory are looked at, so a stream just started shows fewer than 300. Only live rules that apply to the stream are offered, top-level ones (a member of a composite is previewed through its composite).
+- Only the bars the watcher holds in memory are looked at, so a stream just started shows fewer than 300. Only live rules that apply to the stream are offered; a composite is previewed as a whole.
 - It costs about 25 ms of CPU per rule at 400 bars (65 ms for a composite at 1000), done once per rule per closed bar and kept until the next bar closes; it is read-only like the rest of the dashboard. The chart library cannot draw hollow markers, so they are small and grey instead.
 
 ### Open question for live testing

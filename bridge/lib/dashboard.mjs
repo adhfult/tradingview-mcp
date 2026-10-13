@@ -30,6 +30,7 @@ import { healthView, indicatorsView, overviewView, previewableRules, previewView
 import { errorMessage } from './errors.mjs';
 import { parseGauntletReport, parsePaperJournal } from './journals.mjs';
 import { tokenMatches, tokensEqual } from './localapi.mjs';
+import { selectActive } from './gates.mjs';
 import { ruleExpired } from './rules.mjs';
 
 export const MAX_SSE_CLIENTS = 5;
@@ -191,7 +192,7 @@ export function createDashboard({
   const files = new Map(); // URL path -> {body, type}, loaded once in listen()
   const clients = new Set();
   const bars = new Map(); // stream key -> {sentAt, timer, pending}
-  const previews = new Map(); // stream key + rule id -> {lastClosed, view}; one entry per pair, so at most streams x rules
+  const previews = new Map(); // stream key + rule id -> {stamp, view}; one entry per pair, so at most streams x rules
   let heartbeat = null;
 
   // ------------------------------------------------------------ responses
@@ -276,7 +277,10 @@ export function createDashboard({
 
     ['/api/health', (res) => sendJson(res, 200, healthView(getStatus(), streams.list()))],
 
-    ['/api/trending', (res) => sendJson(res, 200, trendingView(getStatus().trending, streams.list(), clock.now()))],
+    ['/api/trending', (res) => {
+      const status = getStatus();
+      return sendJson(res, 200, trendingView(status.trending, streams.list(), clock.now(), status.trendingRememberMs));
+    }],
 
     // Server-side so the chart draws the same numbers the rules use (lib/indicators.mjs), never its own maths.
     ['/api/indicators', (res, params) => {
@@ -289,8 +293,9 @@ export function createDashboard({
     }],
 
     // Without `rule`: which rules can be previewed on this stream. With it: where that rule would have hit over the last
-    // 300 closed bars (lib/dashboard-views.mjs). The work is synchronous, so only one runs at a time; it is kept per
-    // (stream, rule, last closed bar), so a browser asking again costs nothing until a bar closes.
+    // 300 closed bars (lib/dashboard-views.mjs). The work is synchronous, so only one runs at a time. The answer is kept
+    // per (stream, rule) and reused while the closed candles and the rule's live members are unchanged, so a browser
+    // asking again costs nothing until a bar closes (the forming bar is not part of the answer, so not of the check).
     // ponytail: about 25 ms per rule at 400 bars, 65 ms for a composite at 1000, 370 ms at 5000; a worker thread if snapshots ever get that long.
     ['/api/preview', (res, params) => {
       const found = findStream(params);
@@ -303,11 +308,15 @@ export function createDashboard({
       const rule = options.some((o) => o.id === id) ? rules.find((r) => r.id === id) : undefined;
       if (rule === undefined) return sendError(res, 404, 'not found');
       const cacheKey = `${found.key}|${id}`;
-      const lastClosed = candles.length > 1 ? candles.at(-2).time : null;
+      const closed = candles.slice(0, -1);
+      // A sum over the closed candles, so a revised candle is noticed as well as a new one; and the rule as the gates leave it,
+      // so a member that expired overnight is too. A collision would only serve a slightly old answer, never leak anything.
+      const stamp = `${closed.at(-1)?.time}|${closed.reduce((sum, c, i) => sum + (c.open + c.high + c.low + c.close + c.volume) * (i + 1), 0)}`
+        + `|${JSON.stringify(selectActive([rule], { now: nowMs, timezone, inSession: true }))}`;
       const cached = previews.get(cacheKey);
-      if (cached !== undefined && cached.lastClosed === lastClosed) return sendJson(res, 200, cached.view);
+      if (cached !== undefined && cached.stamp === stamp) return sendJson(res, 200, cached.view);
       const view = previewView({ rule, stream: found, candles, nowMs, timezone, inSession });
-      previews.set(cacheKey, { lastClosed, view });
+      previews.set(cacheKey, { stamp, view });
       return sendJson(res, 200, view);
     }],
 

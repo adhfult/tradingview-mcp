@@ -45,12 +45,19 @@ const distinct = (list) => [...new Set(list)].sort();
 
 /** `all` is /api/alerts?limit=500; `filters` is {ruleId, symbol, status} (empty string = any). Rebuilt only when something changed. */
 export function renderAlertsTab(all, filters, onDetails) {
+  const options = {
+    ruleId: distinct(all.map((a) => a.ruleId).filter((v) => v !== null)),
+    symbol: distinct(all.map((a) => a.symbol).filter((v) => v !== null)),
+    status: distinct(all.map((a) => a.status)),
+  };
+  // A filter whose value has left the history would still hide rows while its dropdown said "Any".
+  for (const [field, values] of Object.entries(options)) if (!values.includes(filters[field])) filters[field] = '';
   const signature = JSON.stringify([all, filters]);
   if (signature === tabSignature) return;
   tabSignature = signature;
-  syncSelect('filter-rule', distinct(all.map((a) => a.ruleId).filter((v) => v !== null)), filters.ruleId);
-  syncSelect('filter-symbol', distinct(all.map((a) => a.symbol).filter((v) => v !== null)), filters.symbol);
-  syncSelect('filter-status', distinct(all.map((a) => a.status)), filters.status);
+  syncSelect('filter-rule', options.ruleId, filters.ruleId);
+  syncSelect('filter-symbol', options.symbol, filters.symbol);
+  syncSelect('filter-status', options.status, filters.status);
   const shown = filterAlerts(all, filters);
   setStatus('alerts-all-status', all.length === 0 ? 'No alerts yet. A rule that fires will appear here as it happens.' : `Showing ${shown.length} of ${all.length} stored alerts.`);
   renderList($('alerts-all-list'), shown.map((a) => (li) => fillAlert(li, a, onDetails)));

@@ -270,9 +270,9 @@ export function ghostMarkers(hits, candleTimes) {
 
 /** The line under the preview: the count, and plainly what the count is not. */
 export function previewSummary(view) {
-  if (view.barsChecked === 0) return 'No closed bars to look at yet.';
+  if (view.barsChecked === 0) return `Not enough closed bars yet to judge rule ${view.ruleId}.`;
   const n = view.hits.length;
   const count = n === 0 ? 'No signals' : `${n} ${n === 1 ? 'signal' : 'signals'}`;
   return `${count} from rule ${view.ruleId} in the last ${view.barsChecked} closed bars (small grey arrows on the chart). `
-    + 'Signals only: cooldowns, daily limits and quiet hours are not applied, so fewer alerts would actually have been sent. This is not a prediction.';
+    + 'Signals only: cooldowns, daily limits and quiet hours are not applied, so the alerts actually sent would be the same or fewer. This is not a prediction.';
 }
