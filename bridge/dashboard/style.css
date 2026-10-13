@@ -162,6 +162,35 @@ main { display: grid; gap: var(--s4); padding: 0 var(--s4) var(--s4); }
 footer { padding: var(--s4); color: var(--muted); font-size: var(--text-sm); }
 footer p { margin: 0; }
 
+/* ---------------------------------------------------------------- tabs, filters, drawer, sparklines */
+
+.tabs { display: flex; flex-wrap: wrap; gap: var(--s2); padding: 0 var(--s4) var(--s4); }
+.tabs button[aria-current="page"] { border-color: var(--accent); font-weight: 600; }
+.wide { grid-column: 1 / -1; }
+h3 { margin: var(--s4) 0 var(--s2); font-size: var(--text-md); font-weight: 600; }
+.filters { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2) var(--s3); margin-bottom: var(--s3); }
+.pair { display: inline-flex; align-items: center; gap: var(--s2); }
+.filters label { color: var(--muted); font-size: var(--text-sm); }
+.drawer {
+  position: fixed;
+  right: var(--s4);
+  bottom: var(--s4);
+  width: min(28rem, calc(100vw - 2 * var(--s4)));
+  max-height: 80vh;
+  overflow: auto;
+  padding: var(--s4);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+.drawer h2 { margin-bottom: var(--s3); }
+.drawer dl { display: grid; grid-template-columns: max-content 1fr; gap: var(--s1) var(--s3); margin: 0 0 var(--s3); }
+.drawer dt { color: var(--muted); }
+.drawer dd { margin: 0; overflow-wrap: anywhere; }
+.actions { display: flex; flex-wrap: wrap; gap: var(--s2); }
+.spark { width: 6rem; height: 1.5rem; fill: none; stroke: var(--accent); stroke-width: 1.5; }
+.spark polyline { vector-effect: non-scaling-stroke; }
+
 /* ---------------------------------------------------------------- wide screens */
 
 @media (min-width: 60rem) {

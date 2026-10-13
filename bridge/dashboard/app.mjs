@@ -12,10 +12,12 @@
  * paints on a canvas, which cannot resolve `var(--up)` itself.
  */
 
-import { $, addText, cssVar, errorText, getJson, renderList, setStatus, timeText } from './dom.mjs';
+import { closeDetail, fillAlert, initDetail, openDetail, renderAlertsTab } from './alerts-view.mjs';
+import { $, addText, cssVar, errorText, getJson, renderList, saveCanvasPng, setStatus, timeText } from './dom.mjs';
 import {
-  buildMarkers, centerRange, classifyBar, formatTimeframe, isStale, newNoteLink, parseDeepLink, setObsidianLink, streamKey,
+  buildMarkers, centerRange, classifyBar, deepLink, formatTimeframe, isStale, newNoteLink, parseDeepLink, setObsidianLink, streamKey, tabTitle,
 } from './pure.mjs';
+import { renderPaper } from './status-view.mjs';
 
 // The tests (and any reader) find the helpers here as before.
 export {
@@ -24,11 +26,13 @@ export {
 } from './pure.mjs';
 
 const ALERT_LIMIT = 100;
+const ALL_ALERTS_LIMIT = 500;
 
 async function start() {
   const state = {
     streams: [], selected: null, candles: [], alerts: [], paper: [], levels: [], loadId: 0, wasConnected: false, loadFailed: false,
     notes: [], notesInfo: null, notesError: null, pick: null, centred: false,
+    tab: 'chart', allAlerts: null, filters: { ruleId: '', symbol: '', status: '' }, unseen: 0,
   };
   const shown = { alerts: '', streams: '', picker: '', notes: '' }; // what is on screen, so an unchanged list is not rebuilt (it would drop keyboard focus and re-announce)
   const NO_CHART = 'The chart library could not be loaded, so there is no chart. Alerts and streams still work.';
@@ -37,6 +41,7 @@ async function start() {
   let series = null;
   let markerPlugin = null;
   let priceLines = [];
+  const baseTitle = document.title;
 
   try {
     lib = await import('/assets/lightweight-charts.mjs');
@@ -67,8 +72,13 @@ async function start() {
     chart = lib.createChart($('chart'), { autoSize: true, ...chartOptions() });
     series = chart.addSeries(lib.CandlestickSeries, seriesOptions());
     markerPlugin = lib.createSeriesMarkers(series, []);
+    $('save-png').hidden = false;
     chart.subscribeClick((param) => {
-      if (state.notesInfo?.enabled !== true || typeof param.time !== 'number') return;
+      if (typeof param.time !== 'number') return;
+      const sel = state.selected;
+      const hit = sel === null ? undefined : state.alerts.find((a) => a.symbol === sel.symbol && a.timeframe === sel.timeframe && a.barTime === param.time);
+      if (hit !== undefined) openDetailFor(hit); // a click on a candle with an alert marker
+      if (state.notesInfo?.enabled !== true) return;
       state.pick = param.time;
       renderAddNote();
     });
@@ -117,17 +127,6 @@ async function start() {
 
   // ------------------------------------------------------------ lists
 
-  function fillAlert(li, a) {
-    const direction = a.direction ?? a.level;
-    const tone = direction === 'up' || direction === 'down' ? direction : null;
-    const tag = addText(li, 'span', tone === 'up' ? '↑ Up' : tone === 'down' ? '↓ Down' : 'Info', 'tag');
-    if (tone !== null) tag.dataset.tone = tone;
-    addText(li, 'span', a.symbol === null ? a.title : `${a.symbol} ${formatTimeframe(a.timeframe)}`);
-    const time = addText(li, 'time', timeText(a.at / 1000));
-    time.dateTime = new Date(a.at).toISOString();
-    if (a.message !== null) addText(li, 'span', a.message, 'msg');
-  }
-
   /** Full rebuild, skipped when nothing changed. A new alert from the live feed is prepended by onAlert instead. */
   function renderAlerts() {
     const list = $('alerts-list');
@@ -135,7 +134,7 @@ async function start() {
     const signature = JSON.stringify(state.alerts);
     if (signature === shown.alerts) return;
     shown.alerts = signature;
-    renderList(list, state.alerts.map((a) => (li) => fillAlert(li, a)));
+    renderList(list, state.alerts.map((a) => (li) => fillAlert(li, a, openDetailFor)));
   }
 
   /** Rebuilt only when what it shows changed; keyboard focus on a "Show" button is put back by stream key. */
@@ -387,6 +386,46 @@ async function start() {
     loadStream();
   }
 
+  // ------------------------------------------------------------ tabs, alerts tab, detail drawer, status tab
+
+  function openDetailFor(alert) {
+    const info = state.notesInfo;
+    const noteUrl = info?.enabled === true && alert.symbol !== null && Number.isFinite(alert.barTime)
+      ? newNoteLink({ vault: info.vault, folder: info.folder, symbol: alert.symbol, timeframe: alert.timeframe, time: alert.barTime })
+      : null;
+    openDetail(alert, noteUrl);
+  }
+
+  async function loadAllAlerts() {
+    try {
+      state.allAlerts = await getJson(`/api/alerts?limit=${ALL_ALERTS_LIMIT}`);
+      renderAlertsTab(state.allAlerts, state.filters, openDetailFor);
+    } catch (err) {
+      setStatus('alerts-all-status', `Could not load alerts: ${errorText(err)}`, 'error');
+    }
+  }
+
+  async function loadStatusTab() {
+    try {
+      state.paper = await getJson('/api/paper');
+      renderPaper(state.paper);
+    } catch (err) {
+      setStatus('paper-status', `Could not load paper journals: ${errorText(err)}`, 'error');
+    }
+  }
+
+  function showTab(name) {
+    state.tab = name;
+    for (const el of document.querySelectorAll('[data-view]')) el.hidden = el.dataset.view !== name;
+    for (const button of $('tabs').querySelectorAll('button')) {
+      if (button.dataset.tab === name) button.setAttribute('aria-current', 'page');
+      else button.removeAttribute('aria-current');
+    }
+    closeDetail();
+    if (name === 'alerts') loadAllAlerts();
+    if (name === 'status') loadStatusTab();
+  }
+
   // ------------------------------------------------------------ live events
 
   function setBadge(badgeState, text) {
@@ -412,12 +451,20 @@ async function start() {
     state.alerts = [alert, ...state.alerts].slice(0, ALERT_LIMIT);
     const list = $('alerts-list');
     const li = document.createElement('li'); // one new row: rebuilding the list would make a screen reader read all of it again
-    fillAlert(li, alert);
+    fillAlert(li, alert, openDetailFor);
     list.prepend(li);
     while (list.children.length > ALERT_LIMIT) list.lastElementChild.remove();
     shown.alerts = JSON.stringify(state.alerts);
     setStatus('alerts-status', '');
     drawMarkers();
+    if (state.allAlerts !== null) {
+      state.allAlerts = [alert, ...state.allAlerts].slice(0, ALL_ALERTS_LIMIT);
+      if (state.tab === 'alerts') renderAlertsTab(state.allAlerts, state.filters, openDetailFor);
+    }
+    if (document.hidden) { // the tab title counts what arrived while nobody was looking
+      state.unseen += 1;
+      document.title = tabTitle(baseTitle, state.unseen);
+    }
   }
 
   function connect() {
@@ -464,6 +511,28 @@ async function start() {
     state.pick = state.candles.at(-1)?.time ?? null;
     renderAddNote();
     if (state.pick !== null) $('add-note').focus();
+  });
+  $('tabs').addEventListener('click', (event) => {
+    const name = event.target.closest('button')?.dataset.tab;
+    if (name !== undefined) showTab(name);
+  });
+  for (const [id, field] of [['filter-rule', 'ruleId'], ['filter-symbol', 'symbol'], ['filter-status', 'status']]) {
+    $(id).addEventListener('change', (event) => {
+      state.filters[field] = event.target.value;
+      if (state.allAlerts !== null) renderAlertsTab(state.allAlerts, state.filters, openDetailFor);
+    });
+  }
+  initDetail(async (alert) => {
+    await navigator.clipboard.writeText(`${location.origin}${location.pathname}${deepLink(alert.symbol, alert.timeframe, alert.barTime)}`);
+  });
+  $('save-png').addEventListener('click', () => {
+    if (chart === null || state.selected === null) return;
+    saveCanvasPng(chart.takeScreenshot(true), `${state.selected.symbol}-${state.selected.timeframe}`.replace(/[^A-Za-z0-9._-]/g, '-') + '.png');
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) return;
+    state.unseen = 0;
+    document.title = baseTitle;
   });
   matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyTheme);
   setInterval(renderStreams, 60_000); // "Stale" depends on the clock, not on an event

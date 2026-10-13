@@ -357,7 +357,15 @@ test('every dashboard module: no HTML from data, no eval, only own-origin reques
   for (const url of calls) assert.match(url, /^\/api\//, url);
   assert.equal([...all.matchAll(/\bgetJson\(/g)].length, calls.length + 1, 'every getJson call has a literal path (+1 for its definition)');
   for (const [, url] of all.matchAll(/EventSource\(\s*['"`]([^'"`]+)/g)) assert.equal(url, '/events');
-  const hits = [...all.matchAll(/\.href\s*=[^=]/g)];
-  assert.equal(hits.length, 1, 'exactly one place sets an href');
-  assert.match(all.slice(Math.max(0, hits[0].index - 250), hits[0].index + 150), /safeObsidianHref\(/);
+  // The PNG download is the one other href: a blob URL made from the page's own canvas, never from server data.
+  const lines = all.split('\n');
+  assert.equal(lines.filter((l) => /\.href\s*=[^=]/.test(l) && l.includes('URL.createObjectURL(')).length, 1, 'exactly one blob download link');
+  const rest = lines.filter((l) => !l.includes('URL.createObjectURL(')).join('\n');
+  const hits = [...rest.matchAll(/\.href\s*=[^=]/g)];
+  assert.equal(hits.length, 1, 'exactly one other place sets an href');
+  assert.match(rest.slice(Math.max(0, hits[0].index - 250), hits[0].index + 150), /safeObsidianHref\(/);
+});
+
+test('every .mjs file in bridge/dashboard is in the served allowlist (a module the page imports must not 404)', async () => {
+  for (const name of await MODULES()) assert.ok(ASSET_PATHS.has(`/assets/${name}`), `/assets/${name} is not served`);
 });

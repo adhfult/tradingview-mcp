@@ -3,6 +3,8 @@
  * until a function is called. getJson is the page's only fetch, and every caller passes a literal /api/ path.
  */
 
+import { sparkPoints } from './pure.mjs';
+
 export const $ = (id) => document.getElementById(id);
 
 export async function getJson(path) {
@@ -40,4 +42,36 @@ export function setStatus(id, text, kind) {
   else delete el.dataset.kind;
 }
 
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+/** A small line chart as an SVG (built with the DOM, never as markup). `label` is what a screen reader hears. */
+export function sparkline(values, label) {
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  svg.setAttribute('class', 'spark');
+  svg.setAttribute('viewBox', '0 0 100 24');
+  svg.setAttribute('preserveAspectRatio', 'none');
+  svg.setAttribute('role', 'img');
+  svg.setAttribute('aria-label', label);
+  const points = sparkPoints(values, 100, 24);
+  if (points !== '') {
+    const line = document.createElementNS(SVG_NS, 'polyline');
+    line.setAttribute('points', points);
+    svg.append(line);
+  }
+  return svg;
+}
+
+/** Downloads a canvas (the chart screenshot) as a PNG file. The blob URL is made here, from our own canvas, and revoked after the click. */
+export function saveCanvasPng(canvas, name) {
+  canvas.toBlob((blob) => {
+    if (blob === null) return;
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = name;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+  }, 'image/png');
+}
 export const timeText = (seconds) => new Date(seconds * 1000).toLocaleString();
