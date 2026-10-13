@@ -83,6 +83,7 @@ a { color: var(--accent); }
 .dot { width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--muted); }
 .badge[data-state="live"] .dot { background: var(--up); }
 .badge[data-state="reconnecting"] .dot { background: var(--paper); }
+.badge[data-state="offline"] .dot { background: var(--down); }
 .picker { display: flex; align-items: center; gap: var(--s2); margin-left: auto; }
 .picker label { color: var(--muted); font-size: var(--text-sm); }
 select, button {

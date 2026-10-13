@@ -124,7 +124,9 @@ function setStatus(id, text, kind) {
 }
 
 async function start() {
-  const state = { streams: [], selected: null, candles: [], alerts: [], paper: [], levels: [], loadId: 0, wasConnected: false };
+  const state = { streams: [], selected: null, candles: [], alerts: [], paper: [], levels: [], loadId: 0, wasConnected: false, loadFailed: false };
+  const shown = { alerts: '', streams: '', picker: '' }; // what is on screen, so an unchanged list is not rebuilt (it would drop keyboard focus and re-announce)
+  const NO_CHART = 'The chart library could not be loaded, so there is no chart. Alerts and streams still work.';
   let lib = null;
   let chart = null;
   let series = null;
@@ -134,7 +136,7 @@ async function start() {
   try {
     lib = await import('/assets/lightweight-charts.mjs');
   } catch {
-    setStatus('chart-status', 'The chart library could not be loaded, so there is no chart. Alerts and streams still work.', 'error');
+    setStatus('chart-status', NO_CHART, 'error');
     $('chart').setAttribute('aria-busy', 'false');
   }
 
@@ -183,13 +185,16 @@ async function start() {
       }));
   }
 
-  function drawChart() {
+  /** `fit` is for a first load or a stream change; a reload at a new bar keeps the zoom the user chose. */
+  function drawChart(fit) {
     ensureChart();
     if (series === null) return;
     series.setData(state.candles.map(toChartCandle));
-    drawLevels();
+    if (fit) {
+      drawLevels();
+      chart.timeScale().fitContent();
+    }
     drawMarkers();
-    chart.timeScale().fitContent();
   }
 
   function applyTheme() {
@@ -204,53 +209,66 @@ async function start() {
 
   const timeText = (seconds) => new Date(seconds * 1000).toLocaleString();
 
-  function renderAlerts() {
-    const list = $('alerts-list');
-    if (state.alerts.length === 0) {
-      renderList(list, []);
-      setStatus('alerts-status', 'No alerts yet. A rule that fires will appear here as it happens.');
-      return;
-    }
-    setStatus('alerts-status', '');
-    renderList(list, state.alerts.map((a) => (li) => {
-      const direction = a.direction ?? a.level;
-      const tone = direction === 'up' || direction === 'down' ? direction : null;
-      const tag = addText(li, 'span', tone === 'up' ? '↑ Up' : tone === 'down' ? '↓ Down' : 'Info', 'tag');
-      if (tone !== null) tag.dataset.tone = tone;
-      addText(li, 'span', a.symbol === null ? a.title : `${a.symbol} ${formatTimeframe(a.timeframe)}`);
-      const time = addText(li, 'time', timeText(a.at / 1000));
-      time.dateTime = new Date(a.at).toISOString();
-      if (a.message !== null) addText(li, 'span', a.message, 'msg');
-    }));
+  function fillAlert(li, a) {
+    const direction = a.direction ?? a.level;
+    const tone = direction === 'up' || direction === 'down' ? direction : null;
+    const tag = addText(li, 'span', tone === 'up' ? '↑ Up' : tone === 'down' ? '↓ Down' : 'Info', 'tag');
+    if (tone !== null) tag.dataset.tone = tone;
+    addText(li, 'span', a.symbol === null ? a.title : `${a.symbol} ${formatTimeframe(a.timeframe)}`);
+    const time = addText(li, 'time', timeText(a.at / 1000));
+    time.dateTime = new Date(a.at).toISOString();
+    if (a.message !== null) addText(li, 'span', a.message, 'msg');
   }
 
+  /** Full rebuild, skipped when nothing changed. A new alert from the live feed is prepended by onAlert instead. */
+  function renderAlerts() {
+    const list = $('alerts-list');
+    setStatus('alerts-status', state.alerts.length === 0 ? 'No alerts yet. A rule that fires will appear here as it happens.' : '');
+    const signature = JSON.stringify(state.alerts);
+    if (signature === shown.alerts) return;
+    shown.alerts = signature;
+    renderList(list, state.alerts.map((a) => (li) => fillAlert(li, a)));
+  }
+
+  /** Rebuilt only when what it shows changed; keyboard focus on a "Show" button is put back by stream key. */
   function renderStreams() {
     const list = $('streams-list');
     if (state.streams.length === 0) {
+      shown.streams = '';
       renderList(list, []);
       setStatus('streams-status', 'No streams are configured. Add symbols and timeframes to the watcher config.');
       return;
     }
     setStatus('streams-status', '');
     const now = Date.now() / 1000;
-    renderList(list, state.streams.map((s) => (li) => {
-      const selected = state.selected !== null && streamKey(s) === streamKey(state.selected);
+    const rows = state.streams.map((s) => ({ s, selected: state.selected !== null && streamKey(s) === streamKey(state.selected), stale: isStale(s, now) }));
+    const signature = JSON.stringify(rows);
+    if (signature === shown.streams) return;
+    shown.streams = signature;
+    const focused = document.activeElement?.dataset?.stream;
+    renderList(list, rows.map(({ s, selected, stale }) => (li) => {
       if (selected) li.setAttribute('aria-current', 'true');
       addText(li, 'span', `${s.symbol} ${formatTimeframe(s.timeframe)}`);
       const health = addText(li, 'span', s.healthy ? 'Healthy' : 'Not healthy', 'tag');
       health.dataset.tone = s.healthy ? 'up' : 'down';
-      if (isStale(s, now)) addText(li, 'span', 'Stale', 'tag').dataset.tone = 'warn';
+      if (stale) addText(li, 'span', 'Stale', 'tag').dataset.tone = 'warn';
       if (Number.isFinite(s.lastBarTime)) addText(li, 'time', `last bar ${timeText(s.lastBarTime)}`);
       const show = addText(li, 'button', 'Show');
       show.type = 'button';
+      show.dataset.stream = streamKey(s);
       show.setAttribute('aria-label', `Show ${s.symbol} ${formatTimeframe(s.timeframe)}`);
       show.addEventListener('click', () => select(s));
     }));
+    if (focused !== undefined) list.querySelector(`button[data-stream="${CSS.escape(focused)}"]`)?.focus();
   }
 
   function renderPicker() {
     const picker = $('stream-picker');
-    picker.replaceChildren(...state.streams.map((s) => new Option(`${s.symbol} · ${formatTimeframe(s.timeframe)}`, streamKey(s))));
+    const signature = JSON.stringify(state.streams.map(streamKey));
+    if (signature !== shown.picker) { // replacing the options would close an open dropdown
+      shown.picker = signature;
+      picker.replaceChildren(...state.streams.map((s) => new Option(`${s.symbol} · ${formatTimeframe(s.timeframe)}`, streamKey(s))));
+    }
     picker.disabled = state.streams.length === 0;
     if (state.selected !== null) picker.value = streamKey(state.selected);
   }
@@ -263,21 +281,27 @@ async function start() {
   }
   const clearError = () => { $('page-error').hidden = true; };
 
-  /** Candles, levels, alerts and paper journals for the selected stream. A newer call makes an older one a no-op. */
+  /**
+   * Everything for the selected stream: candles, levels, alerts and paper journals. A newer call makes an older one a no-op.
+   * Without a chart there is nothing to draw, but the alerts still load.
+   */
   async function loadStream() {
     const stream = state.selected;
     state.loadId += 1;
     const id = state.loadId;
-    if (stream === null) {
-      state.candles = [];
-      $('chart').setAttribute('aria-busy', 'false');
-      setStatus('chart-status', 'No stream selected.');
-      return;
-    }
-    $('chart').setAttribute('aria-busy', 'true');
-    setStatus('chart-status', 'Loading candles');
-    const q = new URLSearchParams({ symbol: stream.symbol, tf: stream.timeframe });
+    const chartNote = (text) => (lib === null ? setStatus('chart-status', NO_CHART, 'error') : setStatus('chart-status', text));
+    $('chart').setAttribute('aria-busy', String(lib !== null));
+    chartNote('Loading candles');
+    const q = new URLSearchParams({ symbol: stream?.symbol ?? '', tf: stream?.timeframe ?? '' });
     try {
+      if (stream === null) { // no streams configured: alerts can still exist (/notify, trending)
+        state.candles = [];
+        state.alerts = await getJson(`/api/alerts?limit=${ALERT_LIMIT}`);
+        $('chart').setAttribute('aria-busy', 'false');
+        chartNote('No stream selected.');
+        if (id === state.loadId) renderAlerts();
+        return;
+      }
       const [candles, levels, alerts, paper] = await Promise.all([
         getJson(`/api/candles?${q}`),
         getJson(`/api/levels?${new URLSearchParams({ symbol: stream.symbol })}`),
@@ -288,8 +312,8 @@ async function start() {
       Object.assign(state, { candles, levels, alerts, paper });
       clearError();
       $('chart').setAttribute('aria-busy', 'false');
-      setStatus('chart-status', candles.length === 0 ? 'No candles yet for this stream. They appear after the watcher\'s first snapshot.' : '');
-      drawChart();
+      chartNote(candles.length === 0 ? 'No candles yet for this stream. They appear after the watcher\'s first snapshot.' : '');
+      drawChart(true);
       renderAlerts();
     } catch (err) {
       if (id !== state.loadId) return;
@@ -300,10 +324,27 @@ async function start() {
     }
   }
 
+  /** A new bar time: only the candles can have changed (alerts arrive by the live feed), and the user's zoom stays. */
+  async function reloadCandles() {
+    const stream = state.selected;
+    if (stream === null) return;
+    const id = state.loadId;
+    try {
+      const candles = await getJson(`/api/candles?${new URLSearchParams({ symbol: stream.symbol, tf: stream.timeframe })}`);
+      if (id !== state.loadId) return;
+      state.candles = candles;
+      drawChart(false);
+    } catch (err) {
+      console.error('candle reload failed', err);
+    }
+  }
+
   async function loadStreams() {
     try {
       state.streams = await getJson('/api/streams');
+      state.loadFailed = false;
     } catch (err) {
+      state.loadFailed = true;
       setStatus('streams-status', `Could not load streams: ${errorText(err)}`, 'error');
       showError(err);
       return;
@@ -318,6 +359,7 @@ async function start() {
 
   function select(stream) {
     state.selected = stream;
+    state.candles = []; // a bar for the new stream must not be drawn onto the old stream's candles
     const q = new URLSearchParams({ symbol: stream.symbol, tf: stream.timeframe });
     history.replaceState(null, '', `?${q}`);
     renderPicker();
@@ -338,17 +380,23 @@ async function start() {
     const selected = state.selected;
     if (selected === null || selected.symbol !== data.symbol || selected.timeframe !== data.timeframe) return;
     const last = state.candles.length === 0 ? null : state.candles[state.candles.length - 1].time;
-    if (classifyBar(last, data.candle.time) === 'update' && series !== null) {
+    if (classifyBar(last, data.candle.time) === 'update') {
       state.candles[state.candles.length - 1] = data.candle;
-      series.update(toChartCandle(data.candle));
+      series?.update(toChartCandle(data.candle));
     } else {
-      loadStream();
+      reloadCandles();
     }
   }
 
   function onAlert(alert) {
     state.alerts = [alert, ...state.alerts].slice(0, ALERT_LIMIT);
-    renderAlerts();
+    const list = $('alerts-list');
+    const li = document.createElement('li'); // one new row: rebuilding the list would make a screen reader read all of it again
+    fillAlert(li, alert);
+    list.prepend(li);
+    while (list.children.length > ALERT_LIMIT) list.lastElementChild.remove();
+    shown.alerts = JSON.stringify(state.alerts);
+    setStatus('alerts-status', '');
     drawMarkers();
   }
 
@@ -357,10 +405,18 @@ async function start() {
     source.addEventListener('open', () => {
       setBadge('live', 'Live');
       // Anything missed while disconnected (a bar rollover across a gap) only reaches the page by reloading.
-      if (state.wasConnected) loadStreams();
+      if (state.wasConnected || state.loadFailed) loadStreams();
       state.wasConnected = true;
     });
-    source.addEventListener('error', () => setBadge('reconnecting', 'Reconnecting'));
+    source.addEventListener('error', () => {
+      if (source.readyState !== EventSource.CLOSED) {
+        setBadge('reconnecting', 'Reconnecting'); // the browser retries by itself
+        return;
+      }
+      // A refusal (503 when five other tabs are open, 401) closes the stream for good: the browser does not retry it.
+      setBadge('offline', 'Live updates off, retrying');
+      setTimeout(connect, 15_000);
+    });
     const on = (name, fn) => source.addEventListener(name, (event) => {
       try {
         fn(JSON.parse(event.data));

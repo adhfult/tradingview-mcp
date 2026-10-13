@@ -30,6 +30,8 @@ test('index.html: no inline code, only allowlisted assets, one external link (th
   assert.doesNotMatch(html, /\sstyle\s*=/i, 'no style attribute');
   assert.doesNotMatch(html, /\son[a-z]+\s*=/i, 'no inline event handler');
   assert.doesNotMatch(html, /javascript:/i);
+  // Not covered by script-src or style-src: a redirect, a form post, a base URL or an embedded page can still leave the origin.
+  assert.doesNotMatch(html, /<(meta[^>]*http-equiv|form|base|iframe|frame|object|embed)\b/i);
 
   const external = [];
   for (const [, , url] of html.matchAll(/\s(src|href)="([^"]*)"/gi)) {
@@ -78,11 +80,17 @@ test('style.css: every DESIGN.md token is defined for light and dark, with focus
 
 test('app.mjs: never builds HTML from data, never evals, talks only to its own origin', async () => {
   const js = await read('app.mjs');
-  assert.doesNotMatch(js, /\.(innerHTML|outerHTML)\b|insertAdjacentHTML|document\.write|\beval\s*\(|new Function|setAttribute\(\s*['"]style/);
+  assert.doesNotMatch(js, /\.(innerHTML|outerHTML)\b|insertAdjacentHTML|setHTMLUnsafe|createContextualFragment|DOMParser|document\.write|\beval\s*\(|new Function|setAttribute\(\s*['"]style|style\.cssText|window\.open|location\s*(\.href\s*)?=[^=]/);
   assert.doesNotMatch(js, /\bimport\s*\(\s*[^'"/\s]/, 'dynamic import takes a literal');
   const imports = [...js.matchAll(/(?:from|import\s*\()\s*['"]([^'"]+)['"]/g)].map((m) => m[1]);
   assert.deepEqual([...new Set(imports)].filter((u) => u !== '/assets/lightweight-charts.mjs'), [], 'only the chart library is imported');
-  for (const [, url] of js.matchAll(/(?:fetch|EventSource)\(\s*['"`]([^'"`]+)/g)) assert.match(url, /^\/(api|events)/, url);
+  // Every request goes through getJson(path) -> fetch(path), so check both ends: the one fetch call, and every getJson argument.
+  assert.deepEqual([...js.matchAll(/\bfetch\(([^,)]*)/g)].map((m) => m[1]), ['path'], 'one fetch, inside getJson');
+  const calls = [...js.matchAll(/\bgetJson\(\s*([`'"])([^`'"]*)/g)].map((m) => m[2]);
+  assert.ok(calls.length >= 5, `found ${calls.length} getJson calls with a literal path`);
+  for (const url of calls) assert.match(url, /^\/api\//, url);
+  assert.equal([...js.matchAll(/\bgetJson\(/g)].length, calls.length + 1, 'every getJson call has a literal path (+1 for its definition)');
+  for (const [, url] of js.matchAll(/EventSource\(\s*['"`]([^'"`]+)/g)) assert.equal(url, '/events');
 });
 
 // ---------------------------------------------------------------- app.mjs (pure functions, no DOM)
@@ -186,5 +194,6 @@ test('the real files are served by createDashboard with the real allowlist', asy
 });
 
 test('app.mjs: the library attribution logo stays off (it injects a <style> element, which the CSP blocks)', async () => {
-  assert.match(await read('app.mjs'), /attributionLogo:\s*false/);
+  const code = (await read('app.mjs')).replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, ''); // a comment must not satisfy this
+  assert.match(code, /attributionLogo:\s*false/);
 });
