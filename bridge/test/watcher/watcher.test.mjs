@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import http from 'node:http';
@@ -813,6 +813,28 @@ test('the dashboard starts with the watcher on its own port, serves the API, and
   assert.deepEqual(await res.json(), [{ symbol: 'BINANCE:BTCUSDT', timeframe: '15', healthy: false, lastBarTime: null }]);
   await watcher.stop();
   await assert.rejects(globalThis.fetch(`http://127.0.0.1:${port}/api/streams`));
+});
+
+test('dashboard.notes enabled: the watcher reads the configured folder and serves it on /api/notes; off by default', async (t) => {
+  const notesDir = await mkdtemp(join(tmpdir(), 'watcher-notes-'));
+  t.after(() => rm(notesDir, { recursive: true, force: true }));
+  await writeFile(join(notesDir, 'btc.md'), '---\nsymbols: [BTCUSDT]\nkind: risk\n---\n# Funding is stretched\nWatch the 15m close.\n');
+  const dashboard = { notes: { enabled: true, dir: notesDir, vault: 'MyVault', vault_folder: 'markets' } };
+  const on = await build(t, { configOverrides: { ...NO_API, dashboard } });
+  await on.watcher.start();
+  const res = await getFrom(on.watcher, '/api/notes?symbol=BINANCE:BTCUSDT&tf=15');
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.deepEqual({ ...body, notes: body.notes.map((n) => [n.title, n.kind, n.open]) }, {
+    enabled: true, vault: 'MyVault', folder: 'markets', notes: [['Funding is stretched', 'risk', 'obsidian://open?vault=MyVault&file=markets%2Fbtc']],
+  });
+  assert.equal((await getFrom(on.watcher, '/api/notes?symbol=NOPE&tf=15')).status, 404);
+  await on.watcher.stop();
+
+  const off = await build(t, { configOverrides: NO_API });
+  await off.watcher.start();
+  assert.deepEqual(await (await getFrom(off.watcher, '/api/notes?symbol=BINANCE:BTCUSDT&tf=15')).json(), { enabled: false, vault: null, folder: null, notes: [] });
+  await off.watcher.stop();
 });
 
 test('dashboard.enabled false: no server is created, and the log says so', async (t) => {

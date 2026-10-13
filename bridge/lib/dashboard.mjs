@@ -2,7 +2,8 @@
  * Read-only web dashboard, served by the watcher process on its own port (default 8788).
  *
  * Everything it shows comes from memory (streams, the alert history) or from reading files
- * ($TRADINGVIEW_MCP_HOME/gauntlet and paper). It never calls TradingView, never writes
+ * ($TRADINGVIEW_MCP_HOME/gauntlet and paper, and the Obsidian notes folder when dashboard.notes is on,
+ * through lib/notes.mjs). It never calls TradingView, never writes
  * anywhere and never sends anything, so a bug here cannot place a trade or lose an alert.
  *
  * Security, all in this one file so no path can skip it:
@@ -167,10 +168,11 @@ async function newestFiles(dir, pattern) {
 /**
  * `streams` has list() and candles(key). `getAlerts()` returns the stored history (oldest first).
  * `rules` and `timezone` come from the config, `home` is $TRADINGVIEW_MCP_HOME, `assets` maps URL paths to files.
+ * `notes` is a notes layer (lib/notes.mjs) or null/absent when the Obsidian notes are off.
  * Throws when a non-loopback host has no usable token. `listen()` rejects on a bind error (e.g. EADDRINUSE).
  */
 export function createDashboard({
-  host = '127.0.0.1', port, token = '', bus, streams, getAlerts, rules, timezone, home, assets, clock = realTimers, logger,
+  host = '127.0.0.1', port, token = '', bus, streams, getAlerts, rules, timezone, home, assets, notes = null, clock = realTimers, logger,
 }) {
   const loopback = LOOPBACK_BIND.has(String(host).toLowerCase());
   if (!loopback && token.length < MIN_REMOTE_TOKEN) {
@@ -256,6 +258,14 @@ export function createDashboard({
         .filter((r) => r.type === 'price_cross' && (r.symbol === undefined || r.symbol === symbol) && !ruleExpired(r, now, timezone))
         .map((r) => ({ ruleId: r.id, level: r.level, timeframes: r.timeframes ?? null }));
       return sendJson(res, 200, levels);
+    }],
+
+    // The notes come from one fixed folder; the request only names a stream, and only that stream's own symbol goes on.
+    ['/api/notes', async (res, params) => {
+      const found = findStream(params);
+      if (found === undefined) return sendError(res, 404, 'not found');
+      if (notes === null) return sendJson(res, 200, { enabled: false, vault: null, folder: null, notes: [] });
+      return sendJson(res, 200, { enabled: true, vault: notes.vault, folder: notes.folder, notes: await notes.list(found.symbol) });
     }],
 
     ['/api/gauntlet', async (res) => {

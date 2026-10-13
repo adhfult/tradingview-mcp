@@ -20,6 +20,7 @@ import { createClientManager } from './lib/client.mjs';
 import { loadConfig, checkEnv } from './lib/config.mjs';
 import { createAlerts } from './lib/alerts.mjs';
 import { createDashboard, defaultAssets } from './lib/dashboard.mjs';
+import { createNotes } from './lib/notes.mjs';
 import { createHealth } from './lib/health.mjs';
 import { createLocalApi } from './lib/localapi.mjs';
 import { createQueue } from './lib/queue.mjs';
@@ -234,6 +235,7 @@ export function createWatcher({
   // alerts matter more than charts.
   let dashboard = null;
   if (config.dashboard.enabled) {
+    const notesConfig = config.dashboard.notes;
     try {
       dashboard = createDashboard({
         host: config.dashboard.host,
@@ -246,6 +248,9 @@ export function createWatcher({
         timezone: config.timezone,
         home: env.TRADINGVIEW_MCP_HOME || join(homedir(), '.tradingview-mcp'),
         assets: defaultAssets(),
+        notes: notesConfig.enabled
+          ? createNotes({ dir: notesConfig.dir, vault: notesConfig.vault, vaultFolder: notesConfig.vault_folder, clock, logger })
+          : null,
         clock,
         logger,
       });
