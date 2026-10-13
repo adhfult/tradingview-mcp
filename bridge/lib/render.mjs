@@ -43,6 +43,12 @@ export function deepLink(baseUrl, chart) {
   return url.href;
 }
 
+/** `{host, port}` as the dashboard reports its bound address -> a URL this machine can open (all-interfaces binds become loopback). */
+export function dashboardBaseUrl({ host, port }) {
+  const name = host === '0.0.0.0' ? '127.0.0.1' : host === '::' ? '::1' : host;
+  return `http://${name.includes(':') ? `[${name}]` : name}:${port}`;
+}
+
 async function launchChromium(executablePath) {
   const { chromium } = await import('playwright-core');
   // Chromium refuses to start as root without --no-sandbox (a root systemd unit or a container); everywhere else keep the sandbox.

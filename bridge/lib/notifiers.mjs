@@ -191,7 +191,8 @@ export function createTelegramNotifier({
 /**
  * Notifiers that attach a chart image to messages that have a `chart` (rule alerts). The image is made once per message,
  * on first use, and shared by every channel and every retry. When it cannot be made, the alert goes out as text with a
- * link to the dashboard chart, and the reason is logged. With no renderer the notifiers are returned unchanged.
+ * link to the dashboard chart (`baseUrl`, a string or a function that returns one, or null when there is no dashboard to
+ * link to), and the reason is logged. With no renderer the notifiers are returned unchanged.
  */
 export function withImages(notifiers, { renderer, baseUrl, log = () => {} }) {
   if (renderer === null || renderer === undefined) return notifiers;
@@ -202,7 +203,8 @@ export function withImages(notifiers, { renderer, baseUrl, log = () => {} }) {
         (image) => ({ ...message, image }),
         (err) => {
           log(`chart image skipped (${err?.reason ?? 'error'}): ${errorMessage(err)}`);
-          return { ...message, lines: [...message.lines, `Chart: ${deepLink(baseUrl, message.chart)}`] };
+          const base = typeof baseUrl === 'function' ? baseUrl() : baseUrl;
+          return base === null ? message : { ...message, lines: [...message.lines, `Chart: ${deepLink(base, message.chart)}`] };
         },
       ));
     }

@@ -13,7 +13,7 @@
 import { EventEmitter } from 'node:events';
 import { realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { errorMessage } from './lib/errors.mjs';
 import { createClientManager } from './lib/client.mjs';
@@ -24,7 +24,8 @@ import { createNotes } from './lib/notes.mjs';
 import { createHealth } from './lib/health.mjs';
 import { createLocalApi } from './lib/localapi.mjs';
 import { createQueue } from './lib/queue.mjs';
-import { buildNotifiers, createStdoutNotifier } from './lib/notifiers.mjs';
+import { buildNotifiers, createStdoutNotifier, withImages } from './lib/notifiers.mjs';
+import { createRenderer, dashboardBaseUrl, RenderError } from './lib/render.mjs';
 import { createLogger, renderNotify, renderRuleAlert, renderTest } from './lib/format.mjs';
 import { evaluateRules } from './lib/rules.mjs';
 import { selectActive } from './lib/gates.mjs';
@@ -77,6 +78,7 @@ export function createWatcher({
   logJson = false,
   dryRun = false,
   redact = makeRedactor(env),
+  makeRenderer = createRenderer,
 }) {
   if (!config) throw new TypeError('createWatcher requires a validated config');
   const startedAtMs = clock.now();
@@ -89,9 +91,35 @@ export function createWatcher({
     persist: !dryRun,
   });
 
+  // Chart images on rule alerts (7b). The picture is drawn by the dashboard's /render page, so images need the dashboard,
+  // a browser path, and a real run. The renderer is built on the first alert and told the dashboard's real address.
+  const dashboardToken = typeof env.WATCHER_DASHBOARD_TOKEN === 'string' ? env.WATCHER_DASHBOARD_TOKEN : '';
+  const chromiumPath = typeof env.WATCHER_CHROMIUM_PATH === 'string' && env.WATCHER_CHROMIUM_PATH !== ''
+    ? env.WATCHER_CHROMIUM_PATH
+    : config.images.chromium_path;
+  let imagesOff = null; // why images cannot be used; '' when they were simply not asked for
+  if (!config.images.enabled || dryRun) imagesOff = '';
+  else if (!config.dashboard.enabled) imagesOff = 'dashboard.enabled is false (the images are drawn by the dashboard)';
+  else if (chromiumPath === '') imagesOff = 'no chromium path (set images.chromium_path or WATCHER_CHROMIUM_PATH)';
+  else if (!isAbsolute(chromiumPath) || /[\u0000-\u001f\u007f]/.test(chromiumPath)) imagesOff = 'WATCHER_CHROMIUM_PATH must be an absolute path';
+  if (imagesOff) logger.warn(`images disabled: ${imagesOff}`);
+  let dashboardBase = null; // set once the dashboard is listening
+  let renderer = null;
+  const imageRenderer = imagesOff !== null ? null : {
+    render(chart) {
+      if (dashboardBase === null) return Promise.reject(new RenderError('browser', 'the dashboard is not running'));
+      renderer ??= makeRenderer({
+        baseUrl: dashboardBase, token: dashboardToken, chromiumPath, maxPerHour: config.images.max_per_hour, timeoutMs: config.images.timeout_ms,
+      });
+      return renderer.render(chart);
+    },
+  };
+
   const notifiers = dryRun
     ? [createStdoutNotifier({ write, redact })]
-    : buildNotifiers({ env, fetch, redact });
+    : withImages(buildNotifiers({ env, fetch, redact }), {
+      renderer: imageRenderer, baseUrl: () => dashboardBase, log: (message) => logger.warn(message),
+    });
   const queue = createQueue({ notifiers, clock, log: (message) => logger.warn(message) });
   // The only way the dashboard hears about anything: 'bar' (stream, candle), 'alert' (history entry), 'health' (stream list).
   const bus = new EventEmitter();
@@ -263,7 +291,7 @@ export function createWatcher({
       dashboard = createDashboard({
         host: config.dashboard.host,
         port: config.dashboard.port,
-        token: typeof env.WATCHER_DASHBOARD_TOKEN === 'string' ? env.WATCHER_DASHBOARD_TOKEN : '',
+        token: dashboardToken,
         bus,
         streams,
         getAlerts: () => store.state.alerts,
@@ -348,6 +376,7 @@ export function createWatcher({
         try {
           const bound = await dashboard.listen();
           logger.info(`dashboard listening on ${bound.host}:${bound.port}`);
+          dashboardBase = dashboardBaseUrl(bound);
         } catch (err) {
           logger.warn(`dashboard not started: ${err?.code ?? errorMessage(err)}`);
         }
@@ -372,6 +401,7 @@ export function createWatcher({
       queue.close();
       await store.close().catch((err) => logger.warn(`state write failed: ${err?.code ?? 'error'}`));
       if (localApi !== null) await localApi.close();
+      await renderer?.close();
       if (dashboard !== null) await dashboard.close();
       await clients.close();
       logger.info('stopped');
