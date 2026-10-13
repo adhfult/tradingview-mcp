@@ -104,9 +104,12 @@ export function createWatcher({
   else if (!isAbsolute(chromiumPath) || /[\u0000-\u001f\u007f]/.test(chromiumPath)) imagesOff = 'WATCHER_CHROMIUM_PATH must be an absolute path';
   if (imagesOff) logger.warn(`images disabled: ${imagesOff}`);
   let dashboardBase = null; // set once the dashboard is listening
+  let warnedNoDashboard = false;
   let renderer = null;
   const imageRenderer = imagesOff !== null ? null : {
     render(chart) {
+      // Queued jobs can still run after the drain gave up at shutdown: no new browser then, just the text alert.
+      if (stopping) return Promise.reject(new RenderError('browser', 'the watcher is stopping'));
       if (dashboardBase === null) return Promise.reject(new RenderError('browser', 'the dashboard is not running'));
       renderer ??= makeRenderer({
         baseUrl: dashboardBase, token: dashboardToken, chromiumPath, maxPerHour: config.images.max_per_hour, timeoutMs: config.images.timeout_ms,
@@ -118,7 +121,16 @@ export function createWatcher({
   const notifiers = dryRun
     ? [createStdoutNotifier({ write, redact })]
     : withImages(buildNotifiers({ env, fetch, redact }), {
-      renderer: imageRenderer, baseUrl: () => dashboardBase, log: (message) => logger.warn(message),
+      renderer: imageRenderer,
+      baseUrl: () => dashboardBase,
+      log: (message) => {
+        // A dashboard that never started would repeat the same line for every alert: say it once.
+        if (dashboardBase === null) {
+          if (warnedNoDashboard) return;
+          warnedNoDashboard = true;
+        }
+        logger.warn(message);
+      },
     });
   const queue = createQueue({ notifiers, clock, log: (message) => logger.warn(message) });
   // The only way the dashboard hears about anything: 'bar' (stream, candle), 'alert' (history entry), 'health' (stream list).

@@ -65,6 +65,13 @@ export function telegramPayload(message, chatId) {
 }
 
 const hasImage = (message) => message.image instanceof Uint8Array && message.image.length > 0;
+/**
+ * Telegram counts a caption's length after the HTML is parsed: tags and link addresses do not count and an entity is
+ * one character. A refusal of the picture itself (400: no right to send photos, 413: too large) says nothing about the
+ * text, so the same alert is sent again without the picture; any other failure is the queue's to retry.
+ */
+const captionLength = (html) => html.replace(/<[^>]*>/g, '').replace(/&[a-z]+;|&#\d+;/gi, 'x').length;
+const pictureRefused = (err) => err instanceof NotifierError && (err.status === 400 || err.status === 413);
 const pngBlob = (bytes) => new Blob([bytes], { type: 'image/png' });
 
 /** Discord: the same JSON, as `payload_json` beside the PNG when there is an image; plain JSON otherwise. */
@@ -132,17 +139,17 @@ export function createDiscordNotifier({
   const webhookToken = new URL(url).pathname.split('/').filter(Boolean).pop();
   return {
     name: 'discord',
-    send(message) {
-      return postJson({
-        label: 'Discord',
-        url,
-        body: discordBody(message),
-        fetch,
-        redact,
-        timeoutMs,
-        pickRetryAfter: (data) => data?.retry_after,
-        secrets: [webhookToken],
+    async send(message) {
+      const post = (body) => postJson({
+        label: 'Discord', url, body, fetch, redact, timeoutMs, pickRetryAfter: (data) => data?.retry_after, secrets: [webhookToken],
       });
+      if (!hasImage(message)) return post(discordPayload(message));
+      try {
+        return await post(discordBody(message));
+      } catch (err) {
+        if (!pictureRefused(err)) throw err;
+        return post(discordPayload(message));
+      }
     },
   };
 }
@@ -161,29 +168,26 @@ export function createTelegramNotifier({
   const photoUrl = `https://api.telegram.org/bot${token}/sendPhoto`;
   return {
     name: 'telegram',
-    send(message) {
+    async send(message) {
       const payload = telegramPayload(message, chatId);
+      const post = (target, body) => postJson({
+        label: 'Telegram', url: target, body, fetch, redact, timeoutMs, pickRetryAfter: (data) => data?.parameters?.retry_after, secrets: [token],
+      });
       // A caption is capped at 1024 characters. Cutting the alert to fit would lose its text, so a longer one goes as a
       // plain message and the picture is dropped.
-      const photo = hasImage(message) && payload.text.length <= TELEGRAM_CAPTION_LIMIT;
-      let body = payload;
-      if (photo) {
-        body = new FormData();
-        body.set('chat_id', chatId);
-        body.set('parse_mode', 'HTML');
-        body.set('caption', payload.text);
-        body.set('photo', pngBlob(message.image), 'chart.png');
+      if (hasImage(message) && captionLength(payload.text) <= TELEGRAM_CAPTION_LIMIT) {
+        const form = new FormData();
+        form.set('chat_id', chatId);
+        form.set('parse_mode', 'HTML');
+        form.set('caption', payload.text);
+        form.set('photo', pngBlob(message.image), 'chart.png');
+        try {
+          return await post(photoUrl, form);
+        } catch (err) {
+          if (!pictureRefused(err)) throw err;
+        }
       }
-      return postJson({
-        label: 'Telegram',
-        url: photo ? photoUrl : url,
-        body,
-        fetch,
-        redact,
-        timeoutMs,
-        pickRetryAfter: (data) => data?.parameters?.retry_after,
-        secrets: [token],
-      });
+      return post(url, payload);
     },
   };
 }

@@ -3,9 +3,14 @@
  * `idleMs` without a render: at most a handful of images an hour, so an idle Chromium would only cost RAM on the Pi.
  *
  * - One render at a time, at most `maxPerHour` in a rolling hour (a failed one counts: it used the same browser time).
- * - `timeoutMs` covers start-up, loading and the screenshot. A browser that hung or failed is closed, never reused.
- * - A dashboard token goes in a request header, and any request that is not to the dashboard is aborted, so the
- *   header cannot reach another site.
+ * - `timeoutMs` covers start-up, loading and the screenshot, and the error is raised at the deadline without waiting
+ *   for the browser to shut down, so the text alert is not held up. A browser that hung or failed is closed, never reused.
+ *   A browser still starting when its render gave up is kept for the next render or closed by the idle timer, never
+ *   started a second time; the abandoned render opens no page on it.
+ * - A dashboard token goes in a request header. Every page request the renderer can see is checked against the
+ *   dashboard's origin and aborted otherwise, and service workers are blocked (Playwright's `route` cannot see what
+ *   they fetch). It does not follow redirects hop by hop: the dashboard has none that leave its own origin.
+ * - After `close()` no render is accepted and no browser is started.
  * - playwright-core is imported only when the first image is made. No browser is ever downloaded: the path comes from
  *   the config or WATCHER_CHROMIUM_PATH.
  */
@@ -49,11 +54,20 @@ export function dashboardBaseUrl({ host, port }) {
   return `http://${name.includes(':') ? `[${name}]` : name}:${port}`;
 }
 
-async function launchChromium(executablePath) {
+/**
+ * What chromium.launch gets. Playwright adds --no-sandbox itself unless `chromiumSandbox` is true, so the sandbox is
+ * asked for by name; only root (a container, a root service) cannot use it, because Chromium refuses to start then.
+ */
+export function chromiumLaunchOptions(executablePath, options) {
+  const uid = 'uid' in options ? options.uid : process.getuid?.();
+  return {
+    executablePath, headless: true, timeout: options.timeout, chromiumSandbox: uid !== 0, args: ['--disable-gpu', '--disable-dev-shm-usage'],
+  };
+}
+
+async function launchChromium(executablePath, { timeout }) {
   const { chromium } = await import('playwright-core');
-  // Chromium refuses to start as root without --no-sandbox (a root systemd unit or a container); everywhere else keep the sandbox.
-  const sandbox = process.getuid?.() === 0 ? ['--no-sandbox'] : [];
-  return chromium.launch({ executablePath, headless: true, args: [...sandbox, '--disable-gpu', '--disable-dev-shm-usage'] });
+  return chromium.launch(chromiumLaunchOptions(executablePath, { timeout }));
 }
 
 const oneLine = (err) => errorMessage(err).replace(/\s+/g, ' ').trim().slice(0, 200);
@@ -63,9 +77,13 @@ export function createRenderer({
   baseUrl, token = '', chromiumPath, maxPerHour = 6, timeoutMs = 10_000, idleMs = 30_000, clock = realClock, launch = launchChromium,
 }) {
   const origin = new URL(baseUrl).origin;
-  let browser = null;
+  let browser = null; // the live browser, if any
+  let launching = null; // a launch in progress, shared by whoever needs the browser meanwhile
   let idleTimer = null;
   let tail = Promise.resolve();
+  let current = null; // the render in progress
+  let busy = false;
+  let closed = false;
   const starts = [];
 
   const stopIdle = () => {
@@ -73,38 +91,60 @@ export function createRenderer({
     idleTimer = null;
   };
 
-  async function closeBrowser() {
+  /** Forgets the browser and starts closing it. The returned promise never rejects; failure paths do not wait for it. */
+  function dropBrowser() {
     stopIdle();
     const b = browser;
     browser = null;
-    await b?.close().catch(() => {});
+    return b === null ? Promise.resolve() : b.close().catch(() => {});
   }
 
-  async function ensureBrowser() {
-    if (browser !== null) return browser;
-    let started;
-    try {
-      started = await launch(chromiumPath);
-    } catch (err) {
-      throw new RenderError('browser', `browser did not start: ${oneLine(err)}`);
-    }
-    browser = started;
-    started.on('disconnected', () => { // a crash or a kill from outside: start again next time
-      if (browser === started) {
-        browser = null;
-        stopIdle();
+  const armIdle = () => {
+    stopIdle();
+    idleTimer = clock.setTimeout(() => { idleTimer = null; void dropBrowser(); }, idleMs);
+  };
+
+  function startLaunch() {
+    const attempt = (async () => {
+      let started;
+      try {
+        started = await launch(chromiumPath, { timeout: timeoutMs });
+      } catch (err) {
+        throw new RenderError('browser', `browser did not start: ${oneLine(err)}`);
       }
-    });
-    return started;
+      if (closed) {
+        await started.close().catch(() => {});
+        throw new RenderError('browser', 'renderer closed');
+      }
+      browser = started;
+      started.on('disconnected', () => { // a crash or a kill from outside: start again next time
+        if (browser === started) {
+          browser = null;
+          stopIdle();
+        }
+      });
+      if (!busy) armIdle(); // it finished starting after the render that wanted it had given up
+      return started;
+    })();
+    launching = attempt;
+    const clear = () => { if (launching === attempt) launching = null; };
+    attempt.then(clear, clear);
+    return attempt;
   }
 
-  async function capture(chart) {
-    const b = await ensureBrowser();
+  async function capture(chart, job) {
+    const live = () => {
+      if (job.abandoned) throw new RenderError('browser', 'render abandoned');
+    };
+    const b = browser ?? await (launching ?? startLaunch());
+    live();
     const context = await b.newContext({
       viewport: FRAME,
+      serviceWorkers: 'block',
       ...(token === '' ? {} : { extraHTTPHeaders: { authorization: `Bearer ${token}` } }),
     });
     try {
+      live();
       await context.route('**/*', async (route) => {
         let same = false;
         try {
@@ -112,9 +152,13 @@ export function createRenderer({
         } catch { /* not a URL: aborted below */ }
         await (same ? route.continue() : route.abort());
       });
+      live();
       const page = await context.newPage();
+      live();
       await page.goto(renderUrl(baseUrl, chart), { waitUntil: 'domcontentloaded', timeout: timeoutMs });
+      live();
       await page.waitForFunction(() => window.__ready === true || window.__failed !== undefined, undefined, { timeout: timeoutMs });
+      live();
       const failed = await page.evaluate(() => window.__failed ?? null);
       if (failed !== null) throw new RenderError('page', `the chart page failed: ${String(failed).slice(0, 200)}`);
       return await page.locator('#frame').screenshot({ type: 'png' });
@@ -124,26 +168,31 @@ export function createRenderer({
   }
 
   async function run(chart) {
+    if (closed) throw new RenderError('browser', 'renderer closed');
     const hourAgo = clock.now() - 3_600_000;
     while (starts.length > 0 && starts[0] <= hourAgo) starts.shift();
     if (starts.length >= maxPerHour) throw new RenderError('cap', `image limit reached (${maxPerHour} per hour)`);
     starts.push(clock.now());
     stopIdle();
+    busy = true;
 
-    let timer;
-    const timedOut = new Promise((_, reject) => {
-      timer = clock.setTimeout(() => reject(new RenderError('timeout', `no image after ${timeoutMs} ms`)), timeoutMs);
-    });
-    const work = capture(chart);
-    work.catch(() => {}); // when the timeout wins, a late failure of the abandoned work is not an unhandled rejection
+    const job = { abandoned: false, cancel: () => {} };
+    current = job;
+    const cancelled = new Promise((_, reject) => { job.cancel = reject; });
+    const timer = clock.setTimeout(() => job.cancel(new RenderError('timeout', `no image after ${timeoutMs} ms`)), timeoutMs);
+    const work = capture(chart, job);
+    work.catch(() => {}); // when the deadline wins, a late failure of the abandoned work is not an unhandled rejection
     try {
-      return await Promise.race([work, timedOut]);
+      return await Promise.race([work, cancelled]);
     } catch (err) {
-      await closeBrowser(); // a hung, crashed or confused browser is not reused
+      job.abandoned = true;
+      void dropBrowser(); // a hung, crashed or confused browser is not reused, and the caller does not wait for it to close
       throw err instanceof RenderError ? err : new RenderError('browser', oneLine(err));
     } finally {
       clock.clearTimeout(timer);
-      if (browser !== null) idleTimer = clock.setTimeout(closeBrowser, idleMs);
+      current = null;
+      busy = false;
+      if (browser !== null) armIdle();
     }
   }
 
@@ -154,9 +203,11 @@ export function createRenderer({
       tail = result.catch(() => {});
       return result;
     },
+    /** Refuses later renders, fails the one in progress at once, and closes the browser. */
     async close() {
-      await tail;
-      await closeBrowser();
+      closed = true;
+      current?.cancel(new RenderError('browser', 'renderer closed'));
+      await dropBrowser();
     },
   };
 }

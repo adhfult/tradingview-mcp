@@ -5,7 +5,7 @@
  */
 
 import { $, cssVar, getJson } from './dom.mjs';
-import { parseRenderQuery, renderPlan, RENDER_BARS } from './pure.mjs';
+import { drawPlan, parseRenderQuery, renderPlan, RENDER_BARS } from './pure.mjs';
 
 async function draw() {
   const query = parseRenderQuery(window.location.search);
@@ -17,30 +17,9 @@ async function draw() {
   const plan = renderPlan(candles, query);
   if (plan.candles.length === 0) throw new Error('no candles');
 
-  const up = cssVar('--up');
-  const down = cssVar('--down');
-  const chart = lib.createChart($('chart'), {
-    autoSize: true,
-    // The logo injects a <style> element, which the CSP blocks; the credit line under the chart replaces it.
-    layout: { background: { color: cssVar('--surface') }, textColor: cssVar('--muted'), attributionLogo: false },
-    grid: { vertLines: { color: cssVar('--border') }, horzLines: { color: cssVar('--border') } },
-    rightPriceScale: { borderColor: cssVar('--border') },
-    timeScale: { borderColor: cssVar('--border'), timeVisible: true },
+  drawPlan(lib, $('chart'), plan, {
+    up: cssVar('--up'), down: cssVar('--down'), accent: cssVar('--accent'), surface: cssVar('--surface'), muted: cssVar('--muted'), border: cssVar('--border'),
   });
-  const series = chart.addSeries(lib.CandlestickSeries, {
-    upColor: up, borderUpColor: up, wickUpColor: up, downColor: down, borderDownColor: down, wickDownColor: down,
-  });
-  series.setData(plan.candles.map((c) => ({ time: c.time, open: c.open, high: c.high, low: c.low, close: c.close })));
-  if (plan.marker !== null) {
-    const { tone, ...marker } = plan.marker;
-    lib.createSeriesMarkers(series, [{ ...marker, color: tone === 'up' ? up : down }]);
-  }
-  if (plan.level !== null) {
-    series.createPriceLine({
-      price: plan.level.price, color: cssVar('--accent'), lineWidth: 1, lineStyle: lib.LineStyle.Dashed, axisLabelVisible: true, title: plan.level.title,
-    });
-  }
-  chart.timeScale().fitContent();
   // Two frames: the chart paints on the next animation frame after the data is set.
   await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
 }

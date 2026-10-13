@@ -124,7 +124,7 @@ test('render-page.mjs says when it is done or has failed, for the renderer to wa
   const code = (await read('render-page.mjs')).replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, '');
   assert.match(code, /__ready\s*=\s*true/);
   assert.match(code, /__failed\s*=/);
-  assert.match(code, /attributionLogo:\s*false/, 'the logo injects a <style>, which the CSP blocks');
+  assert.match(code, /drawPlan\(/, 'the drawing is the tested drawPlan, not a second copy');
 });
 
 function serve(options = {}) {

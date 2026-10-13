@@ -178,6 +178,36 @@ export function renderPlan(candles, query) {
   return { candles: shown, marker, level };
 }
 
+/**
+ * Draws a renderPlan on a chart made by `lib` (the Lightweight Charts module, passed in so this stays testable without a browser).
+ * `colours`: up, down, accent, surface, muted, border.
+ */
+export function drawPlan(lib, element, plan, colours) {
+  const chart = lib.createChart(element, {
+    autoSize: true,
+    // The logo injects a <style> element, which the CSP blocks; the credit line under the chart replaces it.
+    layout: { background: { color: colours.surface }, textColor: colours.muted, attributionLogo: false },
+    grid: { vertLines: { color: colours.border }, horzLines: { color: colours.border } },
+    rightPriceScale: { borderColor: colours.border },
+    timeScale: { borderColor: colours.border, timeVisible: true },
+  });
+  const { up, down } = colours;
+  const series = chart.addSeries(lib.CandlestickSeries, {
+    upColor: up, borderUpColor: up, wickUpColor: up, downColor: down, borderDownColor: down, wickDownColor: down,
+  });
+  series.setData(plan.candles.map((c) => ({ time: c.time, open: c.open, high: c.high, low: c.low, close: c.close })));
+  if (plan.marker !== null) {
+    const { tone, ...marker } = plan.marker;
+    lib.createSeriesMarkers(series, [{ ...marker, color: tone === 'up' ? up : down }]);
+  }
+  if (plan.level !== null) {
+    series.createPriceLine({
+      price: plan.level.price, color: colours.accent, lineWidth: 1, lineStyle: lib.LineStyle.Dashed, axisLabelVisible: true, title: plan.level.title,
+    });
+  }
+  chart.timeScale().fitContent();
+}
+
 // ---------------------------------------------------------------- alerts tab, detail drawer, tab title, paper equity
 
 const DETAIL_VALUE_ROWS = 20;
