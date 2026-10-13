@@ -34,5 +34,6 @@
   "local_api": {"enabled": true, "port": 8787},
   "dashboard": {"enabled": true, "host": "127.0.0.1", "port": 8788,
     "notes": {"enabled": false, "dir": "~/notes/markets", "vault": "ObsidianVault", "vault_folder": "markets"}},
+  "images": {"enabled": false, "chromium_path": "", "max_per_hour": 6, "timeout_ms": 10000},
   "limits": {"max_streams": 25}
 }

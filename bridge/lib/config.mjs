@@ -535,6 +535,35 @@ function parseNotes(input, errors, home) {
   return { enabled, dir, vault, vault_folder: folder };
 }
 
+/** `images`: PNG charts on rule alerts. Off by default; the browser path may also come from WATCHER_CHROMIUM_PATH. */
+function parseImages(input, errors, home) {
+  const path = 'images';
+  const defaults = { enabled: false, chromium_path: '', max_per_hour: 6, timeout_ms: 10_000 };
+  if (input.images === undefined) return defaults;
+  if (!isPlainObject(input.images)) {
+    errors.push(`${path}: must be an object`);
+    return defaults;
+  }
+  const i = input.images;
+  checkKeys(i, Object.keys(defaults), path, errors);
+  let chromiumPath = defaults.chromium_path;
+  if (i.chromium_path !== undefined) {
+    if (typeof i.chromium_path !== 'string') {
+      errors.push(`${path}.chromium_path: must be a string`);
+    } else if (i.chromium_path.trim() !== '') {
+      chromiumPath = expandHome(i.chromium_path.trim(), home);
+      if (/[\u0000-\u001f\u007f]/.test(chromiumPath)) errors.push(`${path}.chromium_path: must not contain control characters`);
+      else if (!isAbsolute(chromiumPath)) errors.push(`${path}.chromium_path: must be an absolute path (or start with ~/)`);
+    }
+  }
+  return {
+    enabled: readBoolean(i, 'enabled', path, errors, defaults.enabled),
+    chromium_path: chromiumPath,
+    max_per_hour: readNumber(i, 'max_per_hour', path, errors, { min: 1, max: 60, integer: true, fallback: defaults.max_per_hour }),
+    timeout_ms: readNumber(i, 'timeout_ms', path, errors, { min: 1000, max: 60_000, integer: true, fallback: defaults.timeout_ms }),
+  };
+}
+
 function parseDashboard(input, errors, localApiPort, home) {
   const path = 'dashboard';
   const defaults = { enabled: true, host: '127.0.0.1', port: 8788, notes: notesOff() };
@@ -571,7 +600,7 @@ export function parseConfig(input, { home = homedir(), now = Date.now() } = {}) 
     return { config: null, errors: ['$: the config must be a JSON object'], warnings };
   }
   checkKeys(input, [
-    'timezone', 'watchlist', 'rules', 'trending', 'alerts', 'health', 'state_dir', 'local_api', 'dashboard', 'limits',
+    'timezone', 'watchlist', 'rules', 'trending', 'alerts', 'health', 'state_dir', 'local_api', 'dashboard', 'images', 'limits',
   ], '$', errors);
 
   const timezone = input.timezone ?? 'UTC';
@@ -598,6 +627,7 @@ export function parseConfig(input, { home = homedir(), now = Date.now() } = {}) 
   }
   const localApi = parseLocalApi(input, errors);
   const dashboard = parseDashboard(input, errors, localApi.port, home);
+  const images = parseImages(input, errors, home);
 
   let stateDir = DEFAULT_STATE_DIR;
   if (input.state_dir !== undefined) {
@@ -639,6 +669,7 @@ export function parseConfig(input, { home = homedir(), now = Date.now() } = {}) 
     state_dir: expandHome(stateDir, home),
     local_api: localApi,
     dashboard,
+    images,
     limits,
   };
   return { config, errors: [], warnings };
