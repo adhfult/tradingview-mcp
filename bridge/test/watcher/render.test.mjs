@@ -17,9 +17,10 @@ function fakeBrowserFactory(behave = () => {}) {
     browser.close = async () => { browser.closed = true; };
     browser.newContext = async (options) => {
       state.contexts.push(options);
+      const opened = [];
       return {
         route: async (pattern, handler) => { state.routes.push({ pattern, handler }); },
-        close: async () => {},
+        close: async () => { for (const page of opened.splice(0)) await page.close(); }, // closing a context closes its pages
         newPage: async () => {
           state.pages += 1;
           state.openPages += 1;
@@ -34,6 +35,7 @@ function fakeBrowserFactory(behave = () => {}) {
             close: async () => { state.openPages -= 1; },
           };
           behave(page, state);
+          opened.push(page);
           return page;
         },
       };
