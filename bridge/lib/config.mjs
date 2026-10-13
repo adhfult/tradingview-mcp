@@ -8,7 +8,7 @@
  */
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import * as v from './validate.mjs';
 import { RULE_ID, RULE_TYPES, barsNeeded, isComposite, normalizeRule, ruleApplies, ruleExpired, validateRuleParams } from './rules.mjs';
 import { CANDLE_COUNT } from './stream.mjs';
@@ -495,9 +495,48 @@ function parseLocalApi(input, errors) {
   };
 }
 
-function parseDashboard(input, errors, localApiPort) {
+const notesOff = () => ({ enabled: false, dir: null, vault: null, vault_folder: null });
+
+/** `dashboard.notes`: the Obsidian folder the dashboard reads. Off by default because it needs paths. */
+function parseNotes(input, errors, home) {
+  const path = 'dashboard.notes';
+  if (input === undefined) return notesOff();
+  if (!isPlainObject(input)) {
+    errors.push(`${path}: must be an object`);
+    return notesOff();
+  }
+  checkKeys(input, ['enabled', 'dir', 'vault', 'vault_folder'], path, errors);
+  const enabled = readBoolean(input, 'enabled', path, errors, false);
+  const text = (key) => {
+    if (input[key] === undefined) {
+      if (enabled) errors.push(`${path}.${key}: is required when notes are enabled`);
+      return null;
+    }
+    if (typeof input[key] !== 'string' || input[key].trim() === '') {
+      errors.push(`${path}.${key}: must be a non-empty string`);
+      return null;
+    }
+    return input[key].trim();
+  };
+  let dir = text('dir');
+  if (dir !== null) {
+    dir = expandHome(dir, home);
+    if (!isAbsolute(dir)) errors.push(`${path}.dir: must be an absolute path (or start with ~/)`);
+  }
+  const vault = text('vault');
+  let folder = text('vault_folder');
+  if (folder !== null) {
+    folder = folder.replace(/^\/+|\/+$/g, '');
+    if (folder === '' || folder.includes('\\') || folder.split('/').includes('..')) {
+      errors.push(`${path}.vault_folder: must be a folder inside the vault, with no backslash and no ".." (for example "markets")`);
+    }
+  }
+  return { enabled, dir, vault, vault_folder: folder };
+}
+
+function parseDashboard(input, errors, localApiPort, home) {
   const path = 'dashboard';
-  const defaults = { enabled: true, host: '127.0.0.1', port: 8788 };
+  const defaults = { enabled: true, host: '127.0.0.1', port: 8788, notes: notesOff() };
   const clash = `${path}.port: must differ from local_api.port (${localApiPort})`;
   if (input.dashboard === undefined) {
     if (defaults.port === localApiPort) errors.push(clash); // the default port clashes too
@@ -509,6 +548,7 @@ function parseDashboard(input, errors, localApiPort) {
   }
   const d = input.dashboard;
   checkKeys(d, Object.keys(defaults), path, errors);
+  const notes = parseNotes(d.notes, errors, home);
   let host = defaults.host;
   if (d.host !== undefined) {
     if (typeof d.host !== 'string' || d.host.trim() === '') errors.push(`${path}.host: must be a non-empty string`);
@@ -516,7 +556,7 @@ function parseDashboard(input, errors, localApiPort) {
   }
   const port = readNumber(d, 'port', path, errors, { min: 1024, max: 65535, integer: true, fallback: defaults.port });
   if (port === localApiPort) errors.push(clash);
-  return { enabled: readBoolean(d, 'enabled', path, errors, true), host, port };
+  return { enabled: readBoolean(d, 'enabled', path, errors, true), host, port, notes };
 }
 
 /**
@@ -556,7 +596,7 @@ export function parseConfig(input, { home = homedir(), now = Date.now() } = {}) 
     warnings.push(`health.us_holidays: the latest date is ${latestHoliday}, less than 30 days ahead; add next year's holidays`);
   }
   const localApi = parseLocalApi(input, errors);
-  const dashboard = parseDashboard(input, errors, localApi.port);
+  const dashboard = parseDashboard(input, errors, localApi.port, home);
 
   let stateDir = DEFAULT_STATE_DIR;
   if (input.state_dir !== undefined) {

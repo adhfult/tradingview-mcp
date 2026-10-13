@@ -32,6 +32,7 @@
   "health": {"stream_down_minutes": 10, "daily_heartbeat": "08:00"},
   "state_dir": "~/.local/state/tradingview-watcher",
   "local_api": {"enabled": true, "port": 8787},
-  "dashboard": {"enabled": true, "host": "127.0.0.1", "port": 8788},
+  "dashboard": {"enabled": true, "host": "127.0.0.1", "port": 8788,
+    "notes": {"enabled": false, "dir": "~/notes/markets", "vault": "ObsidianVault", "vault_folder": "markets"}},
   "limits": {"max_streams": 25}
 }
