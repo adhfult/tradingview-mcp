@@ -17,7 +17,8 @@ import { $, addText, cssVar, errorText, getJson, renderList, saveCanvasPng, setS
 import {
   buildMarkers, centerRange, classifyBar, deepLink, formatTimeframe, isStale, newNoteLink, parseDeepLink, setObsidianLink, streamKey, tabTitle,
 } from './pure.mjs';
-import { renderPaper } from './status-view.mjs';
+import { renderOverview, renderTrending } from './overview-view.mjs';
+import { renderBadges, renderHealth, renderPaper } from './status-view.mjs';
 
 // The tests (and any reader) find the helpers here as before.
 export {
@@ -32,7 +33,7 @@ async function start() {
   const state = {
     streams: [], selected: null, candles: [], alerts: [], paper: [], levels: [], loadId: 0, wasConnected: false, loadFailed: false,
     notes: [], notesInfo: null, notesError: null, pick: null, centred: false,
-    tab: 'chart', allAlerts: null, filters: { ruleId: '', symbol: '', status: '' }, unseen: 0,
+    tab: 'overview', fitPending: false, allAlerts: null, filters: { ruleId: '', symbol: '', status: '' }, unseen: 0,
   };
   const shown = { alerts: '', streams: '', picker: '', notes: '' }; // what is on screen, so an unchanged list is not rebuilt (it would drop keyboard focus and re-announce)
   const NO_CHART = 'The chart library could not be loaded, so there is no chart. Alerts and streams still work.';
@@ -112,7 +113,8 @@ async function start() {
     series.setData(state.candles.map(toChartCandle));
     if (fit) {
       drawLevels();
-      chart.timeScale().fitContent();
+      if (state.tab === 'chart') chart.timeScale().fitContent();
+      else state.fitPending = true; // a hidden chart has no width to fit; showTab does it
     }
     drawMarkers();
   }
@@ -412,6 +414,42 @@ async function start() {
     } catch (err) {
       setStatus('paper-status', `Could not load paper journals: ${errorText(err)}`, 'error');
     }
+    await loadHealth();
+  }
+
+  /** The health numbers feed the header badges always and the Status tab when it is open. */
+  async function loadHealth() {
+    try {
+      const health = await getJson('/api/health');
+      renderBadges(health);
+      if (state.tab === 'status') renderHealth(health);
+    } catch (err) {
+      if (state.tab === 'status') setStatus('health-status', `Could not load health: ${errorText(err)}`, 'error');
+    }
+  }
+
+  async function loadOverview() {
+    try {
+      renderOverview(await getJson('/api/overview'), openStream);
+    } catch (err) {
+      setStatus('overview-status', `Could not load the overview: ${errorText(err)}`, 'error');
+    }
+  }
+
+  async function loadTrending() {
+    try {
+      renderTrending(await getJson('/api/trending'), state.notesInfo, openStream);
+    } catch (err) {
+      setStatus('trending-status', `Could not load trending symbols: ${errorText(err)}`, 'error');
+    }
+  }
+
+  /** From an overview card or an opportunity row: select that stream and show its chart. */
+  function openStream({ symbol, timeframe }) {
+    const stream = state.streams.find((s) => s.symbol === symbol && s.timeframe === timeframe);
+    if (stream === undefined) return;
+    if (state.selected === null || streamKey(state.selected) !== streamKey(stream)) select(stream);
+    showTab('chart');
   }
 
   function showTab(name) {
@@ -422,7 +460,19 @@ async function start() {
       else button.removeAttribute('aria-current');
     }
     closeDetail();
+    if (name === 'chart' && state.fitPending && chart !== null) {
+      state.fitPending = false;
+      // A chart drawn while hidden has width 0, and a fit before its own ResizeObserver reports the real width would pack every
+      // bar into a sliver. This observer was created after the chart's, so it runs after it in the same frame.
+      const observer = new ResizeObserver(() => {
+        observer.disconnect();
+        chart.timeScale().fitContent();
+      });
+      observer.observe($('chart'));
+    }
+    if (name === 'overview') loadOverview();
     if (name === 'alerts') loadAllAlerts();
+    if (name === 'opportunities') loadTrending();
     if (name === 'status') loadStatusTab();
   }
 
@@ -537,8 +587,14 @@ async function start() {
   matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyTheme);
   setInterval(renderStreams, 60_000); // "Stale" depends on the clock, not on an event
   setInterval(reloadNotes, 60_000);
+  setInterval(() => { // the overview's "ago" text and the badges depend on the clock and on counters, not on an event
+    loadHealth();
+    if (state.tab === 'overview') loadOverview();
+  }, 60_000);
 
   connect();
+  showTab(parseDeepLink(location.search).symbol === null ? 'overview' : 'chart'); // a link to a stream lands on its chart
+  loadHealth();
   await loadStreams();
 }
 

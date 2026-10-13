@@ -119,10 +119,12 @@ const fileSafe = (text) => text.replace(/[\\/:*?"<>|#^[\]]/g, '-');
  * `obsidian://new` for a note about one candle. The note is created by Obsidian when the user clicks; this page and
  * the watcher write nothing. The content is the frontmatter lib/notes.mjs reads back (symbols, time, kind).
  */
-export function newNoteLink({ vault, folder, symbol, timeframe, time }) {
+export function newNoteLink({ vault, folder, symbol, timeframe = null, time, kind = 'note' }) {
   const iso = new Date(time * 1000).toISOString().replace('.000Z', 'Z');
-  const name = `${fileSafe(symbol)} ${fileSafe(formatTimeframe(timeframe))} ${iso.slice(0, 10)} ${iso.slice(11, 13)}${iso.slice(14, 16)}`;
-  const content = `---\nsymbols: [${JSON.stringify(symbol)}]\ntime: ${iso}\nkind: note\n---\n# ${symbol} ${formatTimeframe(timeframe)} ${iso.slice(0, 16).replace('T', ' ')} UTC\n\n`;
+  const tf = timeframe === null ? '' : formatTimeframe(timeframe); // an opportunity note is about a symbol, not a chart
+  const name = [fileSafe(symbol), fileSafe(tf), iso.slice(0, 10), `${iso.slice(11, 13)}${iso.slice(14, 16)}`].filter((part) => part !== '').join(' ');
+  const heading = [symbol, tf, `${iso.slice(0, 16).replace('T', ' ')} UTC`].filter((part) => part !== '').join(' ');
+  const content = `---\nsymbols: [${JSON.stringify(symbol)}]\ntime: ${iso}\nkind: ${kind}\n---\n# ${heading}\n\n`;
   const enc = encodeURIComponent;
   return `obsidian://new?vault=${enc(vault)}&file=${enc(`${folder}/${name}`)}&content=${enc(content)}`;
 }
@@ -229,4 +231,21 @@ export function sparkPoints(values, width, height) {
   const at = (v) => (span === 0 ? height / 2 : height - ((v - low) / span) * height);
   const row = ys.length === 1 ? [ys[0], ys[0]] : ys;
   return row.map((v, i) => `${Number(((i / (row.length - 1)) * width).toFixed(2))},${Number(at(v).toFixed(2))}`).join(' ');
+}
+
+/** "45s", "12m", "3h 12m", "1d 1h": the two largest units. A dash for a negative or missing value. */
+export function formatDuration(seconds) {
+  if (!Number.isFinite(seconds) || seconds < 0) return '—';
+  const s = Math.floor(seconds);
+  if (s < 60) return `${s}s`;
+  const [d, h, m] = [Math.floor(s / 86_400), Math.floor((s % 86_400) / 3600), Math.floor((s % 3600) / 60)];
+  if (d > 0) return h > 0 ? `${d}d ${h}h` : `${d}d`;
+  if (h > 0) return m > 0 ? `${h}h ${m}m` : `${h}h`;
+  return `${m}m`;
+}
+
+/** "+1.23%" / "-0.50%" / "0.00%"; a dash for no value. */
+export function formatPct(value) {
+  if (!Number.isFinite(value)) return '—';
+  return `${value > 0 ? '+' : ''}${value.toFixed(2)}%`;
 }

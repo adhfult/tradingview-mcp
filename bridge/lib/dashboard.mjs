@@ -72,6 +72,7 @@ export function defaultAssets() {
     '/assets/pure.mjs': file('../dashboard/pure.mjs'),
     '/assets/dom.mjs': file('../dashboard/dom.mjs'),
     '/assets/alerts-view.mjs': file('../dashboard/alerts-view.mjs'),
+    '/assets/overview-view.mjs': file('../dashboard/overview-view.mjs'),
     '/assets/status-view.mjs': file('../dashboard/status-view.mjs'),
     '/assets/style.css': file('../dashboard/style.css'),
     '/assets/lightweight-charts.mjs': file('../node_modules/lightweight-charts/dist/lightweight-charts.standalone.production.mjs'),

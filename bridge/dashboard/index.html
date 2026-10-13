@@ -12,6 +12,8 @@
 <header class="bar">
   <h1>Market watch</h1>
   <p id="live-badge" class="badge" role="status" data-state="connecting"><span class="dot" aria-hidden="true"></span><span id="live-text">Connecting</span></p>
+  <p id="market-badge" class="badge" role="status" hidden></p>
+  <p id="login-badge" class="badge" role="status" hidden></p>
   <div class="picker">
     <label for="stream-picker">Stream</label>
     <select id="stream-picker" disabled></select>
@@ -24,13 +26,21 @@
 </div>
 
 <nav id="tabs" class="tabs" aria-label="Views">
-  <button type="button" data-tab="chart" aria-current="page">Chart</button>
+  <button type="button" data-tab="overview" aria-current="page">Overview</button>
+  <button type="button" data-tab="chart">Chart</button>
   <button type="button" data-tab="alerts">Alerts</button>
+  <button type="button" data-tab="opportunities">Opportunities</button>
   <button type="button" data-tab="status">Status</button>
 </nav>
 
 <main>
-  <section class="panel chart-panel" data-view="chart" aria-labelledby="chart-title">
+  <section class="panel wide" data-view="overview" aria-labelledby="overview-title">
+    <h2 id="overview-title">Overview</h2>
+    <p id="overview-status" class="status">Loading streams</p>
+    <ul id="overview-list" class="cards"></ul>
+  </section>
+
+  <section class="panel chart-panel" data-view="chart" hidden aria-labelledby="chart-title">
     <h2 id="chart-title">Chart</h2>
     <p id="chart-status" class="status">Loading candles</p>
     <div id="chart" aria-busy="true"></div>
@@ -40,19 +50,19 @@
     <a id="add-note" class="button" hidden>Add note here</a>
   </section>
 
-  <section class="panel" data-view="chart" aria-labelledby="alerts-title">
+  <section class="panel" data-view="chart" hidden aria-labelledby="alerts-title">
     <h2 id="alerts-title">Alerts</h2>
     <p id="alerts-status" class="status">Loading alerts</p>
     <ol id="alerts-list" class="list" aria-live="polite"></ol>
   </section>
 
-  <section class="panel" data-view="chart" aria-labelledby="notes-title">
+  <section class="panel" data-view="chart" hidden aria-labelledby="notes-title">
     <h2 id="notes-title">Notes</h2>
     <p id="notes-status" class="status">Loading notes</p>
     <ul id="notes-list" class="list"></ul>
   </section>
 
-  <section class="panel" data-view="chart" aria-labelledby="streams-title">
+  <section class="panel" data-view="chart" hidden aria-labelledby="streams-title">
     <h2 id="streams-title">Streams</h2>
     <p id="streams-status" class="status">Loading streams</p>
     <ul id="streams-list" class="list"></ul>
@@ -69,6 +79,21 @@
     <ol id="alerts-all-list" class="list"></ol>
     <h3 id="counts-title">Alerts per rule per day (UTC)</h3>
     <ul id="alert-counts" class="list" aria-labelledby="counts-title"></ul>
+  </section>
+
+  <section class="panel wide" data-view="opportunities" hidden aria-labelledby="trending-title">
+    <h2 id="trending-title">Opportunities</h2>
+    <p id="trending-status" class="status">Loading trending symbols</p>
+    <p class="status">Symbols the trending scan has seen lately, newest first. This list is what the scan remembers, not advice.</p>
+    <ul id="trending-list" class="list"></ul>
+  </section>
+
+  <section class="panel wide" data-view="status" hidden aria-labelledby="health-title">
+    <h2 id="health-title">Watcher health</h2>
+    <p id="health-status" class="status">Loading health</p>
+    <dl id="health-summary" class="facts"></dl>
+    <h3 id="health-streams-title">Streams</h3>
+    <ul id="health-streams" class="list" aria-labelledby="health-streams-title"></ul>
   </section>
 
   <section class="panel wide" data-view="status" hidden aria-labelledby="paper-title">
