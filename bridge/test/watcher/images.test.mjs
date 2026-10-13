@@ -81,21 +81,33 @@ test('Telegram with an image: sendPhoto multipart with chat_id, the HTML caption
   assert.deepEqual(await bytesOf(photo), PNG);
 });
 
-test('Telegram caption of exactly 1024 characters still goes as a photo; one more falls back to a plain message with the image dropped', async () => {
-  const fits = message({ lines: ['x'.repeat(1)] });
-  const base = telegramPayload(fits, '42').text.length;
-  const exact = message({ lines: ['x'.repeat(1 + 1024 - base)] });
-  assert.equal(telegramPayload(exact, '42').text.length, 1024);
+// Telegram's 1024 limit is on the text after the HTML is parsed: tags and hidden link URLs do not count, an entity is one character.
+const visible = (html) => html.replace(/<[^>]*>/g, '').replace(/&[a-z]+;|&#\d+;/gi, 'x').length;
+
+test('Telegram caption: a photo when the visible text is at most 1024 characters, a plain full message when it is longer', async () => {
+  const shown = (lines) => visible(telegramPayload(message({ lines }), '42').text);
+  const pad = 1000 - shown(['']);
+  const exact = message({ lines: ['x'.repeat(pad + 24)] });
+  assert.equal(visible(telegramPayload(exact, '42').text), 1024);
   const first = createFakeFetch(ok);
   await createTelegramNotifier({ token: BOT, chatId: '42', fetch: first.fetch }).send({ ...exact, image: PNG });
   assert.match(first.calls[0].url, /sendPhoto$/);
 
-  const long = message({ lines: ['x'.repeat(2 + 1024 - base)] });
-  assert.equal(telegramPayload(long, '42').text.length, 1025);
+  const long = message({ lines: ['x'.repeat(pad + 25)] });
+  assert.equal(visible(telegramPayload(long, '42').text), 1025);
   const second = createFakeFetch(ok);
   await createTelegramNotifier({ token: BOT, chatId: '42', fetch: second.fetch }).send({ ...long, image: PNG });
   assert.match(second.calls[0].url, /sendMessage$/);
   assert.deepEqual(second.calls[0].body, telegramPayload(long, '42'), 'the full text, uncut');
+});
+
+test('Telegram caption: escaped characters count once, so an alert that is short on screen keeps its picture', async () => {
+  const amps = message({ lines: ['&'.repeat(900)] }); // 5 characters each in the HTML, 1 on screen
+  const text = telegramPayload(amps, '42').text;
+  assert.ok(text.length > 1024 && visible(text) <= 1024, `${text.length} serialized, ${visible(text)} shown`);
+  const { fetch, calls } = createFakeFetch(ok);
+  await createTelegramNotifier({ token: BOT, chatId: '42', fetch }).send({ ...amps, image: PNG });
+  assert.match(calls[0].url, /sendPhoto$/);
 });
 
 test('Telegram without an image is unchanged: sendMessage JSON', async () => {
@@ -194,4 +206,39 @@ test('baseUrl may be a function, and with no dashboard address the fallback has 
   const [m] = withImages([recorder('discord')], { renderer, baseUrl: () => BASE });
   await m.send(message({ chart: CHART }));
   assert.match(m.sent[0].lines.at(-1), /^Chart: http:\/\/127\.0\.0\.1:8788\//);
+});
+
+// ---------------------------------------------------------------- a picture that is refused must not cost the alert
+
+test('Telegram refuses the photo (HTTP 400): the same send goes out again as text, so the alert is not lost', async () => {
+  const { fetch, calls } = createFakeFetch((url) => (url.endsWith('/sendPhoto') ? jsonResponse(400, { ok: false, description: 'not enough rights to send photos' }) : ok()));
+  await createTelegramNotifier({ token: BOT, chatId: '42', fetch }).send(message({ image: PNG }));
+  assert.deepEqual(calls.map((c) => c.url.split('/').pop()), ['sendPhoto', 'sendMessage']);
+  assert.deepEqual(calls[1].body, telegramPayload(message(), '42'));
+});
+
+test('Discord refuses the attachment (HTTP 400 or 413): the same send goes out again as plain JSON', async () => {
+  for (const status of [400, 413]) {
+    const { fetch, calls } = createFakeFetch((url, init) => (init.body instanceof FormData ? jsonResponse(status, {}) : ok()));
+    await createDiscordNotifier({ url: HOOK, fetch }).send(message({ image: PNG }));
+    assert.equal(calls.length, 2, String(status));
+    assert.deepEqual(calls[1].body, discordPayload(message()));
+  }
+});
+
+test('only a definite refusal drops the picture: a server error or a rate limit is thrown for the queue to retry, once', async () => {
+  for (const status of [429, 500, 503]) {
+    const telegram = createFakeFetch(() => jsonResponse(status, {}));
+    await assert.rejects(createTelegramNotifier({ token: BOT, chatId: '42', fetch: telegram.fetch }).send(message({ image: PNG })), (err) => err.status === status);
+    assert.equal(telegram.calls.length, 1, `telegram ${status}`);
+    const discord = createFakeFetch(() => jsonResponse(status, {}));
+    await assert.rejects(createDiscordNotifier({ url: HOOK, fetch: discord.fetch }).send(message({ image: PNG })), (err) => err.status === status);
+    assert.equal(discord.calls.length, 1, `discord ${status}`);
+  }
+});
+
+test('a text-only send that gets a 400 is still just thrown (no second request)', async () => {
+  const { fetch, calls } = createFakeFetch(() => jsonResponse(400, {}));
+  await assert.rejects(createTelegramNotifier({ token: BOT, chatId: '42', fetch }).send(message()), (err) => err.status === 400);
+  assert.equal(calls.length, 1);
 });

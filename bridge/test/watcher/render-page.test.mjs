@@ -5,7 +5,7 @@ import { readFile } from 'node:fs/promises';
 import http from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { createDashboard, defaultAssets } from '../../lib/dashboard.mjs';
-import { parseRenderQuery, renderPlan } from '../../dashboard/pure.mjs';
+import { drawPlan, parseRenderQuery, renderPlan } from '../../dashboard/pure.mjs';
 
 const read = (name) => readFile(fileURLToPath(new URL(`../../dashboard/${name}`, import.meta.url)), 'utf8');
 const ASSET_PATHS = new Set(Object.keys(defaultAssets()));
@@ -59,6 +59,47 @@ test('renderPlan: an alert bar that is no longer in the window gets no marker; n
 test('renderPlan: the marker sits on the last bar at or before the alert time', () => {
   const plan = renderPlan(candles, { t: candles[150].time + 30, direction: 'up', level: null, rule: null });
   assert.equal(plan.marker.time, candles[150].time);
+});
+
+// A library double that records what the page asked it to draw.
+function fakeChartLib() {
+  const log = { options: null, series: null, data: null, markers: null, lines: [], fitted: false };
+  const series = { setData: (d) => { log.data = d; }, createPriceLine: (o) => { log.lines.push(o); } };
+  return {
+    log,
+    LineStyle: { Dashed: 2 },
+    CandlestickSeries: 'candles',
+    createChart: (el, options) => { log.options = { el, ...options }; return { addSeries: (kind, o) => { log.series = { kind, ...o }; return series; }, timeScale: () => ({ fitContent: () => { log.fitted = true; } }) }; },
+    createSeriesMarkers: (s, markers) => { assert.equal(s, series); log.markers = markers; },
+  };
+}
+const COLOURS = { up: '#0a0', down: '#a00', accent: '#00a', surface: '#fff', muted: '#555', border: '#ccc' };
+
+test('drawPlan puts the candles, the coloured alert arrow and the labelled level line on the chart', () => {
+  const lib = fakeChartLib();
+  const plan = renderPlan(candles, { t: candles[190].time, direction: 'down', level: 1.7, rule: 'r1' });
+  drawPlan(lib, 'ELEMENT', plan, COLOURS);
+  assert.equal(lib.log.options.el, 'ELEMENT');
+  assert.equal(lib.log.options.attributionLogo ?? lib.log.options.layout.attributionLogo, false);
+  assert.equal(lib.log.series.kind, 'candles');
+  assert.equal(lib.log.data.length, 120);
+  assert.deepEqual(Object.keys(lib.log.data[0]).sort(), ['close', 'high', 'low', 'open', 'time'], 'no volume sent to the chart');
+  assert.deepEqual(lib.log.markers, [{ time: candles[190].time, position: 'aboveBar', shape: 'arrowDown', text: '↓', color: COLOURS.down }]);
+  assert.equal(lib.log.lines.length, 1);
+  assert.equal(lib.log.lines[0].price, 1.7);
+  assert.equal(lib.log.lines[0].title, 'r1');
+  assert.equal(lib.log.lines[0].color, COLOURS.accent);
+  assert.equal(lib.log.fitted, true);
+});
+
+test('drawPlan draws no arrow and no line when the plan has none, and an up arrow is green', () => {
+  const none = fakeChartLib();
+  drawPlan(none, 'E', renderPlan(candles, { t: null, direction: null, level: null, rule: null }), COLOURS);
+  assert.equal(none.log.markers, null);
+  assert.deepEqual(none.log.lines, []);
+  const up = fakeChartLib();
+  drawPlan(up, 'E', renderPlan(candles, { t: candles[190].time, direction: 'up', level: null, rule: null }), COLOURS);
+  assert.equal(up.log.markers[0].color, COLOURS.up);
 });
 
 // ---------------------------------------------------------------- render.html and the server

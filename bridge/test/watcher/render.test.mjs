@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { createRenderer, dashboardBaseUrl, deepLink, renderUrl, RenderError } from '../../lib/render.mjs';
+import { chromiumLaunchOptions, createRenderer, dashboardBaseUrl, deepLink, renderUrl, RenderError } from '../../lib/render.mjs';
 import { createFakeClock, settle } from './support.mjs';
 
 const BASE = 'http://127.0.0.1:8788';
@@ -10,23 +10,24 @@ const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
 
 /** A browser double. `behave(page)` can replace any page method to simulate a hang, a failure or a crash. */
 function fakeBrowserFactory(behave = () => {}) {
-  const state = { launches: [], browsers: [], pages: 0, openPages: 0, maxOpenPages: 0, contexts: [], visited: [], screenshots: [], routes: [] };
-  const launch = async (chromiumPath) => {
+  const state = { launches: [], launchOptions: [], events: [], browsers: [], pages: 0, openPages: 0, maxOpenPages: 0, contexts: [], visited: [], screenshots: [], routes: [] };
+  const launch = async (chromiumPath, options) => {
     state.launches.push(chromiumPath);
+    state.launchOptions.push(options);
     const browser = Object.assign(new EventEmitter(), { closed: false });
     browser.close = async () => { browser.closed = true; };
     browser.newContext = async (options) => {
       state.contexts.push(options);
       const opened = [];
       return {
-        route: async (pattern, handler) => { state.routes.push({ pattern, handler }); },
+        route: async (pattern, handler) => { state.events.push('route'); state.routes.push({ pattern, handler }); },
         close: async () => { for (const page of opened.splice(0)) await page.close(); }, // closing a context closes its pages
         newPage: async () => {
           state.pages += 1;
           state.openPages += 1;
           state.maxOpenPages = Math.max(state.maxOpenPages, state.openPages);
           const page = {
-            goto: async (url) => { state.visited.push(url); },
+            goto: async (url) => { state.events.push('goto'); state.visited.push(url); },
             waitForFunction: async () => {},
             evaluate: async () => null,
             locator: (selector) => ({
@@ -239,4 +240,112 @@ test('real browser: renders a PNG from a real dashboard (set WATCHER_TEST_CHROMI
   const png = await renderer.render({ symbol: 'X', timeframe: '60', barTime: candles[140].time, direction: 'up', level: 200, ruleId: 'r1' });
   assert.deepEqual([...png.subarray(0, 8)], [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 'a PNG signature');
   assert.ok(png.length > 5000, `a drawn chart, not a blank page (${png.length} bytes)`);
+});
+
+
+// ---------------------------------------------------------------- review findings (7b)
+
+test('Chromium keeps its sandbox unless the process is root (Playwright switches it off unless told otherwise)', () => {
+  const user = chromiumLaunchOptions('/usr/bin/chromium', { timeout: 5000, uid: 1000 });
+  assert.equal(user.chromiumSandbox, true);
+  assert.ok(!user.args.includes('--no-sandbox'));
+  assert.equal(user.executablePath, '/usr/bin/chromium');
+  assert.equal(user.timeout, 5000, 'a launch that hangs is ended by Playwright too');
+  assert.equal(user.headless, true);
+  const root = chromiumLaunchOptions('/usr/bin/chromium', { timeout: 5000, uid: 0 });
+  assert.equal(root.chromiumSandbox, false, 'Chromium refuses to start as root with its sandbox');
+  assert.equal(chromiumLaunchOptions('/x', { timeout: 1, uid: undefined }).chromiumSandbox, true, 'no uid (Windows): keep the sandbox');
+});
+
+test('the renderer passes timeout_ms to the launch, blocks service workers, and routes before it navigates, with a catch-all pattern', async () => {
+  const { renderer, state } = make();
+  await renderer.render(CHART);
+  assert.deepEqual(state.launchOptions, [{ timeout: 10_000 }]);
+  assert.equal(state.contexts[0].serviceWorkers, 'block', 'route() never sees what a service worker fetches');
+  assert.equal(state.routes.length, 1);
+  assert.equal(state.routes[0].pattern, '**/*');
+  assert.deepEqual(state.events, ['route', 'goto']);
+});
+
+const deferred = () => {
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  return { gate, release };
+};
+
+test('a launch slower than timeout_ms is not duplicated by the next render, which uses it when it arrives', async () => {
+  const f = fakeBrowserFactory();
+  const slow = deferred();
+  const clock = createFakeClock();
+  const renderer = createRenderer({ baseUrl: BASE, chromiumPath: '/c', clock, timeoutMs: 10_000, launch: async (p, o) => { const b = await f.launch(p, o); await slow.gate; return b; } });
+  const first = renderer.render(CHART);
+  const firstOutcome = assert.rejects(first, (err) => err.reason === 'timeout');
+  await settle();
+  clock.advance(10_000);
+  await firstOutcome;
+  const second = renderer.render(CHART);
+  await settle();
+  assert.equal(f.state.launches.length, 1, 'one Chromium starting, not two');
+  slow.release();
+  await settle();
+  assert.deepEqual(await second, PNG);
+  assert.equal(f.state.pages, 1, 'the abandoned first render opened no page of its own');
+  assert.equal(f.state.maxOpenPages, 1);
+});
+
+test('a browser that finishes starting after its render gave up is kept for the idle timer to close, with no page opened', async () => {
+  const f = fakeBrowserFactory();
+  const slow = deferred();
+  const clock = createFakeClock();
+  const renderer = createRenderer({ baseUrl: BASE, chromiumPath: '/c', clock, timeoutMs: 10_000, idleMs: 30_000, launch: async (p, o) => { const b = await f.launch(p, o); await slow.gate; return b; } });
+  const outcome = assert.rejects(renderer.render(CHART), (err) => err.reason === 'timeout');
+  await settle();
+  clock.advance(10_000);
+  await outcome;
+  slow.release();
+  await settle();
+  assert.equal(f.state.pages, 0, 'the abandoned render does not carry on');
+  assert.equal(f.state.browsers[0].closed, false);
+  clock.advance(30_001);
+  assert.equal(f.state.browsers[0].closed, true, 'closed by the idle timer, not left running');
+});
+
+test('a browser that finishes starting after close() is closed at once', async () => {
+  const f = fakeBrowserFactory();
+  const slow = deferred();
+  const clock = createFakeClock();
+  const renderer = createRenderer({ baseUrl: BASE, chromiumPath: '/c', clock, launch: async (p, o) => { const b = await f.launch(p, o); await slow.gate; return b; } });
+  const pending = renderer.render(CHART).catch((err) => err);
+  await settle();
+  await renderer.close();
+  slow.release();
+  await settle();
+  assert.equal((await pending).reason, 'browser');
+  assert.equal(f.state.browsers[0].closed, true);
+  assert.equal(f.state.pages, 0);
+});
+
+test('after close() a render is refused and no browser is started', async () => {
+  const { renderer, state } = make();
+  await renderer.render(CHART);
+  await renderer.close();
+  await assert.rejects(renderer.render(CHART), (err) => err instanceof RenderError && err.reason === 'browser' && /closed/.test(err.message));
+  assert.equal(state.launches.length, 1);
+});
+
+test('close() does not wait for a render in flight: that render fails at once', async () => {
+  const { renderer } = make({ behave: (page) => { page.goto = () => new Promise(() => {}); } });
+  const pending = renderer.render(CHART).catch((err) => err);
+  await settle();
+  await renderer.close(); // would hang if it waited for the render
+  assert.equal((await pending).reason, 'browser');
+});
+
+test('a timed-out render is rejected at the deadline even if the browser will not close', async () => {
+  const { renderer, clock, state } = make({ behave: (page) => { page.goto = () => new Promise(() => {}); } });
+  const outcome = renderer.render(CHART).catch((err) => err);
+  await settle();
+  state.browsers[0].close = () => new Promise(() => {}); // a browser stuck in shutdown
+  clock.advance(10_000);
+  assert.equal((await outcome).reason, 'timeout', 'the text alert is not held up by browser shutdown');
 });

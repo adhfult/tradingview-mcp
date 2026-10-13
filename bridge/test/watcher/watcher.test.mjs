@@ -1136,3 +1136,25 @@ test('real browser, end to end: a rule alert reaches Discord with a real PNG of 
   assert.ok(png.length > 5000, `a drawn chart (${png.length} bytes)`);
   await watcher.stop();
 });
+
+test('images on but the dashboard could not start: every alert still goes out as text, and the reason is logged once, not per alert', async (t) => {
+  const taken = net.createServer();
+  await new Promise((resolve) => taken.listen(0, '127.0.0.1', resolve));
+  t.after(() => taken.close());
+  const maker = fakeRendererMaker();
+  const { watcher, lib, calls, clock, logs } = await build(t, {
+    configOverrides: NO_API_IMAGES(IMAGES_ON, { port: taken.address().port }), extra: { makeRenderer: maker.make },
+    // two alerts need two different bars; a zero cooldown lets both through
+  });
+  await watcher.start();
+  const w = lib.watchers[0];
+  w.feed(snapshot([100, 101]));
+  w.feed(snapshot([100, 101, 102]));
+  w.feed(snapshot([100, 101, 102, 100]));
+  w.feed(snapshot([100, 101, 102, 100, 100]));
+  clock.advance(1);
+  await settle();
+  assert.ok(calls.length >= 2, `${calls.length} alerts sent`);
+  assert.equal(maker.made.length, 0, 'no browser for a dashboard that is not there');
+  assert.equal(logs.filter((l) => l.includes('chart image skipped')).length, 1, logs.join('\n'));
+});
