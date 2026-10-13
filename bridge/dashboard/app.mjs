@@ -383,7 +383,7 @@ async function start() {
       hint.textContent = 'Click a candle to choose where a new note goes.';
       return;
     }
-    hint.textContent = `Candle picked: ${timeText(state.pick)}`;
+    hint.textContent = `Candle picked: ${timeText(state.pick)} (the note is stamped ${new Date(state.pick * 1000).toISOString().slice(0, 16).replace('T', ' ')} UTC)`;
     const url = newNoteLink({ vault: info.vault, folder: info.folder, symbol: stream.symbol, timeframe: stream.timeframe, time: state.pick });
     link.hidden = !setObsidianLink(link, url);
   }
