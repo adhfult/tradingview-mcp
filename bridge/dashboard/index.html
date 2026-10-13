@@ -28,12 +28,20 @@
     <h2 id="chart-title">Chart</h2>
     <p id="chart-status" class="status">Loading candles</p>
     <div id="chart" aria-busy="true"></div>
+    <p id="add-note-hint" class="status" hidden></p>
+    <a id="add-note" class="button" hidden>Add note here</a>
   </section>
 
   <section class="panel" aria-labelledby="alerts-title">
     <h2 id="alerts-title">Alerts</h2>
     <p id="alerts-status" class="status">Loading alerts</p>
     <ol id="alerts-list" class="list" aria-live="polite"></ol>
+  </section>
+
+  <section class="panel" aria-labelledby="notes-title">
+    <h2 id="notes-title">Notes</h2>
+    <p id="notes-status" class="status">Loading notes</p>
+    <ul id="notes-list" class="list"></ul>
   </section>
 
   <section class="panel" aria-labelledby="streams-title">

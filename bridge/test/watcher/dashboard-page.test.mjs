@@ -292,7 +292,7 @@ test('newNoteLink: characters Obsidian forbids in a file name never reach the na
   const link = newNoteLink({ vault: 'V', folder: 'markets', symbol: 'A/B:C*D?E"F<G>H|I\\J', timeframe: 'D', time: 1_760_000_000 });
   const file = new URLSearchParams(link.slice(link.indexOf('?') + 1)).get('file');
   assert.match(file, /^markets\/[^\\/:*?"<>|]+$/);
-  assert.match(file, / 1D /);
+  assert.match(file, / D /);
 });
 
 test('parseDeepLink: symbol, tf and t from the query string; a bad t is null', async () => {

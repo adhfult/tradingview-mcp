@@ -66,9 +66,31 @@ export function paperMarker(event) {
   return { time: event.bar_time, position: event.type === 'entry' ? 'belowBar' : 'aboveBar', shape: 'square', tone: 'paper', text: event.type === 'entry' ? 'P in' : 'P out' };
 }
 
-/** Markers for one stream, ascending by time: the chart library throws on unsorted markers. */
-export function buildMarkers(alerts, paper, symbol, timeframe) {
+/** Time of the last bar at or before `time` (candle times ascending), or null: no time, or before the first bar. */
+function barAtOrBefore(candleTimes, time) {
+  if (!Number.isFinite(time)) return null;
+  let found = null;
+  for (const t of candleTimes) {
+    if (t > time) break;
+    found = t;
+  }
+  return found;
+}
+
+/** A note sits on the last bar at or before its time; no time, or before the loaded bars, means no marker. */
+export function noteMarker(note, candleTimes) {
+  const time = barAtOrBefore(candleTimes, note.time);
+  if (time === null) return null;
+  return { time, position: 'aboveBar', shape: 'circle', tone: 'note', text: String(note.kind ?? 'note').charAt(0).toUpperCase() };
+}
+
+/** Markers for one stream, ascending by time: the chart library throws on unsorted markers. Notes are already this stream's. */
+export function buildMarkers(alerts, paper, symbol, timeframe, notes = [], candleTimes = []) {
   const markers = [];
+  for (const note of notes) {
+    const marker = noteMarker(note, candleTimes);
+    if (marker !== null) markers.push(marker);
+  }
   for (const alert of alerts) {
     if (alert.symbol !== symbol || alert.timeframe !== timeframe) continue;
     const marker = alertMarker(alert);
@@ -82,6 +104,45 @@ export function buildMarkers(alerts, paper, symbol, timeframe) {
     }
   }
   return markers.sort((a, b) => a.time - b.time);
+}
+
+/** The link only if it starts with exactly `obsidian://` and has no whitespace or control characters; else null. */
+export function safeObsidianHref(url) {
+  return typeof url === 'string' && /^obsidian:\/\/[^\s\u0000-\u001f\u007f]+$/.test(url) ? url : null;
+}
+
+/** A file name Obsidian accepts: its forbidden characters become "-". */
+const fileSafe = (text) => text.replace(/[\\/:*?"<>|]/g, '-');
+
+/**
+ * `obsidian://new` for a note about one candle. The note is created by Obsidian when the user clicks; this page and
+ * the watcher write nothing. The content is the frontmatter lib/notes.mjs reads back (symbols, time, kind).
+ */
+export function newNoteLink({ vault, folder, symbol, timeframe, time }) {
+  const iso = new Date(time * 1000).toISOString().replace('.000Z', 'Z');
+  const name = `${fileSafe(symbol)} ${fileSafe(formatTimeframe(timeframe))} ${iso.slice(0, 10)} ${iso.slice(11, 13)}${iso.slice(14, 16)}`;
+  const content = `---\nsymbols: [${JSON.stringify(symbol)}]\ntime: ${iso}\nkind: note\n---\n# ${symbol} ${formatTimeframe(timeframe)} ${iso.slice(0, 16).replace('T', ' ')} UTC\n\n`;
+  const enc = encodeURIComponent;
+  return `obsidian://new?vault=${enc(vault)}&file=${enc(`${folder}/${name}`)}&content=${enc(content)}`;
+}
+
+/** `?symbol=&tf=&t=<unix seconds>` -> {symbol, timeframe, t}; a missing or unusable part is null. */
+export function parseDeepLink(search) {
+  const q = new URLSearchParams(search);
+  const t = q.get('t');
+  return {
+    symbol: q.get('symbol'),
+    timeframe: q.get('tf'),
+    t: t !== null && /^[1-9]\d{0,10}$/.test(t) ? Number(t) : null,
+  };
+}
+
+/** A logical range of `bars` bars centred on the last bar at or before `t`, or null when t is before the first bar. */
+export function centerRange(candleTimes, t, bars) {
+  const time = barAtOrBefore(candleTimes, t);
+  if (time === null) return null;
+  const index = candleTimes.indexOf(time);
+  return { from: index - bars / 2, to: index + bars / 2 };
 }
 
 // ---------------------------------------------------------------- browser
@@ -124,8 +185,11 @@ function setStatus(id, text, kind) {
 }
 
 async function start() {
-  const state = { streams: [], selected: null, candles: [], alerts: [], paper: [], levels: [], loadId: 0, wasConnected: false, loadFailed: false };
-  const shown = { alerts: '', streams: '', picker: '' }; // what is on screen, so an unchanged list is not rebuilt (it would drop keyboard focus and re-announce)
+  const state = {
+    streams: [], selected: null, candles: [], alerts: [], paper: [], levels: [], loadId: 0, wasConnected: false, loadFailed: false,
+    notes: [], notesInfo: null, notesError: null, pick: null, centred: false,
+  };
+  const shown = { alerts: '', streams: '', picker: '', notes: '' }; // what is on screen, so an unchanged list is not rebuilt (it would drop keyboard focus and re-announce)
   const NO_CHART = 'The chart library could not be loaded, so there is no chart. Alerts and streams still work.';
   let lib = null;
   let chart = null;
@@ -162,6 +226,11 @@ async function start() {
     chart = lib.createChart($('chart'), { autoSize: true, ...chartOptions() });
     series = chart.addSeries(lib.CandlestickSeries, seriesOptions());
     markerPlugin = lib.createSeriesMarkers(series, []);
+    chart.subscribeClick((param) => {
+      if (state.notesInfo?.enabled !== true || typeof param.time !== 'number') return;
+      state.pick = param.time;
+      renderAddNote();
+    });
   }
 
   const toChartCandle = (c) => ({ time: c.time, open: c.open, high: c.high, low: c.low, close: c.close });
@@ -170,7 +239,7 @@ async function start() {
     if (markerPlugin === null || state.selected === null) return;
     const colours = { up: cssVar('--up'), down: cssVar('--down'), paper: cssVar('--paper'), note: cssVar('--note') };
     const { symbol, timeframe } = state.selected;
-    markerPlugin.setMarkers(buildMarkers(state.alerts, state.paper, symbol, timeframe)
+    markerPlugin.setMarkers(buildMarkers(state.alerts, state.paper, symbol, timeframe, state.notes, state.candles.map((c) => c.time))
       .map(({ tone, ...marker }) => ({ ...marker, color: colours[tone] })));
   }
 
@@ -262,6 +331,63 @@ async function start() {
     if (focused !== undefined) list.querySelector(`button[data-stream="${CSS.escape(focused)}"]`)?.focus();
   }
 
+  /** An Obsidian link: set only after the scheme check, else the element stays plain text. */
+  function setObsidianLink(el, url) {
+    const safe = safeObsidianHref(url);
+    if (safe === null) {
+      el.removeAttribute('href');
+      return false;
+    }
+    el.href = safe;
+    return true;
+  }
+
+  const KIND_LABEL = { news: 'News', opportunity: 'Opportunity', risk: 'Risk', note: 'Note' };
+
+  function fillNote(li, n) {
+    addText(li, 'span', KIND_LABEL[n.kind] ?? 'Note', 'tag').dataset.tone = 'note';
+    setObsidianLink(addText(li, 'a', n.title), n.open);
+    if (Number.isFinite(n.time)) {
+      const time = addText(li, 'time', timeText(n.time));
+      time.dateTime = new Date(n.time * 1000).toISOString();
+    }
+    if (n.excerpt !== '') addText(li, 'span', n.excerpt, 'msg');
+  }
+
+  /** The Notes panel: its four states (loading is the page's first text), and rebuilt only when the notes changed. */
+  function renderNotes() {
+    const list = $('notes-list');
+    let text = '';
+    let kind;
+    if (state.notesError !== null) [text, kind] = [`Could not load notes: ${state.notesError}`, 'error'];
+    else if (state.notesInfo === null) text = 'No stream selected.';
+    else if (!state.notesInfo.enabled) text = 'Notes are off. Set dashboard.notes in the watcher config to show your Obsidian notes here.';
+    else if (state.notes.length === 0) text = 'No notes for this symbol yet. A note appears when its properties list this symbol, for example symbols: [BTCUSDT].';
+    setStatus('notes-status', text, kind);
+    const signature = JSON.stringify(state.notes);
+    if (signature === shown.notes) return;
+    shown.notes = signature;
+    renderList(list, state.notes.map((n) => (li) => fillNote(li, n)));
+  }
+
+  /** "Add note here" appears once a candle has been clicked, and only when the notes layer is on. */
+  function renderAddNote() {
+    const hint = $('add-note-hint');
+    const link = $('add-note');
+    const info = state.notesInfo;
+    const stream = state.selected;
+    hint.hidden = info?.enabled !== true;
+    link.hidden = true;
+    if (info?.enabled !== true || stream === null) return;
+    if (state.pick === null) {
+      hint.textContent = 'Click a candle to choose where a new note goes.';
+      return;
+    }
+    hint.textContent = `Candle picked: ${timeText(state.pick)}`;
+    const url = newNoteLink({ vault: info.vault, folder: info.folder, symbol: stream.symbol, timeframe: stream.timeframe, time: state.pick });
+    link.hidden = !setObsidianLink(link, url);
+  }
+
   function renderPicker() {
     const picker = $('stream-picker');
     const signature = JSON.stringify(state.streams.map(streamKey));
@@ -281,6 +407,41 @@ async function start() {
   }
   const clearError = () => { $('page-error').hidden = true; };
 
+  /** The /api/notes answer (or {error}) into the state. */
+  function applyNotes(answer) {
+    state.notesError = typeof answer.error === 'string' ? answer.error : null;
+    state.notesInfo = state.notesError === null ? { enabled: answer.enabled, vault: answer.vault, folder: answer.folder } : null;
+    state.notes = state.notesError === null ? answer.notes : [];
+  }
+
+  /** `?t=` in the page URL centres the chart on that time, once, for the stream the link names. */
+  function centreOnLink() {
+    const link = parseDeepLink(location.search);
+    const stream = state.selected;
+    if (state.centred || link.t === null || chart === null || stream === null) return;
+    if (link.symbol !== stream.symbol || link.timeframe !== stream.timeframe) return;
+    state.centred = true;
+    const range = centerRange(state.candles.map((c) => c.time), link.t, 80);
+    if (range === null) setStatus('chart-status', 'The time in the link is before the loaded candles.');
+    else chart.timeScale().setVisibleLogicalRange(range);
+  }
+
+  /** The notes change by hand in Obsidian, so look again now and then; the markers and panel change only if they did. */
+  async function reloadNotes() {
+    const stream = state.selected;
+    if (stream === null || state.notesInfo?.enabled === false) return; // off stays off; an error or a notes folder created later is tried again
+    const id = state.loadId;
+    try {
+      const answer = await getJson(`/api/notes?${new URLSearchParams({ symbol: stream.symbol, tf: stream.timeframe })}`);
+      if (id !== state.loadId) return;
+      applyNotes(answer);
+      renderNotes();
+      drawMarkers();
+    } catch (err) {
+      console.error('notes reload failed', err);
+    }
+  }
+
   /**
    * Everything for the selected stream: candles, levels, alerts and paper journals. A newer call makes an older one a no-op.
    * Without a chart there is nothing to draw, but the alerts still load.
@@ -289,6 +450,7 @@ async function start() {
     const stream = state.selected;
     state.loadId += 1;
     const id = state.loadId;
+    state.pick = null;
     const chartNote = (text) => (lib === null ? setStatus('chart-status', NO_CHART, 'error') : setStatus('chart-status', text));
     $('chart').setAttribute('aria-busy', String(lib !== null));
     chartNote('Loading candles');
@@ -296,30 +458,43 @@ async function start() {
     try {
       if (stream === null) { // no streams configured: alerts can still exist (/notify, trending)
         state.candles = [];
+        state.notes = [];
+        state.notesInfo = null;
+        state.notesError = null;
         state.alerts = await getJson(`/api/alerts?limit=${ALERT_LIMIT}`);
         $('chart').setAttribute('aria-busy', 'false');
         chartNote('No stream selected.');
-        if (id === state.loadId) renderAlerts();
+        if (id === state.loadId) {
+          renderAlerts();
+          renderNotes();
+          renderAddNote();
+        }
         return;
       }
-      const [candles, levels, alerts, paper] = await Promise.all([
+      const [candles, levels, alerts, paper, notes] = await Promise.all([
         getJson(`/api/candles?${q}`),
         getJson(`/api/levels?${new URLSearchParams({ symbol: stream.symbol })}`),
         getJson(`/api/alerts?limit=${ALERT_LIMIT}`),
         getJson('/api/paper'),
+        getJson(`/api/notes?${q}`).catch((err) => ({ error: errorText(err) })), // a notes failure must not blank the chart
       ]);
       if (id !== state.loadId) return;
       Object.assign(state, { candles, levels, alerts, paper });
+      applyNotes(notes);
       clearError();
       $('chart').setAttribute('aria-busy', 'false');
       chartNote(candles.length === 0 ? 'No candles yet for this stream. They appear after the watcher\'s first snapshot.' : '');
       drawChart(true);
+      centreOnLink();
       renderAlerts();
+      renderNotes();
+      renderAddNote();
     } catch (err) {
       if (id !== state.loadId) return;
       $('chart').setAttribute('aria-busy', 'false');
       setStatus('chart-status', `Could not load candles: ${errorText(err)}`, 'error');
       setStatus('alerts-status', `Could not load alerts: ${errorText(err)}`, 'error');
+      setStatus('notes-status', `Could not load notes: ${errorText(err)}`, 'error');
       showError(err);
     }
   }
@@ -349,8 +524,8 @@ async function start() {
       showError(err);
       return;
     }
-    const query = new URLSearchParams(location.search);
-    const wanted = state.selected ?? { symbol: query.get('symbol'), timeframe: query.get('tf') };
+    const link = parseDeepLink(location.search);
+    const wanted = state.selected ?? { symbol: link.symbol, timeframe: link.timeframe };
     state.selected = state.streams.find((s) => streamKey(s) === streamKey(wanted)) ?? state.streams[0] ?? null;
     renderPicker();
     renderStreams();
@@ -360,6 +535,12 @@ async function start() {
   function select(stream) {
     state.selected = stream;
     state.candles = []; // a bar for the new stream must not be drawn onto the old stream's candles
+    state.notes = []; // nor the old stream's notes shown under the new stream's name
+    state.notesInfo = null;
+    state.notesError = null;
+    shown.notes = '';
+    renderList($('notes-list'), []);
+    setStatus('notes-status', 'Loading notes');
     const q = new URLSearchParams({ symbol: stream.symbol, tf: stream.timeframe });
     history.replaceState(null, '', `?${q}`);
     renderPicker();
@@ -442,6 +623,7 @@ async function start() {
   $('retry').addEventListener('click', () => { clearError(); loadStreams(); });
   matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyTheme);
   setInterval(renderStreams, 60_000); // "Stale" depends on the clock, not on an event
+  setInterval(reloadNotes, 60_000);
 
   connect();
   await loadStreams();

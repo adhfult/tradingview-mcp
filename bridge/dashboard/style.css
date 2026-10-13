@@ -96,6 +96,17 @@ select, button {
   font: inherit;
 }
 button { cursor: pointer; }
+.button {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.25rem;
+  padding: var(--s1) var(--s3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  text-decoration: none;
+}
 
 .banner {
   display: flex;
@@ -144,6 +155,7 @@ main { display: grid; gap: var(--s4); padding: 0 var(--s4) var(--s4); }
 .tag[data-tone="up"] { color: var(--up); }
 .tag[data-tone="down"] { color: var(--down); }
 .tag[data-tone="warn"] { color: var(--paper); }
+.tag[data-tone="note"] { color: var(--note); }
 .list button { margin-left: auto; }
 .list li[aria-current="true"] { font-weight: 600; }
 
@@ -154,7 +166,7 @@ footer p { margin: 0; }
 
 @media (min-width: 60rem) {
   main { grid-template-columns: 2fr 1fr; align-items: start; }
-  .chart-panel { grid-row: span 2; }
+  .chart-panel { grid-row: span 3; }
   #chart { height: 32rem; }
 }
 
