@@ -33,13 +33,14 @@ test('index.html: no inline code, only allowlisted assets, one external link (th
 
   const external = [];
   for (const [, , url] of html.matchAll(/\s(src|href)="([^"]*)"/gi)) {
-    if (url.startsWith('#')) continue;
+    if (url.startsWith('#') || url === 'data:,') continue; // data:, is the empty favicon (img-src allows data:)
     if (/^https?:\/\//.test(url)) external.push(url);
     else assert.ok(ASSET_PATHS.has(url), `${url} is not in the dashboard allowlist`);
   }
   assert.deepEqual(external, ['https://www.tradingview.com/'], 'only the attribution link leaves the origin');
   assert.match(html, /<a\s[^>]*href="https:\/\/www\.tradingview\.com\/"[^>]*rel="[^"]*noopener[^"]*"/, 'attribution link, noopener');
   assert.match(html, /href="\/assets\/style\.css"/);
+  assert.match(html, /Copyright © 20\d\d TradingView, Inc\./, 'the library NOTICE text, since the logo is off');
 });
 
 test('index.html: landmarks, labelled stream picker, live badge and aria-live alerts list', async () => {
@@ -182,4 +183,8 @@ test('the real files are served by createDashboard with the real allowlist', asy
     assert.ok(res.body.length > 0, path);
   }
   assert.match((await get('/')).body, /id="stream-picker"/);
+});
+
+test('app.mjs: the library attribution logo stays off (it injects a <style> element, which the CSP blocks)', async () => {
+  assert.match(await read('app.mjs'), /attributionLogo:\s*false/);
 });

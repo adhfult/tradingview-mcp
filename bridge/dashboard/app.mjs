@@ -5,6 +5,9 @@
  * because the CSP forbids inline code and an alert title is not trusted. The pure functions at
  * the top have no DOM and are tested in Node; start() runs only in a browser.
  *
+ * The library's attribution logo is off: it injects a <style> element, which the CSP blocks. The
+ * footer in index.html carries the required notice and tradingview.com link instead.
+ *
  * Chart colours are read from the CSS tokens (docs/design/DESIGN.md) at draw time: the chart
  * paints on a canvas, which cannot resolve `var(--up)` itself.
  */
@@ -139,7 +142,7 @@ async function start() {
 
   function chartOptions() {
     return {
-      layout: { background: { color: cssVar('--surface') }, textColor: cssVar('--muted'), attributionLogo: true },
+      layout: { background: { color: cssVar('--surface') }, textColor: cssVar('--muted'), attributionLogo: false },
       grid: { vertLines: { color: cssVar('--border') }, horzLines: { color: cssVar('--border') } },
       rightPriceScale: { borderColor: cssVar('--border') },
       timeScale: { borderColor: cssVar('--border'), timeVisible: true },
@@ -217,7 +220,7 @@ async function start() {
       addText(li, 'span', a.symbol === null ? a.title : `${a.symbol} ${formatTimeframe(a.timeframe)}`);
       const time = addText(li, 'time', timeText(a.at / 1000));
       time.dateTime = new Date(a.at).toISOString();
-      addText(li, 'span', a.message ?? a.title, 'msg');
+      if (a.message !== null) addText(li, 'span', a.message, 'msg');
     }));
   }
 
