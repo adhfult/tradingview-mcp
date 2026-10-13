@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { alertDetailRows, countByRuleDay, deepLink, filterAlerts, paperEquity, parseDeepLink, tabTitle } from '../../dashboard/pure.mjs';
+import { alertDetailRows, countByRuleDay, deepLink, filterAlerts, paperEquity, parseDeepLink, sparkPoints, tabTitle } from '../../dashboard/pure.mjs';
 
 const DAY = 86_400_000;
 const D0 = Date.UTC(2026, 9, 12, 10, 0, 0);
@@ -93,4 +93,18 @@ test('paperEquity: no exits gives no points and a null total; unusable exits are
   assert.equal(paperEquity([exit(null, 3), exit(Number.NaN, 4), exit(5, null)]).trades, 0);
   const wiped = paperEquity([exit(-150, 3), exit(50, 4)]);
   assert.deepEqual(wiped.points.map((p) => p.value), [-100, -100]);
+});
+
+// ---------------------------------------------------------------- sparklines (B1, B11)
+
+test('sparkPoints: the lowest value sits at the bottom, the highest at the top, spread evenly across the width', () => {
+  assert.equal(sparkPoints([1, 3, 2], 100, 20), '0,20 50,0 100,10');
+  assert.equal(sparkPoints([5, 5, 5], 100, 20), '0,10 50,10 100,10', 'a flat line is drawn in the middle');
+  assert.equal(sparkPoints([4], 100, 20), '0,10 100,10', 'one value is a flat line, not nothing');
+});
+
+test('sparkPoints: no values, or only unusable ones, give an empty string', () => {
+  assert.equal(sparkPoints([], 100, 20), '');
+  assert.equal(sparkPoints([null, Number.NaN, Infinity], 100, 20), '');
+  assert.equal(sparkPoints([1, null, 3], 100, 20), '0,20 100,0', 'unusable values are skipped');
 });

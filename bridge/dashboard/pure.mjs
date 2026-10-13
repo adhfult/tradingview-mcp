@@ -219,3 +219,14 @@ export function paperEquity(events) {
   }
   return { points, totalPct: points.at(-1)?.value ?? null, trades: points.length };
 }
+
+/** An SVG polyline's `points` for a small line chart: min at the bottom, max at the top, a flat series in the middle. Unusable values are skipped. */
+export function sparkPoints(values, width, height) {
+  const ys = values.filter((v) => Number.isFinite(v));
+  if (ys.length === 0) return '';
+  const low = Math.min(...ys);
+  const span = Math.max(...ys) - low;
+  const at = (v) => (span === 0 ? height / 2 : height - ((v - low) / span) * height);
+  const row = ys.length === 1 ? [ys[0], ys[0]] : ys;
+  return row.map((v, i) => `${Number(((i / (row.length - 1)) * width).toFixed(2))},${Number(at(v).toFixed(2))}`).join(' ');
+}
