@@ -215,6 +215,7 @@ test('previewSummary: counts the signals, names the rule and the bars, and says 
   assert.match(text, /rule rsi14/);
   assert.match(text, /last 300 closed bars/);
   assert.match(text, /not a prediction/i);
+  assert.match(text, /same or fewer/, 'a count of signals is at most the alerts that would have gone out, never fewer than them');
   assert.match(text, /cooldown/i, 'says the cooldown, caps and quiet hours are not applied');
   assert.doesNotMatch(text, /profit|money|win|gain|earn/i, 'never talks about making money');
 });
@@ -222,5 +223,5 @@ test('previewSummary: counts the signals, names the rule and the bars, and says 
 test('previewSummary: one signal, no signals and no bars read correctly', () => {
   assert.match(previewSummary({ ruleId: 'r', barsChecked: 40, hits: [{}] }), /^1 signal from rule r in the last 40 closed bars/);
   assert.match(previewSummary({ ruleId: 'r', barsChecked: 40, hits: [] }), /^No signals from rule r in the last 40 closed bars/);
-  assert.match(previewSummary({ ruleId: 'r', barsChecked: 0, hits: [] }), /^No closed bars to look at yet/);
+  assert.match(previewSummary({ ruleId: 'r', barsChecked: 0, hits: [] }), /^Not enough closed bars yet to judge rule r/);
 });

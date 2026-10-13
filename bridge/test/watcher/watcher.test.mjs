@@ -970,5 +970,14 @@ test('the dashboard preview uses the watcher\'s session calendar, judged by each
   await settle();
   const out = await (await getFrom(watcher, '/api/preview?symbol=BINANCE:BTCUSDT&tf=15&rule=move')).json();
   assert.deepEqual(out.hits.map((h) => new Date(h.time * 1000).toISOString().slice(11, 16)), ['13:30', '13:45', '14:00']);
-  assert.equal(out.barsChecked, 5, 'six candles, the last is still forming');
+  assert.equal(out.barsChecked, 4, 'six candles: the last is still forming, and the first closed bar has none before it');
+});
+
+test('the dashboard trending panel forgets a symbol after remember_hours even when no scan has pruned it', async (t) => {
+  const { watcher, clock } = await build(t, { configOverrides: NO_API });
+  await watcher.start();
+  const hour = 3_600_000;
+  watcher.state.state.trending = { 'stock|gainers': { 'NASDAQ:OLD': clock.now() - 7 * hour, 'NASDAQ:NEW': clock.now() - 5 * hour } };
+  const rows = await (await getFrom(watcher, '/api/trending')).json();
+  assert.deepEqual(rows.map((r) => r.symbol), ['NASDAQ:NEW'], 'the default remember_hours is 6');
 });

@@ -185,7 +185,7 @@ const preview = (over = {}) => previewView({ rule: CROSS, stream: BTC, candles: 
 test('previewView: the hits are the real evaluator run on each closed bar, and the forming bar is left out', () => {
   const view = preview();
   assert.equal(view.ruleId, 'x105');
-  assert.equal(view.barsChecked, 19, '20 candles, the last is still forming');
+  assert.equal(view.barsChecked, 18, '20 candles: the last is still forming, and the first closed bar has no bar before it for a cross');
   assert.equal(view.hits.length, 18, 'a cross on every closed bar but the first');
   assert.deepEqual(view.hits[0], { time: T0 + 3600, direction: 'up', message: 'Crossed 105 upward' });
   assert.equal(view.hits[1].direction, 'down');
@@ -233,4 +233,36 @@ test('previewableRules: the live top-level rules that apply to the stream, ids a
     { id: 'old', type: 'pct_move', expires: '2020-01-01' },
   ];
   assert.deepEqual(previewableRules({ rules, stream: BTC, nowMs: now, timezone: 'UTC' }), [{ id: 'a', type: 'price_cross' }, { id: 'btc', type: 'pct_move' }]);
+});
+
+test('previewView: bars with less history than the rule needs are skipped and not counted (a rolling snapshot would have given them more)', () => {
+  const pct = { id: 'p', type: 'pct_move', bars: 3, threshold_pct: 0.1 };
+  const rising = candles(20, (i) => 100 + i);
+  const view = preview({ rule: pct, candles: rising });
+  assert.equal(view.barsChecked, 16, '19 closed bars, the first 3 cannot look 3 bars back');
+  assert.equal(view.hits.length, 16);
+  assert.equal(view.hits[0].time, T0 + 3 * 3600);
+});
+
+test('previewView: an RSI rule is judged only once its start-up has worn off (5 periods), because Wilder smoothing never forgets its seed', () => {
+  const rsiRule = { id: 'r', type: 'rsi_cross' }; // default period 14: 70 bars of warm-up
+  const wave = candles(120, (i) => 100 + Math.sin(i / 4) * 10);
+  const view = preview({ rule: rsiRule, candles: wave });
+  assert.equal(view.barsChecked, 119 - 69, '119 closed bars, bar index 69 is the first with 70 behind it');
+  assert.ok(view.hits.every((h) => h.time >= T0 + 69 * 3600));
+  assert.equal(preview({ rule: rsiRule, candles: candles(20) }).barsChecked, 0, 'not enough bars to say anything');
+});
+
+test('previewView: a composite waits for its slowest member, however deeply nested', () => {
+  const nested = { id: 'n', type: 'any_of', members: [CROSS, { id: 'in', type: 'all_of', members: [CROSS, { id: 'slow', type: 'pct_move', bars: 10, threshold_pct: 50 }] }] };
+  assert.equal(preview({ rule: nested }).barsChecked, 19 - 10);
+});
+
+// ---------------------------------------------------------------- trending retention
+
+test('trendingView: symbols older than remember_hours are dropped, because the scanner only prunes when it scans', () => {
+  const hour = 3_600_000;
+  const trending = { 'stock|gainers': { 'NASDAQ:OLD': 1_000_000 - 7 * hour, 'NASDAQ:NEW': 1_000_000 - 5 * hour } };
+  assert.deepEqual(trendingView(trending, [], 1_000_000, 6 * hour).map((r) => r.symbol), ['NASDAQ:NEW']);
+  assert.equal(trendingView(trending, [], 1_000_000).length, 2, 'no limit given: nothing dropped');
 });

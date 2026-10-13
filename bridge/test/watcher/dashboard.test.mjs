@@ -1023,7 +1023,7 @@ test('/api/preview?rule= gives the hits of one rule over the closed bars, from t
   const { get } = await start(t, { rules: PREVIEW_RULES });
   const out = json(await get(`${BTC60}&rule=x`));
   // closes are 11..20, the level 15.5 is crossed up by candle 5 (15 -> 16); candle 9 is the forming bar.
-  assert.deepEqual(out, { ruleId: 'x', symbol: 'BINANCE:BTCUSDT', timeframe: '60', barsChecked: 9, hits: [{ time: 1_760_000_000 + 5 * 3600, direction: 'up', message: 'Crossed 15.5 upward' }] });
+  assert.deepEqual(out, { ruleId: 'x', symbol: 'BINANCE:BTCUSDT', timeframe: '60', barsChecked: 8, hits: [{ time: 1_760_000_000 + 5 * 3600, direction: 'up', message: 'Crossed 15.5 upward' }] });
 });
 
 test('/api/preview uses the watcher\'s session check for a us_session rule', async (t) => {
@@ -1062,12 +1062,12 @@ test('/api/preview is worked out once per (stream, rule, last closed bar): same 
   const streams = { list: () => STREAMS, candles: (key) => (key === 'BINANCE:BTCUSDT|60' ? live.map((c) => ({ ...c })) : []) };
   const { get } = await start(t, { rules: [{ id: 'x', type: 'price_cross', level: 15 }], streams });
   assert.equal(json(await get(`${BTC60}&rule=x`)).hits.length, 0);
-  live[2].close = 20; // a closed bar changes under it; the answer must come from the cache
-  live[5].close = 11; // so does the forming bar, which is not part of the key
+  live[5].close = 11; // the forming bar is not part of the answer, so it is not part of the key
   assert.equal(json(await get(`${BTC60}&rule=x`)).hits.length, 0, 'served from the cache');
-  live.push(candle(6, { close: 10 })); // a bar closed: a new key, so it is worked out again
-  const fresh = json(await get(`${BTC60}&rule=x`));
-  assert.deepEqual(fresh.hits.map((h) => h.direction), ['up', 'down']);
+  live[2].close = 20; // an earlier closed candle is revised without a new bar: the answer must follow
+  assert.deepEqual(json(await get(`${BTC60}&rule=x`)).hits.map((h) => h.direction), ['up', 'down']);
+  live.push(candle(6, { close: 10 })); // and a bar closing is a new answer too
+  assert.equal(json(await get(`${BTC60}&rule=x`)).hits.length, 2);
 });
 
 test('/api/preview: simultaneous requests all get the same answer', async (t) => {
@@ -1087,4 +1087,23 @@ test('/api/preview follows the same rules as every route: 401 without the token,
     assert.equal((await loopback.get(path, { headers: { host: 'evil.example' } })).status, 403, path);
     assert.equal((await loopback.get(path, { method: 'POST' })).status, 405, path);
   }
+});
+
+test('/api/preview: a composite whose member expires overnight is not answered from the cache', async (t) => {
+  // The fake clock reads 2026-10-10 12:00 UTC. The member's last day is that day, so two days later it is dead and
+  // the all_of cannot hit, although no bar has closed since the first answer.
+  const rules = [{ id: 'both', type: 'all_of', members: [{ id: 'm1', type: 'price_cross', level: 15.5 }, { id: 'm2', type: 'price_cross', level: 15.5, expires: '2026-10-10' }] }];
+  const { get, clock } = await start(t, { rules });
+  assert.equal(json(await get(`${BTC60}&rule=both`)).hits.length, 1);
+  clock.advance(2 * 24 * 3600 * 1000);
+  assert.deepEqual(json(await get(`${BTC60}&rule=both`)).hits, []);
+});
+
+test('/api/trending drops symbols older than the watcher\'s remember_hours', async (t) => {
+  const hour = 3_600_000;
+  const trending = () => ({ 'crypto|gainers': { 'BINANCE:BTCUSDT': clock.now() - 7 * hour, 'BINANCE:PEPEUSDT': clock.now() - hour } });
+  let clock;
+  const started = await start(t, { getStatus: () => ({ ...STATUS, trending: trending(), trendingRememberMs: 6 * hour }) });
+  clock = started.clock;
+  assert.deepEqual(json(await started.get('/api/trending')).map((r) => r.symbol), ['BINANCE:PEPEUSDT']);
 });
