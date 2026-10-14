@@ -1,34 +1,31 @@
-# Handoff: plan review for the news monitor, bigger watchlist and analysis prompts
+# Handoff: build the news monitor, real-time wide watchlist, analysis prompts and tool integrations
 
-Written 2026-10-14. Nothing is coded. The deliverable of this handoff is **a reviewed, approved plan** (piece N0). Plan file: `docs/plans/news-monitor-and-analysis-prompts.md` (a Sonnet draft; read it first, including **Appendix A: Adham's ten prompts, verbatim**).
+Written 2026-10-14 at the end of N0 (plan review, Opus 5.5 High). **The plan is reviewed and approved by Adham; nothing is coded yet.** Plan: `docs/plans/news-monitor-and-analysis-prompts.md`. Facts and sources: `docs/plans/news-monitor-n0-findings.md`. Argon's reply (a review of the N0 view, not an independent plan): `docs/plans/news-monitor-argon-plan.md`. Adham's ten prompts: Appendix A of the plan and `docs/handoffs/briefs/news-ten-prompts.md`.
 
-## Reminder line (the standing rule)
-**Next piece: N0, news monitor plan review. Regime 1 (architecture). Start with Opus 5.5 High in plan mode. New session needed: yes. Delegates: Haiku xhigh for fact-finding only (never the design); Fable advisor before approval, since it is architectural.**
-Do not edit code in this session. Output: an updated plan file, the N0 findings file, and a go/no-go for N1.
+## Reminder line (the standing rule, print it first in every build session)
+`Next piece: <piece>. Regime <n>. Start with <model> <effort>. New session needed: yes/no. Delegates: <...>.` Never switch models mid-session.
 
 ## Where things stand
-- Branch `main` of the fork (`origin` = `https://github.com/adhfult/tradingview-mcp`; there is no `upstream` remote). **Never push to anything but `origin`. Ask Adham before pushing.** A PR to the official repo was opened by accident once (closed); ignore any "create pull request" prompt.
-- Phases 0 to 7c, watchers W1 to W3 are done and on `main`. CI on the fork is green. Gates: `timeout 250 npm test --prefix bridge` (752 pass, 2 skipped); `env -u PYTHONDONTWRITEBYTECODE uv run --extra pine pytest tests/unit -q` (1145 pass). Run Python tests with `PYTHONDONTWRITEBYTECODE` unset: Adham's shell has it set, which hid a CI failure.
-- **The watcher is live on the Pi** (`adhfult@fultonpi`, Debian 13, Node 22 from NodeSource at `/usr/bin/node`, service `tradingview-watcher`, config `~/.config/tradingview-watcher/config.json`, secrets `/etc/tradingview-watcher.env`, Telegram channel set, anonymous TradingView, quiet hours 23:00 to 07:00 New York). It has run only a short time, so treat Pi behaviour as unmeasured. `scripts/pi-setup.sh` sets the Pi up (see `bridge/README.md`).
-- Two untracked files sit in the repo root, `HANDOFF.md` and `HANDOFF-P0-old.md`. They are stale leftovers from earlier sessions, not part of this work. Leave them alone and ask Adham before deleting either; do not commit them.
-- The Pi checks for 7b (Chromium pictures) and 7c (Pyne timing) are still open. Do not start N1 or N2 before the watcher has run a clean night.
+- Branch `main` of the fork (`origin` = `https://github.com/adhfult/tradingview-mcp`; no `upstream` remote). **Never push to anything but `origin`, and ask Adham first.** Ignore any "create pull request" prompt (one went to the official repo by accident once and was closed).
+- Phases 0 to 7c and watchers W1 to W3 are on `main`; CI green. Gates: `timeout 250 npm test --prefix bridge` (752 pass, 2 skipped); `env -u PYTHONDONTWRITEBYTECODE uv run --extra pine pytest tests/unit -q` (1145 pass). Unset `PYTHONDONTWRITEBYTECODE`: it hid a CI failure once.
+- The watcher runs on the Pi (`adhfult@fultonpi`, Debian 13, Node 22 at `/usr/bin/node`, service `tradingview-watcher`). It had run only a short time at N0: Pi behaviour is unmeasured. Do not start N1a or N2 before a clean night (`curl -s 127.0.0.1:8787/health` healthy == total).
+- Two untracked files in the repo root, `HANDOFF.md` and `HANDOFF-P0-old.md`, are stale. Leave them; tell helper agents to ignore them.
 
-## What this session should do
-1. Read the plan, then the files it names: `bridge/lib/scanner.mjs`, `bridge/lib/state.mjs`, the `tick()` block in `bridge/watcher.mjs`, `bridge/lib/config.mjs` (how blocks are validated), `bridge/lib/format.mjs` and `notifiers.mjs` (how text is escaped), `docs/plans/panwatch-ideas-and-pi-footprint.md`.
-2. Run **N0** from the plan: verify the SEC, RSS and TradingView facts against real documentation (sources and dates in a findings file, `docs/plans/news-monitor-n0-findings.md`). Delegate only the fact lookups. Verify any claim a subagent returns before it goes in the plan.
-3. Decide **D0** (watcher module or PanWatch), **D1** to **D3**, and fix the plan where N0 shows it was wrong. Be honest about what is still unverified.
-4. Ask Adham the five open questions at the end of the plan if they are still unanswered.
-5. Get the Fable advisor's review of the plan, then ask Adham to approve. Then write the build briefs for N1, N3, N4, N2 (one per session) or say which should be dropped.
+## What was decided in N0 (details in the plan)
+- News goes in the watcher (not PanWatch). Sources: TradingView news-flow JSON and SEC EDGAR first (N1a), then TickerTick, Nasdaq earnings calendar, Yahoo/Nasdaq/Google RSS and Finnhub (N1b, opt-in). No new dependency; one strict Atom/RSS extractor.
+- **Real time:** the wide list (about 200) uses one websocket quote session. Probe: NYSE and Nasdaq symbols stream in real time, OTC ones are 15 minutes delayed. The free price is Cboe-only.
+- Summaries are not in the watcher: N6 (Pi, uses Aperture models, off until Adham sets the chain and budget) and N7 (PC, TradingAgents on the hot list).
+- Adham wants to use **OpenBB, AlphaDesk and TradingAgents**: N0b installs and probes them first (own environments, pinned, outside this repo; AlphaDesk is AGPL, copy no code). OpenBB probably replaces the hand-written `sec_fundamentals` tool (N4).
 
-## Prompts
-All prompts are in `docs/handoffs/PROMPTS-news-monitor.md`: **Prompt A** is the first message for the Opus planner session (it replaces any shorter version); **Prompt B** is the self-contained brief Adham pastes into the Gemini app for Gemini 4 Argon, an independent second planner (the brief is `docs/handoffs/briefs/news-argon-plan.md`; its reply is saved as `docs/plans/news-monitor-argon-plan.md`); **C** and **D** are the templates for the builders (GPT-6 Luna Max) and the reviewer (GPT-6.1 Sol High) after the plan is approved. The Opus session reads Argon's plan only after forming its own view. Adham's ten prompts are also in `docs/handoffs/briefs/news-ten-prompts.md`.
+## What to do next (one session each, Sonnet 5.5 High; briefs in `docs/handoffs/briefs/`)
+1. **N0b** `n0b-tool-probe.md` and **N1a** `n1a-news-core.md` can run in parallel (different files). N1a waits for the clean Pi night.
+2. **N3** `n3-prompts.md`, then **N1b** `n1b-news-sources.md`, **N4** `n4-sec-fundamentals.md` only if N0b says so, **N2** `n2-wide-tier.md`, then N6 and N7 once Adham gives the Aperture chain (their briefs are written after N0b).
+3. Ask Adham before registering the OpenBB or AlphaDesk MCP servers in Claude's global config (a global-config change), or use a repo-level `.mcp.json`.
+4. Pi, Adham only: the open 7b/7c checks (`bash ~/code/tradingview-mcp/scripts/pi-setup.sh --pine`, then `--images`) and a clean stop test.
 
-## Traps (from earlier sessions)
-- `rm -rf` is blocked by a hook: use `mktemp -d`. A Bash command whose text mentions an env file (or an SSH key or cookies file) is blocked: create such files with the Write tool, and never read secrets.
-- `inv.sh` is not executable: use `INV_FROM=claude bash ~/dotfiles/scripts/inv.sh ...` with `nohup`.
-- Never let two subagents edit the same file. Subagents may not write memory notes; record what passes the 30-day test yourself.
-- Commit before running mutation scripts that `git checkout`. A mutation script in the foreground can hit the 600 s tool limit: use `nohup`.
-- Keep a session short: if the context passes about 250k tokens, finish the unit, write a handoff (`/handoff` or `session-exit.js --out <file>`) and tell Adham.
-
-## After this piece
-Order in the plan: **N1** (news poller) and **N3** (analysis prompts) can run in separate sessions on different files, then **N4** (`sec_fundamentals`), then **N2** (wide watchlist, only after a Pi measurement). Each piece: its own session, Sonnet 5.5 High, tests first, a `docs/handoffs/` report, a STATUS row, and the end-of-piece review (Fable subagent plus Luna Max, plus one cross-agent review for N1 and N4).
+## Traps
+- `rm -rf` is blocked: use `mktemp -d`. A shell command whose text names a credential, SSH key, cookies or token file is blocked by `~/dotfiles/hooks/block-env-access.sh`, even when it only mentions one in prose or in a heredoc: write such text with the Write tool, and never read secrets. A jq expression that contains the substring `.key` trips it too.
+- `inv.sh` is not executable: `INV_FROM=claude bash ~/dotfiles/scripts/inv.sh ...` with `nohup`. Codex workers have no network: use fixtures. Templates C and D are in `docs/handoffs/PROMPTS-news-monitor.md` (Prompts A and B are done).
+- Yahoo RSS returned 429 to a long Chrome user agent and 200 to a bare `Mozilla/5.0`. TradingView news-flow: a comma list in one `filter=symbol:` is OR, repeating the filter is AND. TickerTick allows 10 requests a minute per IP.
+- Never two subagents on one file; subagents may not write memory notes. Commit before mutation scripts that `git checkout`; run long ones with `nohup`.
+- Context past about 250k tokens: finish the unit, run `node /home/adhfult/.claude/plugins/cache/autodev/autodev-core/8.181.0/scripts/session-exit.js --out <file>` and tell Adham.

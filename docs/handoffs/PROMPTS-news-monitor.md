@@ -2,6 +2,8 @@
 
 Companion to `docs/handoffs/NEXT-news-monitor.md` and `docs/plans/news-monitor-and-analysis-prompts.md`. Written 2026-10-14. Model names as Adham gave them: **Opus 5.5 High** (planner), **Gemini 4 Argon** (second planner), **GPT-6.1 Sol High** and **GPT-6 Luna Max** (builders/reviewers). Known slugs: Sol `gpt-6.1-sol`, Luna `gpt-6-luna`. Argon is used through the Gemini app, so it has no slug here.
 
+> **Status 2026-10-14:** Prompts A and B are **done** (N0 finished; Argon answered as a review, see `docs/plans/news-monitor-argon-plan.md`). The next sessions start from the briefs in `docs/handoffs/briefs/n*.md` and `docs/handoffs/NEXT-news-monitor.md`. Prompts C and D below stay as the templates for builders and reviewers; the briefs already fill in the real content.
+
 ## Order of work (planning, then building)
 
 1. **Start Argon first** in the Gemini app (Prompt B). It writes an independent plan without reading Claude's draft, so the two plans do not anchor on each other.
