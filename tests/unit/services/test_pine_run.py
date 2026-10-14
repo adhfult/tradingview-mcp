@@ -381,3 +381,15 @@ def test_declared_inputs_of_two_scripts_can_be_asked_for_from_many_threads(scrip
     [t.start() for t in threads]
     [t.join() for t in threads]
     assert errors == []
+
+
+def test_a_changed_toml_makes_the_script_load_again(scripts, monkeypatch):
+    loads = []
+    original = pine._runner
+    monkeypatch.setattr(pine, "_runner", lambda *a, **k: loads.append(1) or original(*a, **k))
+    pine.declared_inputs("ema_cross")
+    pine.declared_inputs("ema_cross")
+    assert len(loads) == 1                                      # cached
+    (scripts / "ema_cross.toml").write_text("[script]\ncalc_bars_count = 100\n")
+    pine.declared_inputs("ema_cross")
+    assert len(loads) == 2                                      # the toml is part of what the script is

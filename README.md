@@ -490,11 +490,11 @@ Then ask for `strategy="pine:ema_cross"` (the `pine_scripts` tool lists what is 
 
 - **A Pyne script is Python code and runs with your rights.** Only put scripts you wrote or have read in the folder. Names are `a-z`, `0-9`, `_`, `-` (up to 64 characters), never paths; a link that leaves the folder is refused. Nothing is downloaded, and nothing is sent anywhere. Compiling Pine to Pyne needs PyneSys's online service and is not used here: write or convert the script yourself.
 - **Parameters:** the script's numeric `input.int` / `input.float` values (with their `minval` / `maxval`) are the `params`, and the parameter-sensitivity gate varies them like it does for built-in strategies. A script with none skips that gate and says so.
-- **A seventh gate, `lookahead`,** runs the script again with the bars after each sampled trade hidden. A trade that disappears means the script uses future data or repaints, and the verdict is FAIL.
-- **Fills and costs:** orders fill at the next bar's open, like every other gate. The script's own `slippage`, `commission_*` and `process_orders_on_close` settings are overridden, so the cost profile is charged once.
-- **Limits (v1):** long only and one position at a time (a short or overlapping trade is an error, not a wrong number); 24/7 sessions are assumed; no `request.security` data from other symbols; no time limit on a script (an endless loop hangs the call); the paper trader refuses Pyne reports.
+- **A seventh gate, `lookahead`,** runs the script again with the bars after a sampled trade's entry fill, and after its exit fill, hidden (up to 8 trades spread over the run). A trade that disappears means the script uses future data or repaints, and the verdict is FAIL. It cannot see a peek that stays inside the fill bar's own data.
+- **Fills and costs:** market orders fill at the next bar's open, like every other gate. The script's own `slippage`, `commission_*`, `process_orders_on_close` and `calc_bars_count` settings are overridden, so the cost profile is charged once. A fill anywhere else (a `strategy.exit` with `stop` or `limit`, a limit entry, `immediately=True`) is refused with a message, not scored; stop-losses are not supported yet.
+- **Limits (v1):** long only and one position at a time (a short, overlapping or partially closed position is an error, not a wrong number); prices sit on a 0.0001 grid and sessions are 24/7; no `request.security` data from other symbols; no time limit on a script (an endless loop hangs the call); the paper trader refuses Pyne reports.
 - **Size your orders explicitly** (`strategy.entry("long", strategy.long, qty=1)`). With no `qty` the default is 100% of equity, and an order that does not fit the margin rules is dropped silently, so the script looks like it never trades.
-- The report records the script file's hash, so editing the script makes the old report fail verification.
+- The report records a hash of the script file **and its sibling `<name>.toml`** (PyneCore loads it and its `[script]` settings change what runs), plus the PyneCore version. Editing either, or upgrading PyneCore, makes the old report fail verification.
 
 ---
 

@@ -67,7 +67,7 @@ def leaky_run(name, candles, params=None):
 def entry_leaky_run(name, candles, params=None):
     """Decides to buy at bar i using the close of bar i+8, then holds 10 bars: the peek is inside the holding window."""
     out, n = [], len(candles)
-    for i in range(0, n - 12, 12):
+    for i in range(0, n - 1, 12):
         if i + 8 < n and candles[i + 8]["close"] > candles[i]["close"]:
             if i + 11 <= n - 1:
                 out.append(trade(candles, i, i + 10))
@@ -257,6 +257,8 @@ def test_the_last_trades_of_the_run_are_sampled_too(fake):
     assert len(closed) > g.LOOKAHEAD_SAMPLES
     picked = g._lookahead_sample(closed)
     assert closed[0] in picked and closed[-1] in picked and len(picked) == g.LOOKAHEAD_SAMPLES
+    gate = next(x for x in run()["gates"] if x["gate"] == "lookahead")
+    assert gate["status"] == "FAIL" and gate["numbers"]["violations"] > 0
 
 
 def test_a_leak_that_starts_late_in_the_run_is_still_caught(fake):
