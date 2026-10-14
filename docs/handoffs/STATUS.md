@@ -1,7 +1,7 @@
 # Build status (single source of truth for resuming)
 
 - **Master plan:** `docs/plans/tradingview-api-integration.md`
-- **Branch:** `claude/lucid-bardeen-3ou62p` (local commits since Phase 5 are not pushed; no PR yet)
+- **Branch:** `main` on the fork (`origin` = `adhfult/tradingview-mcp`; everything is pushed; the old `claude/lucid-bardeen-3ou62p` branch was merged and deleted on 2026-10-14)
 - **Pipeline per phase:**
   1. Opus brief
   2. Haiku implementation
@@ -33,9 +33,10 @@
 | 7c: PyneCore | **done** | ca64077 .. see `git log` | python 1145 pass (3.11-3.13 with the extra), 1120 pass on 3.10 | `strategy_gauntlet(strategy="pine:<name>")` runs a hand-written Pyne script through all gates plus a `lookahead` gate; optional extra `pine`; long only, market orders only, paper trader refuses it. Pyne EMA cross == built-in EMA cross trade for trade. Fable + Codex Sol found 10 issues (dates shifted by `calc_bars_count`, unhashed sibling toml, weak lookahead sampling, partial exits, fills away from the open, ...), all fixed tests first. 52 of 54 mutants killed. Pi speed unmeasured. Details in `phase-7c.md` |
 
 ## Current step (2026-10-13)
-Phases 0-6b, watchers W1-W3, dashboard pieces 7a P1-P4, 7b (alert images) and 7c (Pyne scripts) are done on this branch (bridge 752 pass; python 1145 pass). Pushed to origin through W2 (f06e840); everything after that (W3, 7a, 7b and 7c, about 117 commits) is local, and the user said to hold the push until the work is done.
+Phases 0-6b, watchers W1-W3, dashboard pieces 7a P1-P4, 7b (alert images) and 7c (Pyne scripts) are done on this branch (bridge 752 pass; python 1145 pass). All of it is merged into `main` on the fork and CI there is green. The watcher has been live on the Pi since 2026-10-14 (set up with `scripts/pi-setup.sh`; Telegram only, anonymous TradingView).
 1. **Next piece** (state the regime line first, see `docs/plans/panwatch-ideas-and-pi-footprint.md`): none of phase 7 is left. W4 (backup data source) needs a new Opus High plan-mode session and a night of the watcher on the Pi first.
 2. W4 (ccxt backup source) starts with a new Opus High plan-mode session, and only after the watcher has run a night on the Pi.
+2b. **News monitor, bigger watchlist, analysis prompts (N0 to N4):** a draft plan exists, `docs/plans/news-monitor-and-analysis-prompts.md`, with a handoff, `docs/handoffs/NEXT-news-monitor.md`. Next piece: **N0 plan review, regime 1, Opus 5.5 High plan mode, new session.** Nothing is coded.
 3. **Finally:** the checks in "Checks only Adham can run" and the Pi checklist. Add: one live TradingView run of `strategy_gauntlet` (confirms the daily-bar `time` assumption in `drop_forming_bar`, which the paper trader also relies on) and one real use of the two prompts.
 4. Paper trader limits to remember (`phase-6b.md`): paper drawdown uses realised exits while the backtest's is mark-to-market, so a deep dip inside a trade that recovers before exit could hide a divergence.
 
