@@ -20,8 +20,8 @@ Do not edit code in this session. Output: an updated plan file, the N0 findings 
 4. Ask Adham the five open questions at the end of the plan if they are still unanswered.
 5. Get the Fable advisor's review of the plan, then ask Adham to approve. Then write the build briefs for N1, N3, N4, N2 (one per session) or say which should be dropped.
 
-## Paste as the first message in the new Opus session
-> Read `docs/handoffs/NEXT-news-monitor.md` and `docs/plans/news-monitor-and-analysis-prompts.md`. You are the planner (Opus 5.5 High, plan mode, regime 1). Do not write code. First state the reminder line from the handoff. Then do step N0 (verify the SEC EDGAR access rules, the RSS sources' terms, the TradingView batch-quote question and what PanWatch offers, with sources and dates), decide D0 to D3, correct the plan, and list what is still unverified. Ask me the open questions you still need answered. Finish with the Fable advisor review and wait for my approval before any build brief.
+## Prompts
+All prompts are in `docs/handoffs/PROMPTS-news-monitor.md`: **Prompt A** is the first message for the Opus planner session (it replaces any shorter version); **Prompt B** runs Gemini 4 Argon as an independent second planner (its neutral brief is `docs/handoffs/briefs/news-argon-plan.md`, output goes to `docs/plans/news-monitor-argon-plan.md`); **C** and **D** are the templates for the builders (GPT-6 Luna Max) and the reviewer (GPT-6.1 Sol High) after the plan is approved. The Opus session reads Argon's plan only after forming its own view. Adham's ten prompts are also in `docs/handoffs/briefs/news-ten-prompts.md`.
 
 ## Traps (from earlier sessions)
 - `rm -rf` is blocked by a hook: use `mktemp -d`. A Bash command whose text mentions an env file (or an SSH key or cookies file) is blocked: create such files with the Write tool, and never read secrets.

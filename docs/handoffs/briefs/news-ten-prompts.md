@@ -1,0 +1,14 @@
+# The ten analysis prompts, exactly as Adham pasted them (2026-10-14)
+
+These are his words; do not paraphrase them. Placeholders in square brackets become prompt arguments. Small typos are kept (a missing space in prompt 9, an unclosed quote on prompt 9). The same text is in Appendix A of `docs/plans/news-monitor-and-analysis-prompts.md`; this file exists so a reviewer can read the prompts without reading that plan.
+
+1. "Analyze [COMPANY/TICKER] as of [DATE] for a [TIME HORIZON] investor. Cover its business model, revenue, advantages, financial health, recent performance, 3 growth drivers, and 3 key risks. End with a simple 5-bullet summary."
+2. "Evaluate [TICKER] using its latest results. Compare revenue, margins, EPS, free cash flow, cash, debt, ROE, and share count over [3/5] years. Show trends as improving/stable/weakening and flag one-time items or accounting concerns."
+3. "Analyze [TICKER]'s latest earnings and call. Compare with last year, prior guidance, and analyst expectations. Explain beats/misses, margins, new guidance, management comments, and concerns. End with: 'What changed in the investment thesis?'"
+4. Fair-Value Calculator: "Value [TICKER] using P/E, EV/EBITDA, P/S, FCF yield, and DCF. Compare with [PEERS] and its historical range. Create conservative, base, and optimistic ranges, showing key assumptions and sensitivities."
+5. Stock Comparison: "Compare [TICKER 1], [TICKER 2], and [TICKER 3] over [TIME HORIZON]. Evaluate growth, profitability, balance sheet, cash flow, valuation, competitive advantage, management, and risk. Show evidence, key differences, and what could change the outcome."
+6. Catalysts & Risks: "Map [TICKER]'s catalysts and risks over [6/12/24] months. For each, show timing, probability, impact, evidence, and metrics to monitor. Cover company, industry, regulatory, and macro factors, highlighting the 5 most important."
+7. Bull, Base & Bear Cases: "Build bull, base, and bear cases for [TICKER] over [TIME HORIZON]. Include revenue, margin, valuation, catalysts, risks, and value ranges. End with 3 measurable signals showing which scenario is developing."
+8. Technical Analysis: "Analyze [TICKER] over [TIME PERIOD] using verified price and volume data. Identify trend, support, resistance, moving averages, RSI, volume, and volatility. Create bullish/bearish scenarios with trigger and invalidation levels."
+9. Investment Decision Checklist: "Assess [TICKER] for a [RISK LEVEL] investor with [TIME HORIZON], [PORTFOLIO SIZE],and [MAX LOSS]% limit. List key considerations, risks, unanswered questions metrics, thesis changes, and concentration risks. End with a neutral research summary.
+10. Portfolio Risk Review: "Analyze my portfolio [HOLDINGS]. Assess diversification, concentration, sector exposure, correlations, risk, and key weaknesses. Identify potential gaps and stress-test the portfolio under different market scenarios."
