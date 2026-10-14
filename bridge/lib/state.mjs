@@ -30,6 +30,7 @@ export function emptyState() {
     dailyCounts: {}, // rule id -> { date: local YYYY-MM-DD, count } for max_per_day
     seen: {}, // dedupe key -> first accepted (ms)
     trending: {}, // "market|kind" -> { SYMBOL: last seen in the top list (ms) }
+    news: { seen: {}, titles: {}, seeded: {}, runs: {}, rememberMs: 72 * HOUR_MS },
     alerts: [], // most recent accepted alerts, for the dashboard and heartbeat
     digest: { held: [], overflow: [] }, // summaries waiting for quiet hours to end or a free slot
     sends: [], // send times (ms) inside the rolling hour
@@ -55,6 +56,16 @@ function normalize(raw) {
   }
   if (isObject(raw.seen)) out.seen = raw.seen;
   if (isObject(raw.trending)) out.trending = raw.trending;
+  if (isObject(raw.news)) {
+    for (const key of ['seen', 'titles', 'seeded', 'runs']) {
+      if (isObject(raw.news[key])) out.news[key] = Object.fromEntries(
+        Object.entries(raw.news[key]).filter(([, at]) => Number.isFinite(at) && at >= 0),
+      );
+    }
+    if (Number.isFinite(raw.news.rememberMs) && raw.news.rememberMs > 0 && raw.news.rememberMs <= 168 * HOUR_MS) {
+      out.news.rememberMs = raw.news.rememberMs;
+    }
+  }
   if (Array.isArray(raw.alerts)) out.alerts = raw.alerts;
   if (isObject(raw.digest)) {
     out.digest = {
@@ -69,6 +80,19 @@ function normalize(raw) {
 
 /** Drops entries that no longer matter, so the file stays small. */
 export function prune(state, nowMs) {
+  if (state.news) {
+    for (const [bucket, ttl, limit] of [
+      ['seen', state.news.rememberMs, 20_000], ['titles', 6 * HOUR_MS, 20_000],
+      ['seeded', Infinity, 2000], ['runs', Infinity, 2000],
+    ]) {
+      const entries = state.news[bucket];
+      for (const [key, at] of Object.entries(entries)) {
+        if (!Number.isFinite(at) || nowMs - at > ttl) delete entries[key];
+      }
+      const keys = Object.keys(entries).sort((a, b) => entries[a] - entries[b]);
+      for (const key of keys.slice(0, Math.max(0, keys.length - limit))) delete entries[key];
+    }
+  }
   for (const [key, at] of Object.entries(state.seen)) {
     if (nowMs - at > SEEN_TTL_MS) delete state.seen[key];
   }

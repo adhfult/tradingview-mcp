@@ -25,10 +25,34 @@ function atomFeed(entries) {
   return `<feed xmlns="${ATOM_NS}">${entries}</feed>`;
 }
 
+test('RSS ignores foreign namespace fields rather than rejecting the page', () => {
+  const xml = '<rss><channel><item><guid>x</guid><title>Real title</title>'
+    + '<media:title>Media title</media:title><link>https://example.com/</link>'
+    + '<pubDate>2026-10-14</pubDate><description>Summary</description></item></channel></rss>';
+  assert.equal(parseFeed(xml).entries[0].title, 'Real title');
+});
+
+test('Atom ignores fields and entries using another prefix than the root', () => {
+  const xml = atomFeed(atomEntry().replace('</title>', '</title><media:title>Ignored</media:title>')
+    + '<media:entry><title>Ignored</title></media:entry>');
+  assert.equal(parseFeed(xml).entries.length, 1);
+  assert.equal(parseFeed(xml).entries[0].title, 'Example headline');
+});
+
+test('a bad entry is reported by index without losing its good neighbors', () => {
+  const result = parseFeed(atomFeed(atomEntry() + atomEntry({ summary: null }) + atomEntry({ id: 'third' })));
+  assert.equal(result.entries.length, 2);
+  assert.equal(result.entries[1].id, 'third');
+  assert.equal(result.skipped.length, 1);
+  assert.equal(result.skipped[0].index, 1);
+  assert.match(result.skipped[0].reason, /summary/);
+});
+
 test('parses both recorded SEC getcurrent pages with 100 entries each', async () => {
   for (const name of ['sec-getcurrent-8k-page1.atom', 'sec-getcurrent-8k-page2.atom']) {
     const xml = await readFile(new URL(`./fixtures/${name}`, import.meta.url), 'utf8');
-    const entries = parseFeed(xml);
+    const { entries, skipped } = parseFeed(xml);
+    assert.deepEqual(skipped, []);
     assert.equal(entries.length, 100, name);
     assert.deepEqual(Object.keys(entries[0]), ['id', 'title', 'link', 'updated', 'summary']);
     assert.match(entries[0].link, /^https:\/\//);
@@ -47,14 +71,14 @@ test('parses RSS item fields and maps guid, pubDate, and description', () => {
     + '<guid>urn:test:rss-1</guid><title>RSS headline</title>'
     + '<link>https://example.com/rss-story</link><pubDate>Wed, 14 Oct 2026 12:00:00 GMT</pubDate>'
     + '<description>RSS summary</description></item></channel></rss>';
-  assert.deepEqual(parseFeed(xml), [{
+  assert.deepEqual(parseFeed(xml).entries, [{
     id: 'urn:test:rss-1',
     title: 'RSS headline',
     link: 'https://example.com/rss-story',
     updated: 'Wed, 14 Oct 2026 12:00:00 GMT',
     summary: 'RSS summary',
   }]);
-  const withoutGuid = parseFeed(xml.replace('<guid>urn:test:rss-1</guid>', ''))[0];
+  const withoutGuid = parseFeed(xml.replace('<guid>urn:test:rss-1</guid>', '')).entries[0];
   assert.equal(withoutGuid.id, withoutGuid.link, 'RSS link is the fallback id when guid is absent');
 });
 
@@ -66,17 +90,18 @@ test('accepts namespace-prefixed Atom element names', () => {
     .replaceAll('<updated>', '<a:updated>').replaceAll('</updated>', '</a:updated>')
     .replaceAll('<summary>', '<a:summary>').replaceAll('</summary>', '</a:summary>');
   const xml = `<a:feed xmlns:a="${ATOM_NS}">${entry}</a:feed>`;
-  assert.equal(parseFeed(xml)[0].title, 'Example headline');
+  assert.equal(parseFeed(xml).entries[0].title, 'Example headline');
 });
 
 test('decodes predefined and numeric entities once', () => {
   const xml = atomFeed(atomEntry({
     title: 'A &amp; B &amp;lt; &#65; &#x1F4B0; &quot;x&quot; &apos;q&apos; &gt;',
   }));
-  assert.equal(parseFeed(xml)[0].title, 'A & B &lt; A 💰 "x" \'q\' >');
+  assert.equal(parseFeed(xml).entries[0].title, 'A & B &lt; A 💰 "x" \'q\' >');
 });
 
 test('refuses documents containing a DOCTYPE or ENTITY declaration', () => {
+  assert.throws(() => parseFeed(`<!DOCTYPE feed>${atomFeed(atomEntry())}`), /DOCTYPE|DTD/i);
   assert.throws(
     () => parseFeed(`<!DOCTYPE feed [<!ENTITY x "expanded">]>${atomFeed(atomEntry({ title: '&x;' }))}`),
     /DOCTYPE|DTD/i,
@@ -88,32 +113,32 @@ test('refuses documents containing a DOCTYPE or ENTITY declaration', () => {
 });
 
 test('does not double-decode &amp;lt; into a less-than sign', () => {
-  assert.equal(parseFeed(atomFeed(atomEntry({ title: '&amp;lt;' })))[0].title, '&lt;');
+  assert.equal(parseFeed(atomFeed(atomEntry({ title: '&amp;lt;' }))).entries[0].title, '&lt;');
 });
 
 test('rejects a one megabyte text field', () => {
-  assert.throws(
-    () => parseFeed(atomFeed(atomEntry({ title: 'x'.repeat(1024 * 1024) }))),
-    /title.*maxFieldLength/i,
-  );
+  const result = parseFeed(atomFeed(atomEntry({ title: 'x'.repeat(1024 * 1024) })));
+  assert.equal(result.entries.length, 0);
+  assert.match(result.skipped[0].reason, /title.*maxFieldLength/i);
 });
 
 test('strips control characters from extracted text', () => {
-  const entry = parseFeed(atomFeed(atomEntry({ title: 'A\u0001B\u007fC' })))[0];
+  const entry = parseFeed(atomFeed(atomEntry({ title: 'A\u0001B\u007fC' }))).entries[0];
   assert.equal(entry.title, 'ABC');
 });
 
 test('rejects javascript, http, and data links', () => {
   for (const link of ['javascript:alert(1)', 'http://example.com/story', 'data:text/html,unsafe']) {
-    assert.throws(() => parseFeed(atomFeed(atomEntry({ link }))), /link.*https/i, link);
+    const result = parseFeed(atomFeed(atomEntry({ link })));
+    assert.equal(result.entries.length, 0);
+    assert.match(result.skipped[0].reason, /link.*https/i, link);
   }
 });
 
 test('rejects HTTPS links containing URL credentials', () => {
-  assert.throws(
-    () => parseFeed(atomFeed(atomEntry({ link: 'https://user:pass@example.com/story' }))),
-    /credentials/i,
-  );
+  const result = parseFeed(atomFeed(atomEntry({ link: 'https://user:pass@example.com/story' })));
+  assert.equal(result.entries.length, 0);
+  assert.match(result.skipped[0].reason, /credentials/i);
 });
 
 test('rejects truncated and mismatched XML', () => {
@@ -123,11 +148,9 @@ test('rejects truncated and mismatched XML', () => {
 
 test('rejects an entry missing each required Atom field', () => {
   for (const field of ['id', 'title', 'link', 'updated', 'summary']) {
-    assert.throws(
-      () => parseFeed(atomFeed(atomEntry({ [field]: null }))),
-      new RegExp(`missing required field.*${field}`, 'i'),
-      field,
-    );
+    const result = parseFeed(atomFeed(atomEntry({ [field]: null })));
+    assert.equal(result.entries.length, 0);
+    assert.match(result.skipped[0].reason, new RegExp(`missing required field.*${field}`, 'i'), field);
   }
 });
 

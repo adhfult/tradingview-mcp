@@ -21,6 +21,7 @@ import { loadConfig, checkEnv } from './lib/config.mjs';
 import { createAlerts } from './lib/alerts.mjs';
 import { createDashboard, defaultAssets } from './lib/dashboard.mjs';
 import { createNotes } from './lib/notes.mjs';
+import { createNews } from './lib/news.mjs';
 import { createHealth } from './lib/health.mjs';
 import { createLocalApi } from './lib/localapi.mjs';
 import { createQueue } from './lib/queue.mjs';
@@ -228,6 +229,14 @@ export function createWatcher({
     logger,
     usCalendar,
   });
+  const news = createNews({
+    news: config.news,
+    symbols: config.watchlist.map((entry) => entry.symbol),
+    store, clock, alerts, logger, fetch,
+    secContact: env.WATCHER_SEC_CONTACT,
+    stateDir: config.state_dir,
+    persist: !dryRun,
+  });
 
   const health = createHealth({
     streams,
@@ -327,6 +336,8 @@ export function createWatcher({
   let ticker = null;
   let nextScanAt = 0;
   let scanInFlight = null;
+  let nextNewsAt = 0;
+  let newsInFlight = null;
   let stopping = false;
 
   /** One pass: digests and heartbeat, stream health, and a trending scan when due. */
@@ -352,6 +363,12 @@ export function createWatcher({
         .catch((err) => logger.error(`trending scan failed: ${errorMessage(err)}`))
         .finally(() => { scanInFlight = null; });
     }
+    if (config.news.enabled && now >= nextNewsAt && newsInFlight === null) {
+      nextNewsAt = now + config.news.every_minutes * 60_000;
+      newsInFlight = news.runOnce()
+        .catch(() => logger.error('news scan failed'))
+        .finally(() => { newsInFlight = null; });
+    }
     if (scanInFlight !== null) await scanInFlight;
   }
 
@@ -362,6 +379,7 @@ export function createWatcher({
     queue,
     streams,
     scanner,
+    news,
     health,
     localApi,
     dashboard,
@@ -394,6 +412,7 @@ export function createWatcher({
         }
       }
       nextScanAt = clock.now();
+      nextNewsAt = clock.now();
       streams.start();
       ticker = clock.setInterval(() => { void tick(); }, TICK_MS);
     },
@@ -402,6 +421,7 @@ export function createWatcher({
     async stop() {
       if (stopping) return;
       stopping = true;
+      news.stop();
       if (ticker !== null) clock.clearInterval(ticker);
       ticker = null;
       await streams.stop();

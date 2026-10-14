@@ -23,6 +23,18 @@
     "us_regular_hours_only": true,
     "remember_hours": 6
   },
+  "news": {
+    "enabled": false,
+    "every_minutes": 30,
+    "remember_hours": 72,
+    "max_age_minutes": 120,
+    "max_items_per_digest": 10,
+    "sources": {"tradingview": true, "sec": true},
+    "tickers_extra": [],
+    "include_keywords": [],
+    "exclude_keywords": [],
+    "sec_forms": ["8-K", "10-Q", "10-K"]
+  },
   "alerts": {
     "cooldown_minutes": 60,
     "max_per_hour": 20,

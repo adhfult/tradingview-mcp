@@ -1,7 +1,8 @@
 /**
  * Strict Atom/RSS extractor.
  * Public API: parseFeed(responseText, limits) returns plain
- * `{ id, title, link, updated, summary }` entries or throws an Error.
+ * `{ entries: [{ id, title, link, updated, summary }], skipped: [{ index, reason }] }`.
+ * Entry validation failures are skipped; invalid documents still throw.
  * Limits are `maxBytes`, `maxEntries`, and `maxFieldLength`.
  */
 
@@ -238,10 +239,13 @@ export function parseFeed(responseText, limits = {}) {
 
   let offset = 0;
   let rootName = null;
+  let rootPrefix = '';
   let rootType = null;
   let rootClosed = false;
   let rssChannelCount = 0;
   const entries = [];
+  const skipped = [];
+  let entryCount = 0;
   const stack = [];
 
   function appendText(raw, cdata = false) {
@@ -253,7 +257,8 @@ export function parseFeed(responseText, limits = {}) {
     const decoded = cleanControls(cdata ? raw : decodeEntities(raw));
     if (activeField === null || activeField === undefined) return;
     if (activeField.length + decoded.length > resolvedLimits.maxFieldLength) {
-      throw invalidFeed(`entry ${activeField.name} exceeds maxFieldLength (${resolvedLimits.maxFieldLength})`);
+      stack.at(-1).entry.error ??= `entry ${activeField.name} exceeds maxFieldLength (${resolvedLimits.maxFieldLength})`;
+      return;
     }
     activeField.chunks.push(decoded);
     activeField.length += decoded.length;
@@ -261,7 +266,12 @@ export function parseFeed(responseText, limits = {}) {
 
   function finishEntry(entry) {
     if (entry.activeField !== null) throw invalidFeed('truncated XML inside an entry field');
-    entries.push(parseEntry(entry, rootType, resolvedLimits));
+    try {
+      if (entry.error) throw invalidFeed(entry.error);
+      entries.push(parseEntry(entry, rootType, resolvedLimits));
+    } catch (err) {
+      skipped.push({ index: entry.index, reason: err.message });
+    }
   }
 
   function closeElement(node) {
@@ -332,31 +342,34 @@ export function parseFeed(responseText, limits = {}) {
     if (parent === undefined) {
       if (rootName !== null || rootClosed) throw invalidFeed('XML must contain exactly one document element');
       rootName = name;
+      rootPrefix = parsedTag.name.includes(':') ? parsedTag.name.split(':')[0] : '';
       rootType = name === 'feed' ? 'atom' : name === 'rss' ? 'rss' : null;
       if (rootType === null) throw invalidFeed(`unsupported document element <${name}>`);
       isRoot = true;
     } else {
       if (rootClosed) throw invalidFeed('XML must contain exactly one document element');
-      if (rootType === 'atom' && stack.length === 1 && parent.localName === 'feed' && name === 'entry') {
+      if (rootType === 'atom' && stack.length === 1 && parent.localName === 'feed' && name === 'entry'
+        && (!parsedTag.name.includes(':') || parsedTag.name.split(':')[0] === rootPrefix)) {
         isEntry = true;
       }
-      if (rootType === 'rss' && stack.length === 1 && parent.localName === 'rss' && name === 'channel') {
+      if (rootType === 'rss' && stack.length === 1 && parent.localName === 'rss' && parsedTag.name === 'channel') {
         rssChannelCount += 1;
         if (rssChannelCount > 1) throw invalidFeed('RSS document must contain one channel');
       }
       if (rootType === 'rss' && stack.length === 2
-        && stack[0].localName === 'rss' && parent.localName === 'channel' && name === 'item') {
+        && stack[0].localName === 'rss' && parent.localName === 'channel' && parsedTag.name === 'item') {
         isEntry = true;
       }
     }
 
     let fieldCapture = null;
     if (isEntry) {
-      if (entries.length >= resolvedLimits.maxEntries) {
+      if (entryCount >= resolvedLimits.maxEntries) {
         throw invalidFeed(`feed exceeds maxEntries (${resolvedLimits.maxEntries})`);
       }
-      entry = { fields: Object.create(null), activeField: null };
-    } else if (parent?.isEntry && entry !== null) {
+      entry = { fields: Object.create(null), activeField: null, index: entryCount++ };
+    } else if (parent?.isEntry && entry !== null
+      && (!parsedTag.name.includes(':') || (rootType === 'atom' && parsedTag.name.split(':')[0] === rootPrefix))) {
       if (rootType === 'atom' && name === 'link') {
         const rel = parsedTag.attributes.rel ?? 'alternate';
         if (rel === 'alternate' && entry.fields.link === undefined) {
@@ -366,7 +379,7 @@ export function parseFeed(responseText, limits = {}) {
         const fieldName = rootType === 'atom' ? atomField(name) : rssField(name);
         if (fieldName !== null) {
           if (entry.fields[fieldName] !== undefined || entry.activeField !== null) {
-            throw invalidFeed(`entry contains duplicate ${fieldName} field`);
+            entry.error ??= `entry contains duplicate ${fieldName} field`;
           }
           fieldCapture = { name: fieldName, chunks: [], length: 0 };
           entry.activeField = fieldCapture;
@@ -392,5 +405,5 @@ export function parseFeed(responseText, limits = {}) {
   if (rootName === null) throw invalidFeed('empty XML document');
   if (!rootClosed) throw invalidFeed(`truncated XML: unclosed <${rootName}>`);
   if (rootType === 'rss' && rssChannelCount !== 1) throw invalidFeed('RSS document is missing its channel');
-  return entries;
+  return { entries, skipped };
 }

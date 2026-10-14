@@ -4,6 +4,7 @@
 #   bash scripts/pi-setup.sh              checks + install + config (does NOT start the service)
 #   bash scripts/pi-setup.sh --telegram   ask for your Telegram bot token (hidden), find your chat id, save both
 #   bash scripts/pi-setup.sh --discord    ask for your Discord webhook URL (hidden) and save it
+#   bash scripts/pi-setup.sh --sec-contact  ask for the SEC contact email (hidden) and save it
 #   bash scripts/pi-setup.sh --test       send one test message to every configured channel
 #   bash scripts/pi-setup.sh --enable     install and start the systemd service (only after a passing --test)
 #   bash scripts/pi-setup.sh --node       install Node 22 system-wide (the service needs /usr/bin/node, not nvm's)
@@ -19,11 +20,12 @@ set -u
 # The service runs /usr/bin/node, so check and use that one, not an nvm node that happens to be first in this shell.
 PATH=/usr/bin:$PATH
 
-PINE=0 IMAGES=0 ENABLE=0 DISCORD=0 TELEGRAM=0 TEST=0 NODE=0 CGROUP=0
+PINE=0 IMAGES=0 ENABLE=0 DISCORD=0 TELEGRAM=0 TEST=0 NODE=0 CGROUP=0 SEC_CONTACT=0
 for a in "$@"; do
   case "$a" in
     --pine) PINE=1 ;; --images) IMAGES=1 ;; --enable) ENABLE=1 ;;
     --node) NODE=1 ;; --cgroup) CGROUP=1 ;; --discord) DISCORD=1 ;; --telegram) TELEGRAM=1 ;; --test) TEST=1 ;;
+    --sec-contact) SEC_CONTACT=1 ;;
     *) echo "unknown option: $a"; exit 2 ;;
   esac
 done
@@ -139,8 +141,8 @@ if [ -f "$ENVFILE" ]; then
   mode="$(stat -c %a "$ENVFILE")"; [ "$mode" = 600 ] && ok "mode 600" || fail "mode is $mode, run: chmod 600 $ENVFILE"
 fi
 
-if [ "$DISCORD" = 1 ] || [ "$TELEGRAM" = 1 ]; then
-  [ -t 0 ] || { fail "--discord/--telegram ask you questions: run this in an interactive terminal (ssh -t ...)"; exit 1; }
+if [ "$DISCORD" = 1 ] || [ "$TELEGRAM" = 1 ] || [ "$SEC_CONTACT" = 1 ]; then
+  [ -t 0 ] || { fail "channel/contact options ask you questions: run this in an interactive terminal (ssh -t ...)"; exit 1; }
   [ -w "$ENVFILE" ] || { fail "cannot write $ENVFILE"; exit 1; }
 fi
 if [ "$TELEGRAM" = 1 ]; then
@@ -176,6 +178,14 @@ if [ "$DISCORD" = 1 ]; then
     *) fail "that is not a Discord webhook URL (it starts with https://discord.com/api/webhooks/); nothing saved" ;;
   esac
   URL=""
+fi
+if [ "$SEC_CONTACT" = 1 ]; then
+  step "5d. SEC EDGAR contact"
+  ask_hidden "Contact email for SEC's required User-Agent (typing is hidden)" CONTACT
+  if [[ ${#CONTACT} -le 254 && "$CONTACT" =~ ^[[:alnum:]._%+-]+@[[:alnum:].-]+\.[[:alpha:]]{2,}$ ]]; then
+    set_var WATCHER_SEC_CONTACT "$CONTACT" && ok "saved WATCHER_SEC_CONTACT" || fail "could not save SEC contact"
+  else fail "enter a contact email address; nothing saved"; fi
+  CONTACT=""
 fi
 if [ -f "$ENVFILE" ]; then
   echo "  variables with a value (names only):"; awk -F= '!/^#/ && NF>1 && $2!="" {print "    " $1}' "$ENVFILE"
