@@ -6,6 +6,6 @@ Regime 3. Builder: Sonnet 5.5 High, new session, **after a clean night of the wa
 
 **Spec:** the section "N1a" of the plan, exactly. Pattern to copy: `bridge/lib/scanner.mjs`. Sources in this piece: TradingView news-flow and SEC getcurrent only.
 
-**Failing tests first:** the list in the plan's N1a "Tests" bullet. Fixtures come from the saved real responses: SEC `getcurrent` Atom (page 1 and `start=100`), news-flow JSON. Add hostile cases: `<!DOCTYPE`, `<!ENTITY`, `&amp;lt;`, numeric entities, 1 MB field, control characters, `javascript:` and `http:` links, credentials in a URL.
+**Failing tests first:** the list in the plan's N1a "Tests" bullet. Real recorded responses are already in `bridge/test/watcher/fixtures/` (see its README): SEC `getcurrent` Atom pages 1 and 2 and a news-flow JSON sample; do not fetch live in a test. Add hostile cases: `<!DOCTYPE`, `<!ENTITY`, `&amp;lt;`, numeric entities, 1 MB field, control characters, `javascript:` and `http:` links, credentials in a URL.
 **Check:** `timeout 250 npm test --prefix bridge` stays green (baseline 752 pass, 2 skipped) and grows; `node bridge/watcher.mjs --config bridge/watcher.config.example.json --check-config` prints OK; mutation check (commit first; break dedupe, seeding, age floor, extractor DOCTYPE refusal in a scratch copy and confirm a test fails). Then Sol High review; verify each finding by reproducing it. CI on the fork green before done.
 **Out of scope:** extra sources (N1b), the wide list (N2), any LLM (N6), a new dependency, changing `notifiers.mjs` escaping, pushing.

@@ -13,7 +13,7 @@ Written 2026-10-14 at the end of N0 (plan review, Opus 5.5 High). **The plan is 
 
 ## What was decided in N0 (details in the plan)
 - News goes in the watcher (not PanWatch). Sources: TradingView news-flow JSON and SEC EDGAR first (N1a), then TickerTick, Nasdaq earnings calendar, Yahoo/Nasdaq/Google RSS and Finnhub (N1b, opt-in). No new dependency; one strict Atom/RSS extractor.
-- **Real time:** the wide list (about 200) uses one websocket quote session. Probe: NYSE and Nasdaq symbols stream in real time, OTC ones are 15 minutes delayed. The free price is Cboe-only.
+- **Real time:** the wide list (about 200) uses one websocket quote session. Probe: NYSE and Nasdaq symbols stream in real time, OTC ones are 15 minutes delayed. TradingView's support page (read by a subagent, unverified) says the free price is Cboe-only, the quote's provider field says `ice`, and the probe ran after the close: N2 must prove real time live.
 - Summaries are not in the watcher: N6 (Pi, uses Aperture models, off until Adham sets the chain and budget) and N7 (PC, TradingAgents on the hot list).
 - Adham wants to use **OpenBB, AlphaDesk and TradingAgents**: N0b installs and probes them first (own environments, pinned, outside this repo; AlphaDesk is AGPL, copy no code). OpenBB probably replaces the hand-written `sec_fundamentals` tool (N4).
 

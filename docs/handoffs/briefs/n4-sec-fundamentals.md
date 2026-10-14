@@ -5,6 +5,6 @@ Regime 3. Builder: Sonnet 5.5 High, new session. Reviewer: GPT-6.1 Sol High read
 
 **May touch:** new `src/tradingview_mcp/core/services/sec_fundamentals_service.py`, a registration in `src/tradingview_mcp/server.py`, new `tests/unit/services/test_sec_fundamentals.py` and recorded fixtures under `tests/unit/fixtures/`.
 **Spec:** plan section N4: SEC XBRL company facts (keyless; `data.sec.gov/api/xbrl/companyfacts/CIK##########.json`, 3.79 MB for AAPL), stdlib `urllib` in the style of `marketaux_service.py` (it has a `User-Agent` and a TTL cache), named `us-gaap` tags and the last N fiscal years only, **disk** cache (new), SEC `User-Agent` with a contact address from the environment, 10 requests a second never approached, a missing field reported as missing, US filers only. Not `yfinance`.
-**Failing tests first:** fixtures from the saved AAPL response; tag fallback (`Revenues` vs `RevenueFromContractWithCustomerExcludingAssessedTax`); missing field; non-US company; cache hit makes no request; output size bounded.
+**Failing tests first:** fixtures: fetch the AAPL company facts live once, cut them to the four tags the tests use (a file under 50 KB), commit that, never the 3.8 MB original; tag fallback (`Revenues` vs `RevenueFromContractWithCustomerExcludingAssessedTax`); missing field; non-US company; cache hit makes no request; output size bounded.
 **Check:** `env -u PYTHONDONTWRITEBYTECODE uv run --extra pine pytest tests/unit -q`; one live call by Adham.
 **Out of scope:** statements for non-US companies, restating or estimating figures, pushing.

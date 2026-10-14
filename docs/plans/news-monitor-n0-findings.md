@@ -93,6 +93,13 @@ Probed from this PC, anonymous, 2026-10-14 20:45 UTC (after the close, so `strea
 
 Facts read from the READMEs on 2026-10-14: TradingAgents needs Python 3.11+, supports any OpenAI-compatible endpoint, Ollama and per-tier providers (v0.6.0), has SEC EDGAR fundamentals, and says "designed for research purposes ... not intended as financial, investment, or trading advice". OpenBB ships `openbb-mcp-server` (`pip install openbb-mcp-server`, command `openbb-mcp`, default port 8001) and its `sec` provider has income statement, balance sheet, cash flow, risk factors, MD&A, segment revenue, filings and insider trading; its `nasdaq` provider has earnings, dividend and IPO calendars, company news, price targets. AlphaDesk (`pip install alphadesk`, Python 3.11+) lists 53 read-only MCP tools (the X post said 37), listens on 127.0.0.1:8000, needs your own vendor keys for anything beyond SEC EDGAR and Treasury data, and asks for a contact address for SEC.
 
+## Corrections after the Fable review of the first commit (2026-10-14)
+- The 4.6 s / +8.3 MB quote probe used the library's one-shot `getQuotes` (it opens a session, resolves, closes it). The streaming API is `watchQuotes`; memory and reconnect behaviour of a held session are unmeasured.
+- The probe ran after the close (about 16:45 ET). `update_mode: streaming` shows the entitlement; the price match with Nasdaq at 4:45 PM proves little about delay. Real time during the session is not yet proven.
+- The quote `provider` field says `ice`; the support page the subagent read says Cboe. Unreconciled.
+- Screener column `average_volume_10d_calc` is real: AAPL 35,648,218, JPM 7,624,429 (probe 2026-10-14).
+- Recorded fixtures now live in `bridge/test/watcher/fixtures/` (README there): SEC getcurrent pages 1 and 2 (100 entries each) and a TradingView news-flow sample.
+
 ## Still unverified
 1. TradingView news-flow: maximum symbols per request, rate limits, how long the endpoint stays up (undocumented).
 2. SEC 8-K volume in the 16:00 to 16:30 ET peak (the follow-up page covers it; a gap is logged if even that does not reach the last run).
@@ -103,3 +110,4 @@ Facts read from the READMEs on 2026-10-14: TradingAgents needs Python 3.11+, sup
 7. Whether AlphaDesk and TradingAgents install and run on this PC within its memory, and how many LLM calls one TradingAgents ticker run makes.
 8. Watcher RSS and CPU with the news module on (Pi, unmeasured).
 9. Argon never produced the independent plan the brief asked for; its file is a review of this one.
+10. Live (in-session) comparison of TradingView `lp`/`lp_time` against Nasdaq's real-time quote, and whether the Nasdaq earnings-calendar endpoint's terms allow this use.

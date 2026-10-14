@@ -1,0 +1,997 @@
+{
+ "items": [
+  {
+   "paywall": true,
+   "id": "DJN_DN20261014008400:0",
+   "title": "Apple Stock Soars to New Highs, Despite Tech Slump \u2014 WSJ",
+   "published": 1792012200,
+   "urgency": 2,
+   "permission": "headline",
+   "relatedSymbols": [
+    {
+     "symbol": "NASDAQ:AAPL",
+     "logoid": "apple",
+     "logo": {
+      "style": "single",
+      "logoid": "apple"
+     }
+    }
+   ],
+   "storyPath": "/news/DJN_DN20261014008400:0-apple-stock-soars-to-new-highs-despite-tech-slump-wsj/",
+   "provider": {
+    "id": "dow-jones",
+    "name": "Dow Jones Newswires",
+    "logo_id": "dow-jones"
+   }
+  },
+  {
+   "paywall": true,
+   "id": "DJN_DN20261014008323:0",
+   "title": "Apple Hits $5 Trillion Milestone as Rest of Tech Trade Falters. Can It Hold? \u2014 Barrons.com",
+   "published": 1792011600,
+   "urgency": 2,
+   "permission": "headline",
+   "relatedSymbols": [
+    {
+     "symbol": "NASDAQ:AAPL",
+     "logoid": "apple",
+     "logo": {
+      "style": "single",
+      "logoid": "apple"
+     }
+    },
+    {
+     "symbol": "NASDAQ:NVDA",
+     "logoid": "nvidia",
+     "logo": {
+      "style": "single",
+      "logoid": "nvidia"
+     }
+    }
+   ],
+   "storyPath": "/news/DJN_DN20261014008323:0-apple-hits-5-trillion-milestone-as-rest-of-tech-trade-falters-can-it-hold-barrons-com/",
+   "provider": {
+    "id": "dow-jones",
+    "name": "Dow Jones Newswires",
+    "logo_id": "dow-jones"
+   }
+  },
+  {
+   "paywall": true,
+   "id": "DJN_DN20261014008274:0",
+   "title": "Seventh Time Is the Charm: Apple Closes Above $5 Trillion Market Capitalization \u2014 WSJ",
+   "published": 1792011300,
+   "urgency": 2,
+   "permission": "headline",
+   "relatedSymbols": [
+    {
+     "symbol": "NASDAQ:AAPL",
+     "logoid": "apple",
+     "logo": {
+      "style": "single",
+      "logoid": "apple"
+     }
+    }
+   ],
+   "storyPath": "/news/DJN_DN20261014008274:0-seventh-time-is-the-charm-apple-closes-above-5-trillion-market-capitalization-wsj/",
+   "provider": {
+    "id": "dow-jones",
+    "name": "Dow Jones Newswires",
+    "logo_id": "dow-jones"
+   }
+  },
+  {
+   "paywall": false,
+   "id": "seekingalpha:f8720a688094b:0",
+   "title": "Apple clears regulatory hurdles as it prepares to launch AI features in China: report",
+   "published": 1792009002,
+   "urgency": 2,
+   "link": "https://seekingalpha.com/news/4653115-apple-clears-regulatory-hurdles-as-it-prepares-to-launch-ai-features-in-china-report?utm_source=tradingview&utm_medium=referral&feed_item_type=news",
+   "relatedSymbols": [
+    {
+     "symbol": "NASDAQ:AAPL",
+     "logoid": "apple",
+     "logo": {
+      "style": "single",
+      "logoid": "apple"
+     }
+    },
+    {
+     "symbol": "NYSE:BABA",
+     "logoid": "alibaba",
+     "logo": {
+      "style": "single",
+      "logoid": "alibaba"
+     }
+    },
+    {
+     "symbol": "NASDAQ:BIDU",
+     "logoid": "baidu",
+     "logo": {
+      "style": "single",
+      "logoid": "baidu"
+     }
+    }
+   ],
+   "storyPath": "/news/seekingalpha:f8720a688094b:0-apple-clears-regulatory-hurdles-as-it-prepares-to-launch-ai-features-in-china-report/",
+   "provider": {
+    "id": "seekingalpha",
+    "name": "Seeking Alpha",
+    "logo_id": "seekingalpha",
+    "url": "https://seekingalpha.com/?utm_source=tradingview&utm_medium=referral&feed_item_type=news"
+   }
+  },
+  {
+   "paywall": false,
+   "id": "business_wire:b9e99fc99558d:0",
+   "title": "Chase Brings AI Fraud-Fighting Advice to Consumers at 700 Chase Branches Nationwide",
+   "published": 1792008000,
+   "urgency": 2,
+   "relatedSymbols": [
+    {
+     "symbol": "NYSE:JPM",
+     "logoid": "jpmorgan-chase",
+     "logo": {
+      "style": "single",
+      "logoid": "jpmorgan-chase"
+     }
+    }
+   ],
+   "storyPath": "/news/business_wire:b9e99fc99558d:0-chase-brings-ai-fraud-fighting-advice-to-consumers-at-700-chase-branches-nationwide/",
+   "provider": {
+    "id": "business_wire",
+    "name": "BusinessWire",
+    "logo_id": "business-wire"
+   }
+  },
+  {
+   "paywall": true,
+   "id": "tag:reuters.com,2026:newsml_FWN4601ST:0",
+   "title": "Apple Prepares To Debut First AI Features In China In December - Bloomberg News",
+   "published": 1792007697,
+   "urgency": 2,
+   "permission": "headline",
+   "relatedSymbols": [
+    {
+     "symbol": "NASDAQ:AAPL",
+     "logoid": "apple",
+     "logo": {
+      "style": "single",
+      "logoid": "apple"
+     }
+    }
+   ],
+   "storyPath": "/news/reuters.com,2026:newsml_FWN4601ST:0-apple-prepares-to-debut-first-ai-features-in-china-in-december-bloomberg-news/",
+   "provider": {
+    "id": "reuters",
+    "name": "Reuters",
+    "logo_id": "reuters"
+   }
+  },
+  {
+   "paywall": true,
+   "id": "tag:reuters.com,2026:newsml_L6N460198:0",
+   "title": "Wall Street banks see robust deal pipeline despite market volatility",
+   "published": 1792006043,
+   "urgency": 2,
+   "permission": "headline",
+   "relatedSymbols": [
+    {
+     "symbol": "NYSE:JPM",
+     "logoid": "jpmorgan-chase",
+     "logo": {
+      "style": "single",
+      "logoid": "jpmorgan-chase"
+     }
+    },
+    {
+     "symbol": "NYSE:BAC",
+     "logoid": "bank-of-america",
+     "logo": {
+      "style": "single",
+      "logoid": "bank-of-america"
+     }
+    },
+    {
+     "symbol": "NYSE:C",
+     "logoid": "citigroup",
+     "logo": {
+      "style": "single",
+      "logoid": "citigroup"
+     }
+    }
+   ],
+   "storyPath": "/news/reuters.com,2026:newsml_L6N460198:0-wall-street-banks-see-robust-deal-pipeline-despite-market-volatility/",
+   "provider": {
+    "id": "reuters",
+    "name": "Reuters",
+    "logo_id": "reuters"
+   }
+  },
+  {
+   "paywall": false,
+   "id": "gurufocus:aa60503ef094b:0",
+   "title": "Apple Stocks Rise as $299 HomeView Adds a Paid-AI Path",
+   "published": 1792004441,
+   "urgency": 2,
+   "link": "https://www.gurufocus.com/news/9123586/apple-stocks-rise-as-299-homeview-adds-a-paidai-path",
+   "relatedSymbols": [
+    {
+     "symbol": "NASDAQ:AAPL",
+     "logoid": "apple",
+     "logo": {
+      "style": "single",
+      "logoid": "apple"
+     }
+    }
+   ],
+   "storyPath": "/news/gurufocus:aa60503ef094b:0-apple-stocks-rise-as-299-homeview-adds-a-paid-ai-path/",
+   "provider": {
+    "id": "gurufocus",
+    "name": "GuruFocus",
+    "logo_id": "gurufocus",
+    "url": "https://www.gurufocus.com/"
+   }
+  },
+  {
+   "paywall": true,
+   "id": "DJN_DN20261014006904:0",
+   "title": "OpenAI Alleges Ex-Employee Took Confidential Files to Apple \u2014 WSJ",
+   "published": 1792002720,
+   "urgency": 2,
+   "permission": "headline",
+   "relatedSymbols": [
+    {
+     "symbol": "NASDAQ:OPENAI",
+     "logoid": "openai",
+     "logo": {
+      "style": "single",
+      "logoid": "openai"
+     }
+    },
+    {
+     "symbol": "NASDAQ:AAPL",
+     "logoid": "apple",
+     "logo": {
+      "style": "single",
+      "logoid": "apple"
+     }
+    }
+   ],
+   "storyPath": "/news/DJN_DN20261014006904:0-openai-alleges-ex-employee-took-confidential-files-to-apple-wsj/",
+   "provider": {
+    "id": "dow-jones",
+    "name": "Dow Jones Newswires",
+    "logo_id": "dow-jones"
+   }
+  },
+  {
+   "paywall": false,
+   "id": "seekingalpha:77acc3242094b:0",
+   "title": "AI can be both a tech revolution and a capital investment bubble \u2013 FNBO",
+   "published": 1792002223,
+   "urgency": 2,
+   "link": "https://seekingalpha.com/news/4653083-ai-can-be-both-a-tech-revolution-and-a-capital-investment-bubble-fnbo?utm_source=tradingview&utm_medium=referral&feed_item_type=news",
+   "relatedSymbols": [
+    {
+     "symbol": "NASDAQ:GOOGL",
+     "logoid": "alphabet",
+     "logo": {
+      "style": "single",
+      "logoid": "alphabet"
+     }
+    },
+    {
+     "symbol": "NASDAQ:GOOG",
+     "logoid": "alphabet",
+     "logo": {
+      "style": "single",
+      "logoid": "alphabet"
+     }
+    },
+    {
+     "symbol": "NASDAQ:AMZN",
+     "logoid": "amazon",
+     "logo": {
+      "style": "single",
+      "logoid": "amazon"
+     }
+    },
+    {
+     "symbol": "NASDAQ:META",
+     "logoid": "meta-platforms",
+     "logo": {
+      "style": "single",
+      "logoid": "meta-platforms"
+     }
+    },
+    {
+     "symbol": "NASDAQ:MSFT",
+     "logoid": "microsoft",
+     "logo": {
+      "style": "single",
+      "logoid": "microsoft"
+     }
+    },
+    {
+     "symbol": "NYSE:ORCL",
+     "logoid": "oracle",
+     "logo": {
+      "style": "single",
+      "logoid": "oracle"
+     }
+    },
+    {
+     "symbol": "NASDAQ:XT",
+     "logoid": "ishares",
+     "logo": {
+      "style": "single",
+      "logoid": "ishares"
+     }
+    },
+    {
+     "symbol": "NASDAQ:BOTZ",
+     "logoid": "global-x",
+     "logo": {
+      "style": "single",
+      "logoid": "global-x"
+     }
+    },
+    {
+     "symbol": "NASDAQ:ROBT",
+     "logoid": "first-trust",
+     "logo": {
+      "style": "single",
+      "logoid": "first-trust"
+     }
+    },
+    {
+     "symbol": "NASDAQ:AIQ",
+     "logoid": "global-x",
+     "logo": {
+      "style": "single",
+      "logoid": "global-x"
+     }
+    },
+    {
+     "symbol": "NASDAQ:WISE",
+     "logoid": "themes-generative-artificial-intelligence-etf",
+     "logo": {
+      "style": "single",
+      "logoid": "themes-generative-artificial-intelligence-etf"
+     }
+    },
+    {
+     "symbol": "NASDAQ:XAIX",
+     "logoid": "dws",
+     "logo": {
+      "style": "single",
+      "logoid": "dws"
+     }
+    }
+   ],
+   "storyPath": "/news/seekingalpha:77acc3242094b:0-ai-can-be-both-a-tech-revolution-and-a-capital-investment-bubble-fnbo/",
+   "provider": {
+    "id": "seekingalpha",
+    "name": "Seeking Alpha",
+    "logo_id": "seekingalpha",
+    "url": "https://seekingalpha.com/?utm_source=tradingview&utm_medium=referral&feed_item_type=news"
+   }
+  },
+  {
+   "paywall": false,
+   "id": "benzinga:5143839a7094b:0",
+   "title": "JPMorgan Addresses 'Rogue Agents' as AI Gives Banks New Security Problems",
+   "published": 1792001258,
+   "urgency": 2,
+   "link": "https://www.benzinga.com/trading-ideas/long-ideas/26/10/62365501/banks-ai-security-risk?utm_source=tradingview&utm_campaign=partner_feed&utm_medium=referral",
+   "relatedSymbols": [
+    {
+     "symbol": "NYSE:JPM",
+     "logoid": "jpmorgan-chase",
+     "logo": {
+      "style": "single",
+      "logoid": "jpmorgan-chase"
+     }
+    },
+    {
+     "symbol": "NYSE:C",
+     "logoid": "citigroup",
+     "logo": {
+      "style": "single",
+      "logoid": "citigroup"
+     }
+    },
+    {
+     "symbol": "NYSE:BAC",
+     "logoid": "bank-of-america",
+     "logo": {
+      "style": "single",
+      "logoid": "bank-of-america"
+     }
+    }
+   ],
+   "storyPath": "/news/benzinga:5143839a7094b:0-jpmorgan-addresses-rogue-agents-as-ai-gives-banks-new-security-problems/",
+   "provider": {
+    "id": "benzinga",
+    "name": "Benzinga",
+    "logo_id": "benzinga",
+    "url": "https://www.benzinga.com/"
+   }
+  },
+  {
+   "paywall": true,
+   "id": "DJN_DN20261014006690:0",
+   "title": "JPMorgan Chase Is Maintained at Hold by Truist Securities",
+   "published": 1791999900,
+   "urgency": 2,
+   "permission": "headline",
+   "relatedSymbols": [
+    {
+     "symbol": "NYSE:JPM",
+     "logoid": "jpmorgan-chase",
+     "logo": {
+      "style": "single",
+      "logoid": "jpmorgan-chase"
+     }
+    }
+   ],
+   "storyPath": "/news/DJN_DN20261014006690:0-jpmorgan-chase-is-maintained-at-hold-by-truist-securities/",
+   "provider": {
+    "id": "dow-jones",
+    "name": "Dow Jones Newswires",
+    "logo_id": "dow-jones"
+   }
+  },
+  {
+   "paywall": false,
+   "id": "gurufocus:704d8c2ed094b:0",
+   "title": "What ETFs Are Buying and Selling: New GuruFocus Page Tracks Daily ETF Flows",
+   "published": 1791998863,
+   "urgency": 2,
+   "link": "https://www.gurufocus.com/news/9123686/what-etfs-are-buying-and-selling-new-gurufocus-page-tracks-daily-etf-flows",
+   "relatedSymbols": [
+    {
+     "symbol": "NASDAQ:AAPL",
+     "logoid": "apple",
+     "logo": {
+      "style": "single",
+      "logoid": "apple"
+     }
+    }
+   ],
+   "storyPath": "/news/gurufocus:704d8c2ed094b:0-what-etfs-are-buying-and-selling-new-gurufocus-page-tracks-daily-etf-flows/",
+   "provider": {
+    "id": "gurufocus",
+    "name": "GuruFocus",
+    "logo_id": "gurufocus",
+    "url": "https://www.gurufocus.com/"
+   }
+  },
+  {
+   "paywall": false,
+   "id": "seekingalpha:a6be8f33f094b:0",
+   "title": "ClearBridge Value Strategy adds eight stocks, and exits 10 positions in Q3",
+   "published": 1791997958,
+   "urgency": 2,
+   "link": "https://seekingalpha.com/news/4653053-clearbridge-value-strategy-adds-eight-stocks-exits-10-positions-in-q3?utm_source=tradingview&utm_medium=referral&feed_item_type=news",
+   "relatedSymbols": [
+    {
+     "symbol": "NASDAQ:AAPL",
+     "logoid": "apple",
+     "logo": {
+      "style": "single",
+      "logoid": "apple"
+     }
+    },
+    {
+     "symbol": "NASDAQ:MSFT",
+     "logoid": "microsoft",
+     "logo": {
+      "style": "single",
+      "logoid": "microsoft"
+     }
+    },
+    {
+     "symbol": "NYSE:CLS",
+     "logoid": "celestica",
+     "logo": {
+      "style": "single",
+      "logoid": "celestica"
+     }
+    },
+    {
+     "symbol": "NYSE:LHX",
+     "logoid": "l3-harris",
+     "logo": {
+      "style": "single",
+      "logoid": "l3-harris"
+     }
+    },
+    {
+     "symbol": "NASDAQ:HONA"
+    },
+    {
+     "symbol": "NYSE:MRSH",
+     "logoid": "marsh-and-mclennan",
+     "logo": {
+      "style": "single",
+      "logoid": "marsh-and-mclennan"
+     }
+    },
+    {
+     "symbol": "NYSE:RDDT",
+     "logoid": "reddit",
+     "logo": {
+      "style": "single",
+      "logoid": "reddit"
+     }
+    },
+    {
+     "symbol": "NYSE:DHR",
+     "logoid": "danaher",
+     "logo": {
+      "style": "single",
+      "logoid": "danaher"
+     }
+    },
+    {
+     "symbol": "NYSE:GLOB",
+     "logoid": "globant",
+     "logo": {
+      "style": "single",
+      "logoid": "globant"
+     }
+    },
+    {
+     "symbol": "NYSE:TMO",
+     "logoid": "thermo-fisher-scientific",
+     "logo": {
+      "style": "single",
+      "logoid": "thermo-fisher-scientific"
+     }
+    },
+    {
+     "symbol": "NASDAQ:GILD",
+     "logoid": "gilead",
+     "logo": {
+      "style": "single",
+      "logoid": "gilead"
+     }
+    },
+    {
+     "symbol": "NYSE:ELAN",
+     "logoid": "elanco-animal-health",
+     "logo": {
+      "style": "single",
+      "logoid": "elanco-animal-health"
+     }
+    },
+    {
+     "symbol": "NASDAQ:AVGO",
+     "logoid": "broadcom",
+     "logo": {
+      "style": "single",
+      "logoid": "broadcom"
+     }
+    },
+    {
+     "symbol": "OTC:NSRGY",
+     "logoid": "nestle",
+     "logo": {
+      "style": "single",
+      "logoid": "nestle"
+     }
+    },
+    {
+     "symbol": "NASDAQ:CELH",
+     "logoid": "celsius-holdings",
+     "logo": {
+      "style": "single",
+      "logoid": "celsius-holdings"
+     }
+    },
+    {
+     "symbol": "NYSE:GXO",
+     "logoid": "gxo",
+     "logo": {
+      "style": "single",
+      "logoid": "gxo"
+     }
+    },
+    {
+     "symbol": "NYSE:WCC",
+     "logoid": "wesco-international",
+     "logo": {
+      "style": "single",
+      "logoid": "wesco-international"
+     }
+    },
+    {
+     "symbol": "NYSE:TECK",
+     "logoid": "teck-resources",
+     "logo": {
+      "style": "single",
+      "logoid": "teck-resources"
+     }
+    },
+    {
+     "symbol": "TSX:CLS",
+     "logoid": "celestica",
+     "logo": {
+      "style": "single",
+      "logoid": "celestica"
+     }
+    },
+    {
+     "symbol": "TSX:TECK.A",
+     "logoid": "teck-resources",
+     "logo": {
+      "style": "single",
+      "logoid": "teck-resources"
+     }
+    }
+   ],
+   "storyPath": "/news/seekingalpha:a6be8f33f094b:0-clearbridge-value-strategy-adds-eight-stocks-and-exits-10-positions-in-q3/",
+   "provider": {
+    "id": "seekingalpha",
+    "name": "Seeking Alpha",
+    "logo_id": "seekingalpha",
+    "url": "https://seekingalpha.com/?utm_source=tradingview&utm_medium=referral&feed_item_type=news"
+   }
+  },
+  {
+   "paywall": false,
+   "id": "gurufocus:b80768502094b:0",
+   "title": "Microsoft Stocks Slip Lower Although Maia Targets 40% More Tokens per Megawatt",
+   "published": 1791997914,
+   "urgency": 2,
+   "link": "https://www.gurufocus.com/news/9123424/microsoft-stocks-slip-lower-although-maia-targets-40-more-tokens-per-megawatt",
+   "relatedSymbols": [
+    {
+     "symbol": "NASDAQ:MSFT",
+     "logoid": "microsoft",
+     "logo": {
+      "style": "single",
+      "logoid": "microsoft"
+     }
+    }
+   ],
+   "storyPath": "/news/gurufocus:b80768502094b:0-microsoft-stocks-slip-lower-although-maia-targets-40-more-tokens-per-megawatt/",
+   "provider": {
+    "id": "gurufocus",
+    "name": "GuruFocus",
+    "logo_id": "gurufocus",
+    "url": "https://www.gurufocus.com/"
+   }
+  },
+  {
+   "paywall": true,
+   "id": "tag:reuters.com,2026:newsml_L1N4600UP:0",
+   "title": "Bank of America consumer retail M&A banker Peacock to join JPMorgan, sources say",
+   "published": 1791995635,
+   "urgency": 2,
+   "permission": "headline",
+   "relatedSymbols": [
+    {
+     "symbol": "NYSE:JPM",
+     "logoid": "jpmorgan-chase",
+     "logo": {
+      "style": "single",
+      "logoid": "jpmorgan-chase"
+     }
+    },
+    {
+     "symbol": "NYSE:BAC",
+     "logoid": "bank-of-america",
+     "logo": {
+      "style": "single",
+      "logoid": "bank-of-america"
+     }
+    },
+    {
+     "symbol": "NYSE:C",
+     "logoid": "citigroup",
+     "logo": {
+      "style": "single",
+      "logoid": "citigroup"
+     }
+    }
+   ],
+   "isExclusive": true,
+   "storyPath": "/news/reuters.com,2026:newsml_L1N4600UP:0-bank-of-america-consumer-retail-m-a-banker-peacock-to-join-jpmorgan-sources-say/",
+   "provider": {
+    "id": "reuters",
+    "name": "Reuters",
+    "logo_id": "reuters"
+   }
+  },
+  {
+   "paywall": true,
+   "id": "DJN_DN20261014006224:0",
+   "title": "The AI Boom Is Supercharging Wall Street's Profits \u2014 WSJ",
+   "published": 1791994440,
+   "urgency": 2,
+   "permission": "headline",
+   "relatedSymbols": [
+    {
+     "symbol": "NYSE:JPM",
+     "logoid": "jpmorgan-chase",
+     "logo": {
+      "style": "single",
+      "logoid": "jpmorgan-chase"
+     }
+    },
+    {
+     "symbol": "NYSE:GS",
+     "logoid": "golden-sachs-etf-trust-goldman",
+     "logo": {
+      "style": "single",
+      "logoid": "golden-sachs-etf-trust-goldman"
+     }
+    },
+    {
+     "symbol": "NYSE:MS",
+     "logoid": "morgan-stanley",
+     "logo": {
+      "style": "single",
+      "logoid": "morgan-stanley"
+     }
+    }
+   ],
+   "storyPath": "/news/DJN_DN20261014006224:0-the-ai-boom-is-supercharging-wall-street-s-profits-wsj/",
+   "provider": {
+    "id": "dow-jones",
+    "name": "Dow Jones Newswires",
+    "logo_id": "dow-jones"
+   }
+  },
+  {
+   "paywall": false,
+   "id": "benzinga:5463493af094b:0",
+   "title": "Big Bank Succession Talk Heats Up as CEOs Stay Firmly in Charge",
+   "published": 1791994086,
+   "urgency": 2,
+   "link": "https://www.benzinga.com/markets/large-cap/26/10/62361283/big-bank-succession-talk-heats-up-as-ceos-stay-firmly-in-charge?utm_source=tradingview&utm_campaign=partner_feed&utm_medium=referral",
+   "relatedSymbols": [
+    {
+     "symbol": "NYSE:GS",
+     "logoid": "golden-sachs-etf-trust-goldman",
+     "logo": {
+      "style": "single",
+      "logoid": "golden-sachs-etf-trust-goldman"
+     }
+    },
+    {
+     "symbol": "NYSE:BAC",
+     "logoid": "bank-of-america",
+     "logo": {
+      "style": "single",
+      "logoid": "bank-of-america"
+     }
+    },
+    {
+     "symbol": "NYSE:JPM",
+     "logoid": "jpmorgan-chase",
+     "logo": {
+      "style": "single",
+      "logoid": "jpmorgan-chase"
+     }
+    }
+   ],
+   "storyPath": "/news/benzinga:5463493af094b:0-big-bank-succession-talk-heats-up-as-ceos-stay-firmly-in-charge/",
+   "provider": {
+    "id": "benzinga",
+    "name": "Benzinga",
+    "logo_id": "benzinga",
+    "url": "https://www.benzinga.com/"
+   }
+  },
+  {
+   "paywall": true,
+   "id": "tag:reuters.com,2026:newsml_FWN45Z1UH:0",
+   "title": "J P Morgan Chase & Co.'s Long Position In H-Shares Of Midea Group Increases To 15.51% On Oct 8 From 14.80%, HKEX Shows",
+   "published": 1791993748,
+   "urgency": 2,
+   "permission": "headline",
+   "relatedSymbols": [
+    {
+     "symbol": "SZSE:000333",
+     "logoid": "midea",
+     "logo": {
+      "style": "single",
+      "logoid": "midea"
+     }
+    },
+    {
+     "symbol": "NYSE:JPM",
+     "logoid": "jpmorgan-chase",
+     "logo": {
+      "style": "single",
+      "logoid": "jpmorgan-chase"
+     }
+    }
+   ],
+   "storyPath": "/news/reuters.com,2026:newsml_FWN45Z1UH:0-j-p-morgan-chase-co-s-long-position-in-h-shares-of-midea-group-increases-to-15-51-on-oct-8-from-14-80-hkex-shows/",
+   "provider": {
+    "id": "reuters",
+    "name": "Reuters",
+    "logo_id": "reuters"
+   }
+  },
+  {
+   "paywall": true,
+   "id": "tag:reuters.com,2026:newsml_FWN45Z1UB:0",
+   "title": "J P Morgan Chase & Co's Long Position In Bilibili Decreases To 18.91% On Oct 08 From 19.80%, HKEX sHOWS",
+   "published": 1791993656,
+   "urgency": 2,
+   "permission": "headline",
+   "relatedSymbols": [
+    {
+     "symbol": "NASDAQ:BILI",
+     "logoid": "bilibili",
+     "logo": {
+      "style": "single",
+      "logoid": "bilibili"
+     }
+    },
+    {
+     "symbol": "NYSE:JPM",
+     "logoid": "jpmorgan-chase",
+     "logo": {
+      "style": "single",
+      "logoid": "jpmorgan-chase"
+     }
+    }
+   ],
+   "storyPath": "/news/reuters.com,2026:newsml_FWN45Z1UB:0-j-p-morgan-chase-co-s-long-position-in-bilibili-decreases-to-18-91-on-oct-08-from-19-80-hkex-shows/",
+   "provider": {
+    "id": "reuters",
+    "name": "Reuters",
+    "logo_id": "reuters"
+   }
+  },
+  {
+   "paywall": false,
+   "id": "benzinga:134738802094b:0",
+   "title": "Apple Has a $299 Smart-Home Bet: The Real Money May Be in Subscriptions",
+   "published": 1791993515,
+   "urgency": 2,
+   "link": "https://www.benzinga.com/analyst-stock-ratings/analyst-color/26/10/62360917/apple-homeview-subscription-revenue?utm_source=tradingview&utm_campaign=partner_feed&utm_medium=referral",
+   "relatedSymbols": [
+    {
+     "symbol": "NASDAQ:AAPL",
+     "logoid": "apple",
+     "logo": {
+      "style": "single",
+      "logoid": "apple"
+     }
+    }
+   ],
+   "storyPath": "/news/benzinga:134738802094b:0-apple-has-a-299-smart-home-bet-the-real-money-may-be-in-subscriptions/",
+   "provider": {
+    "id": "benzinga",
+    "name": "Benzinga",
+    "logo_id": "benzinga",
+    "url": "https://www.benzinga.com/"
+   }
+  },
+  {
+   "paywall": false,
+   "id": "seekingalpha:b2d9116d1094b:0",
+   "title": "Apple asks judge to overturn $5.7B patent verdict in Taction case",
+   "published": 1791993331,
+   "urgency": 2,
+   "link": "https://seekingalpha.com/news/4653031-apple-asks-judge-to-overturn-57b-patent-verdict-in-taction-case?utm_source=tradingview&utm_medium=referral&feed_item_type=news",
+   "relatedSymbols": [
+    {
+     "symbol": "NASDAQ:AAPL",
+     "logoid": "apple",
+     "logo": {
+      "style": "single",
+      "logoid": "apple"
+     }
+    }
+   ],
+   "storyPath": "/news/seekingalpha:b2d9116d1094b:0-apple-asks-judge-to-overturn-5-7b-patent-verdict-in-taction-case/",
+   "provider": {
+    "id": "seekingalpha",
+    "name": "Seeking Alpha",
+    "logo_id": "seekingalpha",
+    "url": "https://seekingalpha.com/?utm_source=tradingview&utm_medium=referral&feed_item_type=news"
+   }
+  },
+  {
+   "paywall": true,
+   "id": "tag:reuters.com,2026:newsml_FWN4601CZ:0",
+   "title": "Apple Has Found No Evidence To Support OpenAI's Allegations",
+   "published": 1791993053,
+   "urgency": 2,
+   "permission": "headline",
+   "relatedSymbols": [
+    {
+     "symbol": "NASDAQ:AAPL",
+     "logoid": "apple",
+     "logo": {
+      "style": "single",
+      "logoid": "apple"
+     }
+    },
+    {
+     "symbol": "NASDAQ:OPENAI",
+     "logoid": "openai",
+     "logo": {
+      "style": "single",
+      "logoid": "openai"
+     }
+    }
+   ],
+   "storyPath": "/news/reuters.com,2026:newsml_FWN4601CZ:0-apple-has-found-no-evidence-to-support-openai-s-allegations/",
+   "provider": {
+    "id": "reuters",
+    "name": "Reuters",
+    "logo_id": "reuters"
+   }
+  },
+  {
+   "paywall": true,
+   "id": "tag:reuters.com,2026:newsml_L6N46012M:0",
+   "title": "OpenAI employee who left for Apple took files about unreleased device, OpenAI alleges",
+   "published": 1791992925,
+   "urgency": 2,
+   "permission": "headline",
+   "relatedSymbols": [
+    {
+     "symbol": "NASDAQ:AAPL",
+     "logoid": "apple",
+     "logo": {
+      "style": "single",
+      "logoid": "apple"
+     }
+    },
+    {
+     "symbol": "NASDAQ:OPENAI",
+     "logoid": "openai",
+     "logo": {
+      "style": "single",
+      "logoid": "openai"
+     }
+    }
+   ],
+   "storyPath": "/news/reuters.com,2026:newsml_L6N46012M:0-openai-employee-who-left-for-apple-took-files-about-unreleased-device-openai-alleges/",
+   "provider": {
+    "id": "reuters",
+    "name": "Reuters",
+    "logo_id": "reuters"
+   }
+  },
+  {
+   "paywall": false,
+   "id": "benzinga:5f5244784094b:0",
+   "title": "Apple Stock Hits 52-Week High \u2014 What's Going On?",
+   "published": 1791988931,
+   "urgency": 2,
+   "link": "https://www.benzinga.com/markets/tech/26/10/62357730/apple-stock-hits-52-week-high-whats-going-on?utm_source=tradingview&utm_campaign=partner_feed&utm_medium=referral",
+   "relatedSymbols": [
+    {
+     "symbol": "NASDAQ:AAPL",
+     "logoid": "apple",
+     "logo": {
+      "style": "single",
+      "logoid": "apple"
+     }
+    }
+   ],
+   "storyPath": "/news/benzinga:5f5244784094b:0-apple-stock-hits-52-week-high-what-s-going-on/",
+   "provider": {
+    "id": "benzinga",
+    "name": "Benzinga",
+    "logo_id": "benzinga",
+    "url": "https://www.benzinga.com/"
+   }
+  }
+ ],
+ "pagination": {
+  "cursor": "eyJfaWQiOiJESk5fRE4yMDI2MTAxMzAwMjQwMl8yMDI2MTAxMzAwMjQxNiIsInB1YmRhdGUiOjE3OTE4ODc0NjAwMDB9"
+ }
+}
