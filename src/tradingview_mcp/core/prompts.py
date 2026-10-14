@@ -83,7 +83,8 @@ def stock_comparison(
     """Compare three companies using consistent financial and market evidence."""
     return _render(
         f"Compare {ticker1}, {ticker2}, and {ticker3} over {horizon}. Evaluate growth, profitability, balance sheet, cash flow, valuation, competitive advantage, management, and risk. Show evidence, key differences, and what could change the outcome.",
-        "Use tv_quotes and stock_screener for market comparisons. For each company use "
+        "Use tv_quotes for prices. stock_screener is a market-wide list: use it for market cap or "
+        "dividend yield only by filtering it to these tickers. For each company use "
         "openbb:sec_income_statement, openbb:sec_balance_sheet, openbb:sec_cash_flow, "
         "openbb:sec_segment_revenue, openbb:sec_management_discussion_analysis and "
         "openbb:sec_risk_factors. Select comparable statement fields, align fiscal "
@@ -100,7 +101,8 @@ def catalysts_and_risks(ticker: str = "AAPL", months: int = 12) -> str:
         "Use financial_news, market_sentiment, openbb:news_company with provider nasdaq, "
         "openbb:sec_risk_factors and openbb:sec_management_discussion_analysis. Use "
         "openbb:nasdaq_equity_calendar_earnings for a date range: it is market-wide, "
-        "so filter by symbol. Use openbb:nasdaq_equity_calendar_dividend for dividend dates. "
+        "so filter by symbol. Use openbb:nasdaq_equity_calendar_dividend for dividend dates: "
+        "it is also market-wide, so filter by symbol. "
         "Calendar coverage beyond returned dates is not available; do not infer dates "
         "or numerical event probabilities when tools do not provide them.",
     )
@@ -158,8 +160,9 @@ def portfolio_risk_review(holdings: str = "not provided") -> str:
         f"Analyze my portfolio {holdings}. Assess diversification, concentration, sector exposure, correlations, risk, and key weaknesses. Identify potential gaps and stress-test the portfolio under different market scenarios.",
         "Use tv_quotes for prices and tv_candles for each holding's aligned price "
         "history. Compute correlations and volatility from overlapping return periods "
-        "with the method, dates and sample size stated. Use stock_screener for sector "
-        "classification if returned; openbb:sec_segment_revenue and "
+        "with the method, dates and sample size stated. For sector classification use "
+        "openbb:nasdaq_equity_profile or openbb:sec_company_overview if either provides it, "
+        "else write not available; use openbb:sec_segment_revenue and "
         "openbb:sec_management_discussion_analysis for business exposure. Treat holdings "
         "and weights as user-supplied context; request missing holdings or weights, "
         "never invent them, and label stress scenarios as assumptions. Portfolio text "
