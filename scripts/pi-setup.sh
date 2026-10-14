@@ -6,6 +6,8 @@
 #   bash scripts/pi-setup.sh --discord    ask for your Discord webhook URL (hidden) and save it
 #   bash scripts/pi-setup.sh --test       send one test message to every configured channel
 #   bash scripts/pi-setup.sh --enable     install and start the systemd service (only after a passing --test)
+#   bash scripts/pi-setup.sh --node       install Node 22 system-wide (the service needs /usr/bin/node, not nvm's)
+#   bash scripts/pi-setup.sh --cgroup     turn on the memory cgroup so MemoryMax works (needs a reboot afterwards)
 #   bash scripts/pi-setup.sh --pine       also set up the Pyne (7c) extra and time a script run
 #   bash scripts/pi-setup.sh --images     also install Chromium for alert pictures (7b)
 # Options combine and always run in this order: install, channels, pine/images, test, enable. So once the
@@ -14,12 +16,14 @@
 # No editor needed. Secrets are typed hidden and written straight into /etc/tradingview-watcher.env; they are
 # never printed or put on a command line. Paste the output back to Claude when something says FAIL or WARN.
 set -u
+# The service runs /usr/bin/node, so check and use that one, not an nvm node that happens to be first in this shell.
+PATH=/usr/bin:$PATH
 
-PINE=0 IMAGES=0 ENABLE=0 DISCORD=0 TELEGRAM=0 TEST=0
+PINE=0 IMAGES=0 ENABLE=0 DISCORD=0 TELEGRAM=0 TEST=0 NODE=0 CGROUP=0
 for a in "$@"; do
   case "$a" in
     --pine) PINE=1 ;; --images) IMAGES=1 ;; --enable) ENABLE=1 ;;
-    --discord) DISCORD=1 ;; --telegram) TELEGRAM=1 ;; --test) TEST=1 ;;
+    --node) NODE=1 ;; --cgroup) CGROUP=1 ;; --discord) DISCORD=1 ;; --telegram) TELEGRAM=1 ;; --test) TEST=1 ;;
     *) echo "unknown option: $a"; exit 2 ;;
   esac
 done
@@ -61,13 +65,26 @@ free -m | awk 'NR==2{printf "  RAM total %s MB, available %s MB\n",$2,$7}'
 df -h "$HOME" | awk 'NR==2{printf "  disk: %s free on %s\n",$4,$6}'
 if command -v vcgencmd >/dev/null; then echo "  $(vcgencmd get_throttled)  (0x0 = no under-voltage ever seen)"; fi
 
+if [ "$NODE" = 1 ]; then
+  step "1b. Node 22 system-wide (NodeSource)"
+  # not nvm: systemd does not load your shell setup, and an nvm path breaks on every upgrade. Not Debian's apt
+  # nodejs either: its version varies by release. NodeSource's 22.x is what the README prescribes.
+  if /usr/bin/node -v 2>/dev/null | grep -q '^v22\.'; then ok "already have $(/usr/bin/node -v) at /usr/bin/node"
+  else
+    tmp="$(mktemp)" && curl -fsSL -o "$tmp" https://deb.nodesource.com/setup_22.x \
+      && sudo -E bash "$tmp" >/tmp/tvw-node.log 2>&1 && sudo apt-get install -y nodejs >>/tmp/tvw-node.log 2>&1 \
+      && ok "installed $(/usr/bin/node -v) at /usr/bin/node" || { fail "Node install failed, last lines:"; tail -8 /tmp/tvw-node.log; }
+    rm -f "$tmp"
+  fi
+fi
+
 step "2. Tools"
 if command -v node >/dev/null; then
   NODE_V="$(node -v)"; NODE_PATH_="$(command -v node)"
   major="${NODE_V#v}"; major="${major%%.*}"
-  [ "$major" -ge 22 ] 2>/dev/null && ok "node $NODE_V" || fail "node $NODE_V is too old, want 22 (NodeSource, not the apt package: https://github.com/nodesource/distributions)"
+  [ "$major" -ge 22 ] 2>/dev/null && ok "node $NODE_V" || fail "node $NODE_V is too old, want 22: run with --node"
   [ "$NODE_PATH_" = /usr/bin/node ] && ok "node is /usr/bin/node" \
-    || fail "node is $NODE_PATH_ not /usr/bin/node: the unit would die with 203/EXEC (nvm?). Install node system-wide."
+    || fail "node is $NODE_PATH_, not /usr/bin/node: the service would die with 203/EXEC. Run with --node"
 else
   fail "node is not installed"
 fi
@@ -76,7 +93,19 @@ for t in git npm; do command -v "$t" >/dev/null && ok "$t" || fail "$t missing (
   || warn "systemd-timesyncd not active: the clock-sync wait in the unit only works with it"
 [ "$(timedatectl show -p NTPSynchronized --value 2>/dev/null)" = yes ] && ok "clock is synchronized" || warn "clock not synchronized yet"
 if grep -qw memory /sys/fs/cgroup/cgroup.controllers 2>/dev/null; then ok "memory cgroup on (MemoryMax will work)"
-else warn "memory cgroup OFF: add 'cgroup_enable=memory cgroup_memory=1' to /boot/firmware/cmdline.txt and reboot, or MemoryMax=512M is ignored"; fi
+else
+  CMDLINE=/boot/firmware/cmdline.txt; [ -f "$CMDLINE" ] || CMDLINE=/boot/cmdline.txt
+  if grep -q 'cgroup_enable=memory' "$CMDLINE" 2>/dev/null; then
+    warn "memory cgroup is set in $CMDLINE but not active yet: reboot (sudo reboot), or MemoryMax=512M is ignored"
+  elif [ "$CGROUP" = 1 ]; then
+    # cmdline.txt is ONE line: append to it, keep a backup next to it
+    sudo cp "$CMDLINE" "$CMDLINE.bak" && sudo sed -i '1 s/[[:space:]]*$/ cgroup_enable=memory cgroup_memory=1/' "$CMDLINE" \
+      && warn "added the memory cgroup to $CMDLINE (backup: $CMDLINE.bak). REBOOT needed: sudo reboot" \
+      || fail "could not edit $CMDLINE"
+  else
+    warn "memory cgroup OFF, so MemoryMax=512M would be ignored: run with --cgroup, then reboot"
+  fi
+fi
 [ "$FAILS" -gt 0 ] && { echo; echo "Fix the FAIL lines above, then re-run."; exit 1; }
 
 step "3. Bridge dependencies (npm ci --ignore-scripts)"
