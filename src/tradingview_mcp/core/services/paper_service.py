@@ -19,6 +19,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from tradingview_mcp.core.services import backtest_service as bt
 from tradingview_mcp.core.services import gauntlet_service as gauntlet
+from tradingview_mcp.core.services import pine_service as pine
 from tradingview_mcp.core.services.tv_bridge_client import BridgeError
 from tradingview_mcp.core.services.tv_data_service import bridge_error_message
 
@@ -74,6 +75,9 @@ def load_plan(fingerprint: str) -> dict:
     if plan is None:
         raise PaperRefusal("the stored report could not be read")
     inputs = plan.get("inputs", {})
+    if pine.is_pine(inputs.get("strategy")):
+        # Running a Pyne script means running user Python inside the watch loop; not part of 7c (docs/plans/phase-7c.md).
+        raise PaperRefusal("paper trading does not run Pyne scripts yet: only the built-in strategies")
     if inputs.get("data_source") != "tradingview" or not inputs.get("tv_symbol"):
         raise PaperRefusal("paper trading needs a TradingView-sourced gauntlet run")
     if inputs.get("interval") not in gauntlet._BAR_SECONDS:

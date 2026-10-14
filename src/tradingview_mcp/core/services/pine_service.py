@@ -11,6 +11,7 @@ without the `pine` extra.
 """
 from __future__ import annotations
 
+import hashlib
 import math
 import os
 import re
@@ -181,16 +182,42 @@ def _runner(name: str, bars: list, period: str, inputs: dict | None):
         raise PineError(f"Script '{name}' could not be loaded: {type(exc).__name__}: {exc}") from exc
 
 
+def script_sha256(name: str) -> str:
+    """Hash of the script file: a report is only valid for the exact script it was made with."""
+    return hashlib.sha256(script_path(name).read_bytes()).hexdigest()
+
+
+_INPUTS_CACHE: dict[tuple, dict] = {}                           # (path, mtime, size) -> declared inputs
+
+
 def declared_inputs(name: str) -> dict[str, dict]:
     """The script's numeric inputs: {name: {type: 'int'|'float', default, min, max}} (min/max None when not declared)."""
     _require_available()
-    with _RUN_LOCK, _no_toml_written():
-        runner = _runner(name, [], "1D", None)
-        found = {}
-        for key, data in runner.script.inputs.items():
-            if data.input_type in ("int", "float") and not isinstance(data.defval, bool):
-                found[key] = {"type": data.input_type, "default": data.defval, "min": data.minval, "max": data.maxval}
-        return found
+    path = script_path(name)
+    stat = path.stat()
+    key = (str(path), stat.st_mtime_ns, stat.st_size)           # a gauntlet asks about 20 neighbours; load the script once
+    if key not in _INPUTS_CACHE:
+        with _RUN_LOCK, _no_toml_written():
+            runner = _runner(name, [], "1D", None)
+            found = {}
+            for input_name, data in runner.script.inputs.items():
+                if data.input_type in ("int", "float") and not isinstance(data.defval, bool):
+                    found[input_name] = {"type": data.input_type, "default": data.defval,
+                                         "min": data.minval, "max": data.maxval}
+        _INPUTS_CACHE.clear()
+        _INPUTS_CACHE[key] = found
+    return {k: dict(v) for k, v in _INPUTS_CACHE[key].items()}
+
+
+def check_param(declared: dict[str, dict], name: str, value) -> None:
+    """Raise ValueError when a value is outside what the script declared for that input."""
+    spec = declared[name]
+    if spec["type"] == "int" and value != int(value):
+        raise ValueError(f"Parameter '{name}' must be a whole number, got {value}")
+    if spec["min"] is not None and value < spec["min"]:
+        raise ValueError(f"Parameter '{name}' must be at least {spec['min']}, got {value}")
+    if spec["max"] is not None and value > spec["max"]:
+        raise ValueError(f"Parameter '{name}' must be at most {spec['max']}, got {value}")
 
 
 def convert_trades(closed: list, still_open: list, candles: list[dict]) -> list[dict]:
@@ -225,7 +252,7 @@ def convert_trades(closed: list, still_open: list, candles: list[dict]) -> list[
         trade_dict = {
             "entry_idx": max(0, entry_bar - 1), "exit_idx": max(0, end_bar - 1) if exit_bar is not None else last,
             "entry_date": candles[entry_bar]["date"], "exit_date": candles[end_bar]["date"],
-            "entry_price": float(entry_price), "exit_price": float(exit_price),
+            "entry_price": round(float(entry_price), 10), "exit_price": round(float(exit_price), 10),   # drops float noise
         }
         if exit_bar is None:
             trade_dict["forced_exit"] = True

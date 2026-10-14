@@ -264,3 +264,15 @@ def test_the_real_runner_reproduces_the_report_fingerprint(real):
     first = run("pine:ema_cross")
     assert run("pine:ema_cross")["fingerprint"] == first["fingerprint"]
     assert g.verify_report(first["fingerprint"])["matches_current_code"] is True
+
+
+def test_the_pyne_ema_cross_makes_the_same_trades_as_the_built_in_one(real):
+    """The strongest check of the conversion: same signals, same next-open fills, trade for trade."""
+    builtin = bt._trades_for(real, "ema_cross", {"fast_period": 9, "slow_period": 21}, "next_open")
+    pyne = bt._trades_for(real, "pine:ema_cross", {"fast": 9, "slow": 21}, "next_open")
+    assert len(builtin) >= 10
+
+    def key(t):
+        return (t["entry_date"], t["exit_date"], round(t["entry_price"], 4), round(t["exit_price"], 4),
+                t["entry_idx"], t["exit_idx"], bool(t.get("forced_exit")))
+    assert [key(t) for t in pyne] == [key(t) for t in builtin]

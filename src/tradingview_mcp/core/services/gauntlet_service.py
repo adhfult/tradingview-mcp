@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Optional
 
 from tradingview_mcp.core.services import backtest_service as bt
+from tradingview_mcp.core.services import pine_service as pine
 from tradingview_mcp.core.services.tv_data_service import tv_periods_per_year
 
 # One place for every cut-off. Read at call time, so tests can override single values.
@@ -50,6 +51,7 @@ SENSITIVITY_FACTORS = (0.8, 0.9, 1.1, 1.2)
 RECENT_DAYS = 365
 MIN_RECENT_BARS = 30
 FILL = "next_open"
+LOOKAHEAD_SAMPLES = 8
 _FINGERPRINT_RE = re.compile(r"^[0-9a-f]{64}$")
 _BAR_SECONDS = {"15m": 900, "1h": 3600, "4h": 14400, "1d": 86400}
 _STATS_NOTE = "Most ideas should fail; around 6 in 7 failing is normal."
@@ -132,16 +134,31 @@ def _package_version() -> str:
         return "dev"
 
 
+def _code_files() -> tuple[Path, ...]:
+    """The code that produces a verdict: a change to any of it invalidates old reports."""
+    return Path(bt.__file__), Path(__file__), Path(pine.__file__)
+
+
 def _code_hash() -> str:
     h = hashlib.sha256()
-    for path in (Path(bt.__file__), Path(__file__)):
+    for path in _code_files():
         h.update(path.read_bytes())
     return h.hexdigest()
+
+
+def _script_hash(strategy: str) -> Optional[str]:
+    """Hash of a Pyne script's file now, or None when it is gone (a report for a script that changed must not verify)."""
+    try:
+        return pine.script_sha256(pine.script_name(strategy))
+    except (pine.PineError, OSError):
+        return None
 
 
 def _fingerprint(inputs: dict) -> str:
     """sha256 of the inputs plus the package version and the code that produced the verdict."""
     payload = {**inputs, "package_version": _package_version(), "code_hash": _code_hash()}
+    if pine.is_pine(inputs.get("strategy")):
+        payload["script_sha256_now"] = _script_hash(inputs["strategy"])     # so editing the script invalidates the report
     text = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(text.encode()).hexdigest()
 
@@ -327,6 +344,34 @@ def _gate_walk_forward(candles, strategy, resolved, commission, slippage, interv
     return _gate("walk_forward", "FAIL", f"Walk-forward verdict {label}.", numbers)
 
 
+def _gate_lookahead(candles: list[dict], strategy: str, resolved: dict, base: dict) -> dict:
+    """A trade that closed must reappear when every bar after its exit fill is hidden.
+
+    Same idea as the no-lookahead test of the built-in strategies: a trade closed on signal bar e is filled on
+    bar e+1, so a script that only looks back gives the same trade on candles[:e+2]. A trade that vanishes means the
+    script decided with bars it should not have had (or repaints). Up to LOOKAHEAD_SAMPLES trades, spread over the run.
+    """
+    keys = ("entry_idx", "exit_idx", "entry_date", "exit_date", "entry_price", "exit_price")
+    closed = [t for t in base["trades"] if not t.get("forced_exit")]
+    if not closed:
+        return _gate("lookahead", "SKIPPED", "No trade closed before the last bar, so there is nothing to compare.")
+    step = max(1, len(closed) // LOOKAHEAD_SAMPLES)
+    sample = closed[step - 1::step][:LOOKAHEAD_SAMPLES]
+    name = pine.script_name(strategy)
+    violations = []
+    for t in sample:
+        seen = pine.run_script(name, candles[:t["exit_idx"] + 2], resolved)
+        if tuple(t[k] for k in keys) not in {tuple(s[k] for k in keys) for s in seen}:
+            violations.append({"entry_date": t["entry_date"], "exit_date": t["exit_date"]})
+    numbers = {"trades_checked": len(sample), "violations": len(violations)}
+    if violations:
+        return _gate("lookahead", "FAIL",
+                     f"script repaints or uses future data: {len(violations)} of {len(sample)} checked trades "
+                     f"changed when later bars were hidden (first: {violations[0]['entry_date']} to "
+                     f"{violations[0]['exit_date']}).", {**numbers, "examples": violations[:3]})
+    return _gate("lookahead", "PASS", f"{len(sample)} trades came out the same with later bars hidden.", numbers)
+
+
 def run_gauntlet(
     symbol: str,
     strategy: str,
@@ -349,7 +394,14 @@ def run_gauntlet(
     interval = interval.lower().strip()
     data_source, tv_symbol = bt._normalize_source(data_source, tv_symbol)
 
-    if strategy not in bt._STRATEGY_MAP:
+    if pine.is_pine(strategy):
+        if not pine.available()[0]:
+            return pine.dependency_missing()
+        try:
+            pine.script_path(pine.script_name(strategy))
+        except pine.PineError as e:
+            return {"error": str(e)}
+    elif strategy not in bt._STRATEGY_MAP:
         return {"error": f"Unknown strategy '{strategy}'. Choose: {', '.join(bt._STRATEGY_MAP)}"}
     profile = (cost_profile or "default").strip().lower()
     if profile not in bt.COST_PROFILES:
@@ -388,20 +440,27 @@ def run_gauntlet(
                             slippage_pct=slip, fill=FILL, interval=interval, periods_per_year=ppy)
 
     gates = [_gate_honest_settings(candles, strategy, interval, resolved)]
-    if gates[0]["status"] == "PASS":
-        base = run(candles, resolved)
-        gates.append(_gate_enough_evidence(base))
-        gates.append(_gate_parameter_sensitivity(
-            candles, strategy, resolved, base["metrics"]["total_return_pct"], run))
-        gates.append(_gate_double_costs(candles, resolved, commission, slippage, run))
-        gates.append(_gate_recent_year(candles, strategy, resolved, base, interval, ppy, run))
-        gates.append(_gate_walk_forward(candles, strategy, resolved, commission, slippage, interval, ppy))
+    try:
+        if gates[0]["status"] == "PASS":
+            base = run(candles, resolved)
+            gates.append(_gate_enough_evidence(base))
+            gates.append(_gate_parameter_sensitivity(
+                candles, strategy, resolved, base["metrics"]["total_return_pct"], run))
+            gates.append(_gate_double_costs(candles, resolved, commission, slippage, run))
+            gates.append(_gate_recent_year(candles, strategy, resolved, base, interval, ppy, run))
+            gates.append(_gate_walk_forward(candles, strategy, resolved, commission, slippage, interval, ppy))
+            if pine.is_pine(strategy):
+                gates.append(_gate_lookahead(candles, strategy, resolved, base))
+    except pine.PineError as e:                      # a script that fails, or that the engine cannot score
+        return {"error": str(e)}
 
     inputs = {
         "symbol": symbol.upper(), "tv_symbol": tv_symbol, "data_source": data_source,
         "strategy": strategy, "params": resolved, "interval": interval, "period": period,
         "fill": FILL, "cost_profile": profile, "commission_pct": commission, "slippage_pct": slippage,
     }
+    if pine.is_pine(strategy):
+        inputs["script_sha256"] = _script_hash(strategy)
     report = {
         "fingerprint": _fingerprint(inputs),
         "created_utc": datetime.now(timezone.utc).isoformat(),

@@ -24,7 +24,7 @@ import urllib.request
 from datetime import datetime, timezone
 from typing import Optional
 
-from tradingview_mcp.core.services import freshness, tv_bridge_client
+from tradingview_mcp.core.services import freshness, pine_service as pine, tv_bridge_client
 from tradingview_mcp.core.services.indicators_calc import (
     calc_rsi, calc_bollinger, calc_macd, calc_ema, calc_sma, calc_atr,
     calc_supertrend, calc_donchian,
@@ -545,6 +545,8 @@ def strategy_param_defaults(strategy: str) -> dict:
 
     The first parameter (candles) and any **kwargs catch-all are not tunable.
     """
+    if pine.is_pine(strategy):                       # a Pyne script: its declared numeric inputs are the parameters
+        return {k: v["default"] for k, v in pine.declared_inputs(pine.script_name(strategy)).items()}
     params = {}
     sig = inspect.signature(_STRATEGY_MAP[strategy])
     for idx, (name, p) in enumerate(sig.parameters.items()):
@@ -563,6 +565,7 @@ def resolve_params(strategy: str, params: Optional[dict]) -> dict:
     and fast/slow or oversold/overbought orderings that do not hold.
     """
     allowed = strategy_param_defaults(strategy)
+    declared = pine.declared_inputs(pine.script_name(strategy)) if pine.is_pine(strategy) else None
     resolved = dict(allowed)
     if params is not None:
         if not isinstance(params, dict):
@@ -583,6 +586,8 @@ def resolve_params(strategy: str, params: Optional[dict]) -> dict:
                     raise ValueError(f"Parameter '{name}' must be at least 2, got {value}")
             if name in _POSITIVE_NAMES and value <= 0:
                 raise ValueError(f"Parameter '{name}' must be greater than 0, got {value}")
+            if declared is not None:
+                pine.check_param(declared, name, value)
             resolved[name] = value
     for fast_name, slow_name in _ORDERED_PAIRS:
         if fast_name in resolved and slow_name in resolved and not resolved[fast_name] < resolved[slow_name]:
@@ -624,6 +629,11 @@ def _apply_fill(trades: list[dict], candles: list[dict], fill: str) -> list[dict
 
 def _trades_for(candles: list[dict], strategy: str, resolved: dict, fill: str) -> list[dict]:
     """Raw trades (before costs) for one candle window, with the fill applied."""
+    if pine.is_pine(strategy):
+        # PyneCore fills at the next open itself (and its own costs are forced to zero), so no second fill here.
+        if fill != "next_open":
+            raise ValueError('Pine scripts fill at the next bar\'s open: use fill="next_open"')
+        return pine.run_script(pine.script_name(strategy), candles, resolved)
     return _apply_fill(_STRATEGY_MAP[strategy](candles, **resolved), candles, fill)
 
 
