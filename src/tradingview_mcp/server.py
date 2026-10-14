@@ -95,6 +95,11 @@ from tradingview_mcp.core.services.gauntlet_service import (
     run_gauntlet,
 )
 from tradingview_mcp.core.services import freshness, tv_data_service
+from tradingview_mcp.core.services.pine_service import (
+    available as pine_available,
+    list_scripts as pine_list_scripts,
+    strategies_dir as pine_strategies_dir,
+)
 from tradingview_mcp.core.utils.validators import (
     validate_timeframe,
     validate_exchange,
@@ -948,6 +953,10 @@ def strategy_gauntlet(
         symbol: Yahoo Finance symbol (AAPL, BTC-USD, SPY…)
         strategy: rsi | bollinger | macd | ema_cross | supertrend | donchian
                   | rsi_pullback | keltner_breakout | triple_ema
+                  | pine:<name>, a Pyne script from ~/.tradingview-mcp/strategies/<name>.py (see pine_scripts).
+                  A Pyne script is Python and runs with your rights: only use scripts you wrote or read.
+                  Long only; its numeric inputs are the params; a seventh check (lookahead) re-runs it with
+                  later bars hidden. Needs Python 3.11+ and: pip install 'tradingview-mcp-server[pine]'
         hypothesis: The reason this edge should exist, in your own words
         counterparty: Who is on the other side of the trade, and why they lose
         cost_profile: default | binance_spot | coinbase_advanced | us_stock_broker (assumed fees: check your own)
@@ -962,6 +971,17 @@ def strategy_gauntlet(
         interval=interval, period=period, params=params,
         data_source=data_source, tv_symbol=tv_symbol,
     )
+
+
+@mcp.tool(annotations=ToolAnnotations(title="Pyne Scripts", readOnlyHint=True, destructiveHint=False, openWorldHint=False))
+def pine_scripts() -> dict:
+    """List the Pyne strategy scripts strategy_gauntlet can run as strategy="pine:<name>" (names only).
+
+    Scripts live in ~/.tradingview-mcp/strategies/ (or $TRADINGVIEW_MCP_HOME/strategies). Nothing is run or
+    downloaded. Also says whether Pine support is installed on this machine.
+    """
+    ok, reason = pine_available()
+    return {"available": ok, "reason": reason or None, "folder": str(pine_strategies_dir()), "scripts": pine_list_scripts()}
 
 
 @mcp.tool(annotations=ToolAnnotations(title="Gauntlet Statistics", readOnlyHint=True, destructiveHint=False, openWorldHint=False))

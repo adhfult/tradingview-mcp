@@ -102,3 +102,25 @@ def test_strategy_reviewer_defaults_to_rejection_and_covers_the_attack_list():
 def test_the_prompts_render_through_fastmcp():
     result = asyncio.run(mcp.get_prompt("strategy_reviewer", {"fingerprint": "f" * 64}))
     assert "f" * 64 in result.messages[0].content.text
+
+
+# ─── pine_scripts (Phase 7c) ──────────────────────────────────────────────────
+
+def test_pine_scripts_lists_names_only_and_says_whether_pine_works(tmp_path, monkeypatch):
+    from tradingview_mcp import server
+    from tradingview_mcp.core.services import pine_service
+    monkeypatch.setenv("TRADINGVIEW_MCP_HOME", str(tmp_path))
+    (tmp_path / "strategies").mkdir()
+    (tmp_path / "strategies" / "ema_cross.py").write_text("x")
+    (tmp_path / "strategies" / "Bad Name.py").write_text("x")
+    monkeypatch.setattr(pine_service, "available", lambda: (False, "PyneCore is not installed"))
+    monkeypatch.setattr(server, "pine_available", pine_service.available)
+    result = server.pine_scripts()
+    assert result == {"available": False, "reason": "PyneCore is not installed",
+                      "folder": str(tmp_path / "strategies"), "scripts": ["ema_cross"]}
+
+
+def test_strategy_gauntlet_documents_the_pine_prefix():
+    from tradingview_mcp.server import mcp
+    tool = {t.name: t for t in mcp._tool_manager.list_tools()}["strategy_gauntlet"]
+    assert "pine:<name>" in tool.description and "Python" in tool.description
