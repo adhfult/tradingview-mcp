@@ -476,6 +476,28 @@ Example prompt: "Compare all 9 strategies on MSFT for 2 years"
 
 ---
 
+### 🌲 Your own strategy as a Pyne script (optional)
+
+`strategy_gauntlet` can run a strategy you wrote in [PyneCore](https://pynecore.org) (Pine Script's logic in plain Python, Apache-2.0) through the same gates as the built-in ones: `strategy="pine:<name>"`.
+
+```bash
+pip install 'tradingview-mcp-server[pine]'      # Python 3.11 or newer; the base install does not need it
+mkdir -p ~/.tradingview-mcp/strategies
+cp docs/examples/pine/ema_cross.py ~/.tradingview-mcp/strategies/
+```
+
+Then ask for `strategy="pine:ema_cross"` (the `pine_scripts` tool lists what is in the folder). Without the extra, or on Python 3.10, the answer is a clear `DEPENDENCY_MISSING` error and nothing else changes.
+
+- **A Pyne script is Python code and runs with your rights.** Only put scripts you wrote or have read in the folder. Names are `a-z`, `0-9`, `_`, `-` (up to 64 characters), never paths; a link that leaves the folder is refused. Nothing is downloaded, and nothing is sent anywhere. Compiling Pine to Pyne needs PyneSys's online service and is not used here: write or convert the script yourself.
+- **Parameters:** the script's numeric `input.int` / `input.float` values (with their `minval` / `maxval`) are the `params`, and the parameter-sensitivity gate varies them like it does for built-in strategies. A script with none skips that gate and says so.
+- **A seventh gate, `lookahead`,** runs the script again with the bars after each sampled trade hidden. A trade that disappears means the script uses future data or repaints, and the verdict is FAIL.
+- **Fills and costs:** orders fill at the next bar's open, like every other gate. The script's own `slippage`, `commission_*` and `process_orders_on_close` settings are overridden, so the cost profile is charged once.
+- **Limits (v1):** long only and one position at a time (a short or overlapping trade is an error, not a wrong number); 24/7 sessions are assumed; no `request.security` data from other symbols; no time limit on a script (an endless loop hangs the call); the paper trader refuses Pyne reports.
+- **Size your orders explicitly** (`strategy.entry("long", strategy.long, qty=1)`). With no `qty` the default is 100% of equity, and an order that does not fit the margin rules is dropped silently, so the script looks like it never trades.
+- The report records the script file's hash, so editing the script makes the old report fail verification.
+
+---
+
 ### 🧾 Paper trading (hypothetical trades only)
 
 `tradingview-mcp-paper` follows a strategy that **passed the gauntlet** on live TradingView candles and records the trades it *would* have made. It never places an order and never connects to a broker or exchange.
