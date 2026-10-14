@@ -158,12 +158,17 @@ def _syminfo(period: str):
 
 @contextmanager
 def _no_toml_written():
-    """PyneCore's decorator writes a `.toml` next to the script unless told not to; scripts are read-only here."""
+    """PyneCore's decorator writes a `.toml` next to the script unless told not to, and importing the script writes a
+    `__pycache__/*.pyc` there too (which can also serve stale code after a same-size edit within one second, since a
+    `.pyc` is checked by whole-second mtime and size). Scripts are read-only here, so neither is allowed."""
     before = os.environ.get("PYNE_SAVE_SCRIPT_TOML")
+    no_bytecode = sys.dont_write_bytecode
     os.environ["PYNE_SAVE_SCRIPT_TOML"] = "0"
+    sys.dont_write_bytecode = True
     try:
         yield
     finally:
+        sys.dont_write_bytecode = no_bytecode
         if before is None:
             os.environ.pop("PYNE_SAVE_SCRIPT_TOML", None)
         else:
