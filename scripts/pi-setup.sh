@@ -81,6 +81,12 @@ if [ ! -f "$ENVFILE" ]; then
   echo "  -> now run:  nano $ENVFILE   (at minimum DISCORD_WEBHOOK_URL or the Telegram pair; leave the TradingView cookies"
   echo "     EMPTY for the first 24 h: crypto is real-time anonymously). Then re-run this script."
 fi
+if [ -f "$ENVFILE" ] && ! grep -q '^WATCHER_LOCAL_TOKEN=.\+' "$ENVFILE"; then
+  # guards POST /notify and is what switches on the local API, which also serves /health; never printed
+  command -v openssl >/dev/null && sudo sed -i "s|^WATCHER_LOCAL_TOKEN=.*|WATCHER_LOCAL_TOKEN=$(openssl rand -hex 24)|" "$ENVFILE"
+  grep -q '^WATCHER_LOCAL_TOKEN=.\+' "$ENVFILE" && ok "generated WATCHER_LOCAL_TOKEN (turns on /health at 127.0.0.1:8787)" \
+    || warn "could not set WATCHER_LOCAL_TOKEN: /health on 8787 stays off (set it by hand or use the dashboard Health panel)"
+fi
 if [ -f "$ENVFILE" ]; then
   mode="$(stat -c %a "$ENVFILE")"; [ "$mode" = 600 ] && ok "mode 600" || fail "mode is $mode, run: chmod 600 $ENVFILE"
   echo "  variables with a value (names only):"
@@ -144,6 +150,7 @@ if [ "$ENABLE" = 1 ]; then
   [ "$(systemctl is-active tradingview-watcher)" = active ] && ok "service is active" || fail "service is $(systemctl is-active tradingview-watcher)"
   mm="$(cat /sys/fs/cgroup/system.slice/tradingview-watcher.service/memory.max 2>/dev/null)"
   [ "$mm" = 536870912 ] && ok "memory.max = 512 MB" || warn "memory.max is '$mm' (expected 536870912)"
+  echo "  health: $(curl -s -m 5 127.0.0.1:8787/health || echo 'no answer (no WATCHER_LOCAL_TOKEN, or still starting)')"
   echo "  last log lines:"; journalctl -u tradingview-watcher -n 15 --no-pager | sed 's/^/    /'
 fi
 
