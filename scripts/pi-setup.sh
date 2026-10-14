@@ -1,19 +1,25 @@
 #!/usr/bin/env bash
 # Sets up the market watcher on a Raspberry Pi (Raspberry Pi OS 64-bit). Safe to re-run: every step checks first.
 #
-#   bash scripts/pi-setup.sh            checks + install + config (does NOT start the service)
-#   bash scripts/pi-setup.sh --pine     also set up the Pyne (7c) extra and time a script run
-#   bash scripts/pi-setup.sh --images   also install Chromium for alert pictures (7b)
-#   bash scripts/pi-setup.sh --enable   also install and start the systemd service
+#   bash scripts/pi-setup.sh              checks + install + config (does NOT start the service)
+#   bash scripts/pi-setup.sh --telegram   ask for your Telegram bot token (hidden), find your chat id, save both
+#   bash scripts/pi-setup.sh --discord    ask for your Discord webhook URL (hidden) and save it
+#   bash scripts/pi-setup.sh --test       send one test message to every configured channel
+#   bash scripts/pi-setup.sh --enable     install and start the systemd service (only after a passing --test)
+#   bash scripts/pi-setup.sh --pine       also set up the Pyne (7c) extra and time a script run
+#   bash scripts/pi-setup.sh --images     also install Chromium for alert pictures (7b)
+# Options combine and always run in this order: install, channels, pine/images, test, enable. So once the
+# machine is set up, this is the whole thing:  bash scripts/pi-setup.sh --telegram --test --enable
 #
-# It never prints secret values. You fill /etc/tradingview-watcher.env yourself; the script only lists which
-# variable NAMES are set. Paste its whole output back to Claude when something says FAIL or WARN.
+# No editor needed. Secrets are typed hidden and written straight into /etc/tradingview-watcher.env; they are
+# never printed or put on a command line. Paste the output back to Claude when something says FAIL or WARN.
 set -u
 
-PINE=0 IMAGES=0 ENABLE=0
+PINE=0 IMAGES=0 ENABLE=0 DISCORD=0 TELEGRAM=0 TEST=0
 for a in "$@"; do
   case "$a" in
     --pine) PINE=1 ;; --images) IMAGES=1 ;; --enable) ENABLE=1 ;;
+    --discord) DISCORD=1 ;; --telegram) TELEGRAM=1 ;; --test) TEST=1 ;;
     *) echo "unknown option: $a"; exit 2 ;;
   esac
 done
@@ -31,6 +37,21 @@ ok()   { echo "  ok    $*"; }
 warn() { echo "  WARN  $*"; WARNS=$((WARNS+1)); }
 fail() { echo "  FAIL  $*"; FAILS=$((FAILS+1)); }
 step() { echo; echo "== $*"; }
+
+# set_var NAME VALUE: set NAME= in the secrets file in place (the file is ours, mode 600, so no sudo and no temp copy).
+# The value travels in the environment of one node process, never on a command line.
+set_var() {
+  N="$1" V="$2" node -e '
+    const fs = require("fs"), f = process.argv[1], n = process.env.N, v = process.env.V;
+    let lines = fs.readFileSync(f, "utf8").split("\n"), hit = false;
+    lines = lines.map((l) => (l.startsWith(n + "=") ? (hit = true, n + "=" + v) : l));
+    if (!hit) { if (lines[lines.length - 1] === "") lines.pop(); lines.push(n + "=" + v, ""); }
+    fs.writeFileSync(f, lines.join("\n"));' "$ENVFILE"
+}
+# ask_hidden "prompt" VARNAME: read one line without echoing it
+ask_hidden() { local v; read -rsp "  $1: " v; echo; printf -v "$2" '%s' "$v"; }
+# tg METHOD: call the Telegram Bot API for $TOK without the token showing up in `ps`
+tg() { printf 'url = "https://api.telegram.org/bot%s/%s"\n' "$TOK" "$1" | curl -s -m 15 -K -; }
 
 step "1. This machine"
 echo "  user=$ME  repo=$REPO"
@@ -78,8 +99,6 @@ step "5. Secrets file (you fill it in; values are never printed)"
 if [ ! -f "$ENVFILE" ]; then
   sudo cp "$REPO/bridge/watcher.env.example" "$ENVFILE" && sudo chown "$ME:$ME" "$ENVFILE" && sudo chmod 600 "$ENVFILE" \
     && ok "created $ENVFILE (mode 600)" || fail "could not create $ENVFILE"
-  echo "  -> now run:  nano $ENVFILE   (at minimum DISCORD_WEBHOOK_URL or the Telegram pair; leave the TradingView cookies"
-  echo "     EMPTY for the first 24 h: crypto is real-time anonymously). Then re-run this script."
 fi
 if [ -f "$ENVFILE" ] && ! grep -q '^WATCHER_LOCAL_TOKEN=.\+' "$ENVFILE"; then
   # guards POST /notify and is what switches on the local API, which also serves /health; never printed
@@ -89,8 +108,48 @@ if [ -f "$ENVFILE" ] && ! grep -q '^WATCHER_LOCAL_TOKEN=.\+' "$ENVFILE"; then
 fi
 if [ -f "$ENVFILE" ]; then
   mode="$(stat -c %a "$ENVFILE")"; [ "$mode" = 600 ] && ok "mode 600" || fail "mode is $mode, run: chmod 600 $ENVFILE"
-  echo "  variables with a value (names only):"
-  awk -F= '!/^#/ && NF>1 && $2!="" {print "    " $1}' "$ENVFILE"
+fi
+
+if [ "$DISCORD" = 1 ] || [ "$TELEGRAM" = 1 ]; then
+  [ -t 0 ] || { fail "--discord/--telegram ask you questions: run this in an interactive terminal (ssh -t ...)"; exit 1; }
+  [ -w "$ENVFILE" ] || { fail "cannot write $ENVFILE"; exit 1; }
+fi
+if [ "$TELEGRAM" = 1 ]; then
+  step "5b. Telegram"
+  echo "  1) In Telegram open @BotFather, send /newbot, pick a name; it replies with a token like 123456:ABC..."
+  ask_hidden "Paste the bot token (typing is hidden)" TOK
+  me="$(tg getMe)"
+  if printf '%s' "$me" | grep -q '"ok":true'; then
+    bot="$(printf '%s' "$me" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{console.log(JSON.parse(s).result.username)}catch{}})')"
+    ok "Telegram accepts the token (bot @${bot:-?})"
+    echo "  2) Open @${bot:-your bot} in Telegram, press Start, and send it any message (for a group: add it, send a message)."
+    read -rp "     Press Enter here when you have sent it: " _
+    CHAT="$(tg getUpdates | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{
+      const u=(JSON.parse(s).result||[]).map(r=>r.message||r.channel_post||r.edited_message).filter(Boolean).pop();
+      if(u) console.log(u.chat.id)}catch{}})')"
+    if [ -n "$CHAT" ]; then ok "found your chat id ($CHAT)"
+    else read -rp "     Could not find it automatically. Type your chat id (a number): " CHAT; fi
+    case "$CHAT" in
+      -[0-9]*|[0-9]*) set_var TELEGRAM_BOT_TOKEN "$TOK"; set_var TELEGRAM_CHAT_ID "$CHAT"; ok "saved Telegram token and chat id" ;;
+      *) fail "chat id must be a number; nothing saved" ;;
+    esac
+  else
+    fail "Telegram rejected that token (check you copied all of it); nothing saved"
+  fi
+  TOK=""
+fi
+if [ "$DISCORD" = 1 ]; then
+  step "5c. Discord"
+  echo "  In Discord: Server Settings > Integrations > Webhooks > New Webhook > Copy Webhook URL"
+  ask_hidden "Paste the webhook URL (typing is hidden)" URL
+  case "$URL" in
+    https://discord.com/api/webhooks/*|https://discordapp.com/api/webhooks/*) set_var DISCORD_WEBHOOK_URL "$URL"; ok "saved Discord webhook" ;;
+    *) fail "that is not a Discord webhook URL (it starts with https://discord.com/api/webhooks/); nothing saved" ;;
+  esac
+  URL=""
+fi
+if [ -f "$ENVFILE" ]; then
+  echo "  variables with a value (names only):"; awk -F= '!/^#/ && NF>1 && $2!="" {print "    " $1}' "$ENVFILE"
 fi
 
 if [ "$PINE" = 1 ]; then
@@ -137,11 +196,25 @@ if [ "$IMAGES" = 1 ]; then
   echo "     then measure while an alert picture renders:  grep Pss /proc/\$(pgrep -f chromium | head -1)/smaps_rollup"
 fi
 
+has_channel() {   # Discord URL, or Telegram token AND chat id (names only, values are not read out)
+  awk -F= '!/^#/ && $2!="" {s[$1]=1} END{exit !(s["DISCORD_WEBHOOK_URL"] || (s["TELEGRAM_BOT_TOKEN"] && s["TELEGRAM_CHAT_ID"]))}' "$ENVFILE"
+}
+
+TEST_OK=0
+if [ "$TEST" = 1 ] || [ "$ENABLE" = 1 ]; then
+  step "7. Test message"
+  if ! has_channel; then
+    fail "no channel yet: run with --telegram or --discord first"
+  else
+    out="$(cd "$REPO" && set -a && . "$ENVFILE" && set +a && node bridge/watcher.mjs --config "$CONF" --test-notify 2>&1)"; rc=$?
+    echo "$out" | sed 's/^/  /'
+    [ "$rc" = 0 ] && { TEST_OK=1; ok "test sent: look at your Telegram/Discord for the message"; } || fail "the test message failed (exit $rc)"
+  fi
+fi
+
 if [ "$ENABLE" = 1 ]; then
   step "8. systemd service"
-  if [ ! -f "$ENVFILE" ] || ! awk -F= '!/^#/ && ($1=="DISCORD_WEBHOOK_URL"||$1=="TELEGRAM_BOT_TOKEN") && $2!=""{f=1} END{exit !f}' "$ENVFILE"; then
-    fail "no Discord or Telegram value set in $ENVFILE; refusing to start a watcher that cannot alert"; exit 1
-  fi
+  [ "$TEST_OK" = 1 ] || { fail "not starting the service: the test message did not go through"; exit 1; }
   # the shipped unit assumes user 'pi' and /home/pi/code/tradingview-mcp; adapt it to this machine
   sed -e "s#^User=pi#User=$ME#" -e "s#/home/pi/code/tradingview-mcp#$REPO#g" -e "s#/home/pi#$HOME#g" \
       "$REPO/bridge/watcher.service.example" | sudo tee "$UNIT" >/dev/null && ok "wrote $UNIT"
@@ -155,13 +228,13 @@ if [ "$ENABLE" = 1 ]; then
 fi
 
 step "Next"
-if [ "$ENABLE" = 0 ]; then
-  cat <<EOF
-  1. Test the channels (sends one message to each configured channel):
-       cd $REPO && (set -a; . $ENVFILE; set +a; node bridge/watcher.mjs --config $CONF --test-notify)
-  2. See alerts without sending them, for about an hour:
-       cd $REPO && (set -a; . $ENVFILE; set +a; node bridge/watcher.mjs --config $CONF --dry-run)
-  3. When both look right:  bash scripts/pi-setup.sh --enable
-EOF
+if ! has_channel 2>/dev/null; then
+  echo "  No alert channel yet. Pick one (it asks you; typing is hidden):"
+  echo "     bash scripts/pi-setup.sh --telegram --test --enable      (or --discord)"
+elif [ "$ENABLE" = 0 ]; then
+  echo "  Send a test message and start the service:"
+  echo "     bash scripts/pi-setup.sh --test --enable"
+  echo "  (Optional first: watch alerts without sending them, about an hour:"
+  echo "     cd $REPO && (set -a; . $ENVFILE; set +a; node bridge/watcher.mjs --config $CONF --dry-run))"
 fi
 echo; echo "Done: $FAILS FAIL, $WARNS WARN."
