@@ -44,14 +44,23 @@ def generator():
     return module
 
 
+def same_series(a, b, tolerance=1e-9) -> bool:
+    """Equal up to float noise: Python 3.12 sums floats more exactly than 3.10/3.11, so the last bits differ."""
+    return len(a) == len(b) and all((x is None) == (y is None) and (x is None or abs(x - y) <= tolerance)
+                                    for x, y in zip(a, b))
+
+
 def test_the_fixture_is_what_the_generator_and_the_repo_indicators_give_today():
     module = generator()
     assert module.candles() == FIXTURE["candles"]                     # deterministic generator, no drift
-    assert json.loads(json.dumps(module.reference(FIXTURE["candles"]))) == FIXTURE["reference"]
+    fresh = json.loads(json.dumps(module.reference(FIXTURE["candles"])))
+    assert set(fresh) == set(FIXTURE["reference"])
+    for key, series in FIXTURE["reference"].items():
+        assert same_series(fresh[key], series), key
     closes = [c["close"] for c in FIXTURE["candles"]]
-    assert calc_rsi(closes, 14) == FIXTURE["reference"]["rsi14"]
-    assert calc_ema(closes, 20) == FIXTURE["reference"]["ema20"]
-    assert calc_bollinger(closes, 20, 2.0)["upper"] == FIXTURE["reference"]["bb_upper"]
+    assert same_series(calc_rsi(closes, 14), FIXTURE["reference"]["rsi14"])
+    assert same_series(calc_ema(closes, 20), FIXTURE["reference"]["ema20"])
+    assert same_series(calc_bollinger(closes, 20, 2.0)["upper"], FIXTURE["reference"]["bb_upper"])
 
 
 def is_na(value) -> bool:
