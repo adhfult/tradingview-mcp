@@ -29,13 +29,13 @@
 | 7a P2: dashboard page | **done** | 7639fb6 .. 35774ec | bridge 531 pass | `index.html`, `style.css`, `app.mjs`, design tokens; CSP-clean (chart logo off, footer notice). Details in `phase-7a-p2.md` |
 | 7a P3: Obsidian notes layer | **done** | 733ac46 .. a88a29d | bridge 594 pass | `frontmatter.mjs`, `notes.mjs`, `/api/notes`, `dashboard.notes` (off by default), notes panel, markers, "Add note here", deep link. Fable + Codex Sol found about 20 issues (quadratic regexes, uncapped title, YAML escapes, keyboard note creation, stale add-note link), all fixed with tests first. Details in `phase-7a-p3.md` |
 | 7a P4: extra panels | **done** | b38420b .. d508f41 | bridge 678 pass | B1-B11 done: tabs, overview, health, opportunities, alerts tab, drawer, overlays, PNG, badges, and B6 rule noise preview (`selectActive` gate shared with the watcher, `/api/preview`, grey ghost arrows). Fable + Codex Sol + Luna Max reviews fixed: RSI history depth in the preview, cache invalidation, trending retention, stale-load races. Details in `phase-7a-p4.md` |
-| 7b: alert images | not started | – | – | – |
+| 7b: alert images | **done** | ab7136d .. a0d431b | bridge 752 pass, 2 skipped | `images` block (off by default): PNG of the last 120 bars, alert arrow and rule level on Discord/Telegram, drawn by the dashboard `/render` page in an on-demand system Chromium; any failure falls back to text plus a dashboard link. Fable + Codex Sol + Luna Max found 10 issues (Chromium ran with no sandbox, orphan browsers on a slow launch, a refused photo dropped the alert, others), all fixed with tests first. 35 of 37 mutants killed. Pi speed and memory not measured. Details in `phase-7b.md` |
 | 7c: PyneCore | not started | – | – | – |
 
 ## Current step (2026-10-13)
-Phases 0-6b, watchers W1-W3 and dashboard pieces 7a P1-P4 are done on this branch (bridge 678 pass). Pushed to origin through W2 (f06e840); everything after that (W3 and 7a P1-P4, about 100 commits) is local, and the user said to hold the push until the work is done.
-1. **Next piece** (state the regime line first, see `docs/plans/panwatch-ideas-and-pi-footprint.md`): 7a **7b** (image alerts; P4 is done). W4 (backup data source) needs a new Opus High plan-mode session and a night of the watcher on the Pi first.
-2. Then 7a, 7b, 7c (`phase-7.md`). W4 (ccxt backup source) starts with a new Opus High plan-mode session, and only after the watcher has run a night on the Pi.
+Phases 0-6b, watchers W1-W3, dashboard pieces 7a P1-P4 and 7b (alert images) are done on this branch (bridge 752 pass). Pushed to origin through W2 (f06e840); everything after that (W3, 7a P1-P4 and 7b, about 95 commits) is local, and the user said to hold the push until the work is done.
+1. **Next piece** (state the regime line first, see `docs/plans/panwatch-ideas-and-pi-footprint.md`): **7c** (PyneCore, `phase-7.md`), only after the user says continue. W4 (backup data source) needs a new Opus High plan-mode session and a night of the watcher on the Pi first.
+2. W4 (ccxt backup source) starts with a new Opus High plan-mode session, and only after the watcher has run a night on the Pi.
 3. **Finally:** the checks in "Checks only Adham can run" and the Pi checklist. Add: one live TradingView run of `strategy_gauntlet` (confirms the daily-bar `time` assumption in `drop_forming_bar`, which the paper trader also relies on) and one real use of the two prompts.
 4. Paper trader limits to remember (`phase-6b.md`): paper drawdown uses realised exits while the backtest's is mark-to-market, so a deep dip inside a trade that recovers before exit could hide a divergence.
 
@@ -64,6 +64,7 @@ Phases 0-6b, watchers W1-W3 and dashboard pieces 7a P1-P4 are done on this branc
 - The Docker daemon is not reachable in the cloud session, so Docker build checks are deferred to WSL.
 - Live `tv_*` calls with TradingView cookies in `.env`.
 - Discord / Telegram delivery (`node bridge/watcher.mjs --test-notify`).
+- 7b on the Pi: `sudo apt install chromium`, set `images.enabled` and `images.chromium_path` (or `WATCHER_CHROMIUM_PATH`), measure memory with PSS (`/proc/<pid>/smaps_rollup`, not summed RSS), check the render fits the 3 GB budget, then send one alert with a picture to Discord and one to Telegram.
 - Raspberry Pi deployment and the systemd restart test.
 - `docker build .` + `/health` (if the cloud session couldn't reach a Docker daemon).
 
