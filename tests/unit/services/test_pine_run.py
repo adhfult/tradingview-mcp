@@ -316,7 +316,7 @@ def main():
         strategy.%s
 '''
     write(scripts, "stoploss", base % ("", 'exit("x", "long", stop=close * 0.5, limit=close * 1.0001)'))
-    write(scripts, "limitbuy", base % (", limit=close * 0.9", 'close("long")'))
+    write(scripts, "limitbuy", base % (", limit=close * 0.995", 'close("long")'))
     write(scripts, "immediate", base % ("", 'close("long", immediately=True)'))
     candles = snapshot_candles(100)
     for name in ("limitbuy", "immediate"):

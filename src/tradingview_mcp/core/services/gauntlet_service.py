@@ -96,7 +96,7 @@ def _warmup_bars(strategy: str, resolved: dict) -> int:
     longest = max((v for k, v in resolved.items()
                    if bt._is_length_param(k) and isinstance(v, (int, float)) and not isinstance(v, bool)),
                   default=0)
-    return max(bt._STRATEGY_WARMUP_BARS.get(strategy, 20), int(longest))
+    return max(bt.strategy_warmup_bars(strategy, resolved), int(longest))
 
 
 def drop_forming_bar(candles: list[dict], interval: str, now: Optional[float] = None) -> list[dict]:
@@ -159,6 +159,7 @@ def _fingerprint(inputs: dict) -> str:
     payload = {**inputs, "package_version": _package_version(), "code_hash": _code_hash()}
     if pine.is_pine(inputs.get("strategy")):
         payload["script_sha256_now"] = _script_hash(inputs["strategy"])     # so editing the script invalidates the report
+        payload["pynecore_version"] = pine.engine_version()                 # so does upgrading the engine
     text = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(text.encode()).hexdigest()
 
@@ -344,32 +345,46 @@ def _gate_walk_forward(candles, strategy, resolved, commission, slippage, interv
     return _gate("walk_forward", "FAIL", f"Walk-forward verdict {label}.", numbers)
 
 
-def _gate_lookahead(candles: list[dict], strategy: str, resolved: dict, base: dict) -> dict:
-    """A trade that closed must reappear when every bar after its exit fill is hidden.
+def _lookahead_sample(closed: list[dict]) -> list[dict]:
+    """Up to LOOKAHEAD_SAMPLES trades spread evenly over the whole run, first and last included."""
+    count = min(LOOKAHEAD_SAMPLES, len(closed))
+    if count == 1:
+        return closed[:1]
+    return [closed[round(i * (len(closed) - 1) / (count - 1))] for i in range(count)]
 
-    Same idea as the no-lookahead test of the built-in strategies: a trade closed on signal bar e is filled on
-    bar e+1, so a script that only looks back gives the same trade on candles[:e+2]. A trade that vanishes means the
-    script decided with bars it should not have had (or repaints). Up to LOOKAHEAD_SAMPLES trades, spread over the run.
+
+def _gate_lookahead(candles: list[dict], strategy: str, resolved: dict, base: dict) -> dict:
+    """Hide the future of a trade and check the script still makes it.
+
+    For each sampled closed trade the script is run again on the candles up to (a) its entry fill bar and (b) its exit
+    fill bar. Its entry must still be there at (a), the whole trade at (b). A script that decided with later bars (or
+    repaints) loses the trade. It cannot see a peek of no more than the fill bar's own data. Same idea as the no-lookahead
+    test of the built-in strategies.
     """
     keys = ("entry_idx", "exit_idx", "entry_date", "exit_date", "entry_price", "exit_price")
+    entry_keys = ("entry_idx", "entry_date", "entry_price")
     closed = [t for t in base["trades"] if not t.get("forced_exit")]
     if not closed:
         return _gate("lookahead", "SKIPPED", "No trade closed before the last bar, so there is nothing to compare.")
-    step = max(1, len(closed) // LOOKAHEAD_SAMPLES)
-    sample = closed[step - 1::step][:LOOKAHEAD_SAMPLES]
+    sample = _lookahead_sample(closed)
     name = pine.script_name(strategy)
     violations = []
     for t in sample:
-        seen = pine.run_script(name, candles[:t["exit_idx"] + 2], resolved)
-        if tuple(t[k] for k in keys) not in {tuple(s[k] for k in keys) for s in seen}:
-            violations.append({"entry_date": t["entry_date"], "exit_date": t["exit_date"]})
+        at_entry = pine.run_script(name, candles[:t["entry_idx"] + 2], resolved)
+        at_exit = pine.run_script(name, candles[:t["exit_idx"] + 2], resolved)
+        if tuple(t[k] for k in entry_keys) not in {tuple(s[k] for k in entry_keys) for s in at_entry}:
+            violations.append({"entry_date": t["entry_date"], "exit_date": t["exit_date"], "missing": "entry"})
+        elif tuple(t[k] for k in keys) not in {tuple(s[k] for k in keys) for s in at_exit}:
+            violations.append({"entry_date": t["entry_date"], "exit_date": t["exit_date"], "missing": "trade"})
     numbers = {"trades_checked": len(sample), "violations": len(violations)}
     if violations:
+        first = violations[0]
         return _gate("lookahead", "FAIL",
-                     f"script repaints or uses future data: {len(violations)} of {len(sample)} checked trades "
-                     f"changed when later bars were hidden (first: {violations[0]['entry_date']} to "
-                     f"{violations[0]['exit_date']}).", {**numbers, "examples": violations[:3]})
-    return _gate("lookahead", "PASS", f"{len(sample)} trades came out the same with later bars hidden.", numbers)
+                     f"script repaints or uses future data: {len(violations)} of {len(sample)} checked trades changed "
+                     f"when later bars were hidden (first: its {first['missing']} for {first['entry_date']} to "
+                     f"{first['exit_date']}).", {**numbers, "examples": violations[:3]})
+    return _gate("lookahead", "PASS",
+                 f"{len(sample)} trades kept their entry and exit with the bars after them hidden.", numbers)
 
 
 def run_gauntlet(

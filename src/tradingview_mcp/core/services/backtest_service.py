@@ -540,6 +540,12 @@ def _is_length_param(name: str) -> bool:
     return name in _LENGTH_NAMES or name.endswith("_period")
 
 
+def strategy_warmup_bars(strategy: str, resolved: dict) -> int:
+    """Bars before a strategy can signal. A Pyne script has no table entry: its largest whole-number input stands in."""
+    table = _STRATEGY_WARMUP_BARS.get(strategy, 20)
+    return max(table, pine.warmup_bars(resolved)) if pine.is_pine(strategy) else table
+
+
 def strategy_param_defaults(strategy: str) -> dict:
     """Named tunable parameters of a strategy with their defaults.
 
@@ -1248,7 +1254,7 @@ def _walk_forward_on_candles(
     """
     resolved    = resolve_params(strategy, params)
     fold_size   = len(candles) // n_splits
-    warmup_bars = _STRATEGY_WARMUP_BARS.get(strategy, 20)
+    warmup_bars = strategy_warmup_bars(strategy, resolved)
 
     folds: list[dict]   = []
     all_test_trades: list[dict] = []
