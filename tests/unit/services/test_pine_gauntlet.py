@@ -61,6 +61,18 @@ def leaky_run(name, candles, params=None):
     return out
 
 
+def late_leaky_run(name, candles, params=None):
+    """Honest for the first 300 bars, then peeks: a check that only looks at the first trades misses it."""
+    out, n = [], len(candles)
+    for i in range(15, n, 20):
+        if i < 300:
+            if i + 11 <= n - 1:
+                out.append(trade(candles, i, i + 10))
+        elif i + 8 < n and candles[i + 8]["close"] > candles[i]["close"]:
+            out.append(trade(candles, i, i + 3))
+    return out
+
+
 @pytest.fixture
 def fake(monkeypatch, folder):
     """A script called `x` whose runner is `honest_run` and whose inputs are INPUTS."""
@@ -199,6 +211,30 @@ def test_the_lookahead_gate_checks_the_trades_it_names_and_says_how_many(fake):
     gate = next(x for x in run()["gates"] if x["gate"] == "lookahead")
     assert gate["status"] == "PASS" and 0 < gate["numbers"]["trades_checked"] <= g.LOOKAHEAD_SAMPLES
     assert gate["numbers"]["violations"] == 0
+
+
+def test_a_leak_that_starts_late_in_the_run_is_still_caught(fake):
+    fake["run"] = late_leaky_run
+    gate = next(x for x in run()["gates"] if x["gate"] == "lookahead")
+    assert gate["status"] == "FAIL" and gate["numbers"]["violations"] > 0
+
+
+def test_the_lookahead_gate_samples_a_fixed_number_spread_over_the_run(fake):
+    gate = next(x for x in run()["gates"] if x["gate"] == "lookahead")
+    assert gate["numbers"]["trades_checked"] == g.LOOKAHEAD_SAMPLES          # ~29 trades, 8 sampled
+
+
+def test_a_trade_force_closed_at_the_last_bar_is_not_a_lookahead_sample(fake):
+    def run_with_forced(name, candles, params=None):
+        n = len(candles)
+        out = [trade(candles, 20, 30)] if 31 < n else []
+        out += [trade(candles, 50, 60)] if 61 < n else []
+        if n == len(wavy()):                                       # only the full series ends with an open position
+            out.append({**trade(candles, 100, 110), "exit_idx": n - 1, "forced_exit": True})
+        return out
+    fake["run"] = run_with_forced
+    gate = next(x for x in run()["gates"] if x["gate"] == "lookahead")
+    assert gate["numbers"]["trades_checked"] == 2
 
 
 def test_a_script_with_no_closed_trades_gets_a_skipped_lookahead_gate(fake):

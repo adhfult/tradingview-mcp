@@ -6,6 +6,7 @@ Python 3.11+ (`importorskip`), so the 3.10 CI job only skips them.
 from __future__ import annotations
 
 import shutil
+import sys
 from pathlib import Path
 from types import SimpleNamespace as NS
 
@@ -111,6 +112,8 @@ def test_the_example_script_trades_on_the_snapshot_candles(scripts):
 
 def test_running_a_script_leaves_the_folder_and_the_environment_alone(scripts, monkeypatch):
     monkeypatch.delenv("PYNE_SAVE_SCRIPT_TOML", raising=False)
+    # PyneCore only writes its .toml when pytest is not loaded, which is exactly how the server runs it.
+    monkeypatch.delitem(sys.modules, "pytest")
     before = sorted(p.name for p in scripts.iterdir())
     pine.run_script("ema_cross", snapshot_candles(300))
     pine.declared_inputs("ema_cross")
@@ -212,3 +215,30 @@ def test_run_script_without_the_extra_raises_the_unavailable_error(tmp_path, mon
         pine.run_script("ema_cross", snapshot_candles(100))
     with pytest.raises(pine.PineUnavailable):
         pine.declared_inputs("ema_cross")
+
+
+# ─── small pieces ─────────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("seconds, expected", [(60, "1"), (900, "15"), (3600, "60"), (14400, "240"), (86400, "1D"),
+                                               (7 * 86400, "1W")])
+def test_the_timeframe_comes_from_the_bar_spacing(seconds, expected):
+    assert pine._period([i * seconds * 1000 for i in range(10)]) == expected
+
+
+def test_one_bar_defaults_to_daily():
+    assert pine._period([1_000]) == "1D"
+
+
+def test_an_int_input_must_get_a_whole_number_whatever_it_is_called():
+    declared = {"lookback": {"type": "int", "default": 10, "min": None, "max": None},
+                "ratio": {"type": "float", "default": 1.0, "min": None, "max": None}}
+    with pytest.raises(ValueError, match="whole number"):
+        pine.check_param(declared, "lookback", 5.5)
+    pine.check_param(declared, "lookback", 5)
+    pine.check_param(declared, "ratio", 0.25)
+
+
+def test_declared_inputs_follow_an_edit_of_the_script(scripts):
+    assert pine.declared_inputs("ema_cross")["fast"]["default"] == 9
+    (scripts / "ema_cross.py").write_text((scripts / "ema_cross.py").read_text().replace("input.int(9,", "input.int(7,"))
+    assert pine.declared_inputs("ema_cross")["fast"]["default"] == 7
