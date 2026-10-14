@@ -77,6 +77,8 @@ The other secret names known to the redactor (`DISCORD_WEBHOOK_URL`, `TELEGRAM_B
 
 ### Raspberry Pi setup
 
+`bash scripts/pi-setup.sh` does steps 1 to 5 below for you (and `--enable` does step 6; `--pine` and `--images` add the optional Pyne and chart-picture pieces). It is safe to re-run and never prints secret values. The manual steps stay here for reference.
+
 1. Use Raspberry Pi OS (64-bit) with Node 22, installed system-wide from NodeSource (the apt `nodejs` package on Bookworm is Node 18). Check with `node -v` and `command -v node`. The unit runs `/usr/bin/node`, so with nvm or any other path, edit `ExecStart=` to match, or the service fails with `203/EXEC` and restarts every 10 seconds.
 2. Clone the repo and install the bridge dependencies. `--ignore-scripts` is required:
    ```sh
