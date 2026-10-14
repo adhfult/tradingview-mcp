@@ -19,26 +19,53 @@ EXAMPLE = Path(__file__).resolve().parents[3] / "docs" / "examples" / "pine" / "
 TRADE_KEYS = {"entry_idx", "exit_idx", "entry_date", "exit_date", "entry_price", "exit_price"}
 
 
-def fake(entry_bar, exit_bar, entry=100.0, exit_=110.0, size=1.0):
-    return NS(entry_bar_index=entry_bar, exit_bar_index=exit_bar, entry_price=entry, exit_price=exit_, size=size)
+def at(candles, bar, offset=0.0):
+    return candles[bar]["open"] + offset
+
+
+def fake(candles, entry_bar, exit_bar, entry=None, exit_=None, size=1.0, shift=0):
+    """A closed PyneCore trade filled at the open of the bars given (times are the real ones, indexes can be shifted)."""
+    return NS(entry_bar_index=entry_bar + shift, exit_bar_index=exit_bar + shift,
+              entry_time=pine.candle_ms(candles[entry_bar]), exit_time=pine.candle_ms(candles[exit_bar]),
+              entry_price=at(candles, entry_bar) if entry is None else entry,
+              exit_price=at(candles, exit_bar) if exit_ is None else exit_, size=size)
+
+
+def held(candles, entry_bar, price=None, size=1.0, shift=0):
+    return NS(entry_bar_index=entry_bar + shift, entry_time=pine.candle_ms(candles[entry_bar]),
+              entry_price=at(candles, entry_bar) if price is None else price, size=size)
 
 
 # ─── conversion (fake trades, no PyneCore) ────────────────────────────────────
 
 def test_a_closed_trade_uses_the_fill_bar_for_dates_and_the_bar_before_for_the_index():
     candles = snapshot_candles(50)
-    [t] = pine.convert_trades([fake(10, 20, 101.5, 108.25)], [], candles)
+    [t] = pine.convert_trades([fake(candles, 10, 20)], [], candles)
     # Pyne fills at the next bar's open, so the signal bar is the one before: the convention _apply_fill gives.
     assert t["entry_idx"] == 9 and t["exit_idx"] == 19
     assert t["entry_date"] == candles[10]["date"] and t["exit_date"] == candles[20]["date"]
-    assert (t["entry_price"], t["exit_price"]) == (101.5, 108.25)
+    assert (t["entry_price"], t["exit_price"]) == (candles[10]["open"], candles[20]["open"])
     assert "forced_exit" not in t
+
+
+def test_trades_are_placed_by_their_time_not_by_pynes_bar_index():
+    # PyneCore counts bar_index from the first bar it calculates (calc_bars_count), so the index can be 100 bars off.
+    candles = snapshot_candles(150)
+    [t] = pine.convert_trades([fake(candles, 110, 120, shift=-100)], [], candles)
+    assert t["entry_idx"] == 109 and t["entry_date"] == candles[110]["date"] and t["exit_date"] == candles[120]["date"]
+
+
+def test_a_trade_whose_time_is_not_a_candle_is_refused():
+    candles = snapshot_candles(50)
+    lost = fake(candles, 10, 20)
+    lost.entry_time += 1_000
+    with pytest.raises(pine.PineError, match="time"):
+        pine.convert_trades([lost], [], candles)
 
 
 def test_a_position_still_open_at_the_end_is_closed_at_the_last_close_and_flagged():
     candles = snapshot_candles(50)
-    still_open = NS(entry_bar_index=30, entry_price=99.0, size=2.0)
-    trades = pine.convert_trades([fake(5, 8)], [still_open], candles)
+    trades = pine.convert_trades([fake(candles, 5, 8)], [held(candles, 30, size=2.0)], candles)
     assert [t["entry_idx"] for t in trades] == [4, 29]
     last = trades[-1]
     assert last["forced_exit"] is True
@@ -48,31 +75,53 @@ def test_a_position_still_open_at_the_end_is_closed_at_the_last_close_and_flagge
 
 def test_trades_come_out_in_entry_order_with_exactly_the_documented_keys():
     candles = snapshot_candles(50)
-    trades = pine.convert_trades([fake(20, 25), fake(5, 8)], [], candles)
+    trades = pine.convert_trades([fake(candles, 20, 25), fake(candles, 5, 8)], [], candles)
     assert [t["entry_idx"] for t in trades] == [4, 19]
     assert all(TRADE_KEYS <= set(t) for t in trades)
 
 
 def test_a_short_trade_is_refused_not_scored_as_a_long():
+    candles = snapshot_candles(50)
     with pytest.raises(pine.PineError, match="short"):
-        pine.convert_trades([fake(5, 8, size=-1.0)], [], snapshot_candles(50))
+        pine.convert_trades([fake(candles, 5, 8, size=-1.0)], [], candles)
     with pytest.raises(pine.PineError, match="short"):
-        pine.convert_trades([], [NS(entry_bar_index=5, entry_price=1.0, size=-1.0)], snapshot_candles(50))
+        pine.convert_trades([], [held(candles, 5, size=-1.0)], candles)
 
 
 def test_overlapping_trades_are_refused_but_back_to_back_ones_are_fine():
     candles = snapshot_candles(50)
     with pytest.raises(pine.PineError, match="overlap"):
-        pine.convert_trades([fake(5, 20), fake(10, 25)], [], candles)
-    assert len(pine.convert_trades([fake(5, 20), fake(20, 25)], [], candles)) == 2
+        pine.convert_trades([fake(candles, 5, 20), fake(candles, 10, 25)], [], candles)
+    assert len(pine.convert_trades([fake(candles, 5, 20), fake(candles, 20, 25)], [], candles)) == 2
     with pytest.raises(pine.PineError, match="overlap"):                       # an open position inside a closed trade
-        pine.convert_trades([fake(5, 20)], [NS(entry_bar_index=10, entry_price=1.0, size=1.0)], candles)
+        pine.convert_trades([fake(candles, 5, 20)], [held(candles, 10)], candles)
+
+
+def test_a_partial_exit_is_refused_even_when_it_happens_on_the_fill_bar():
+    # One entry closed in two pieces shares its entry bar; scoring each piece as a full position would double the return.
+    candles = snapshot_candles(50)
+    with pytest.raises(pine.PineError, match="partial"):
+        pine.convert_trades([fake(candles, 6, 6), fake(candles, 6, 20)], [], candles)
+    with pytest.raises(pine.PineError, match="partial"):
+        pine.convert_trades([fake(candles, 6, 12)], [held(candles, 6)], candles)
+
+
+@pytest.mark.parametrize("which", ["entry", "exit"])
+def test_a_fill_away_from_the_bars_open_is_refused(which):
+    # Limit and stop orders (and immediately=True) fill elsewhere; the gauntlet's model is the next bar's open.
+    candles = snapshot_candles(50)
+    kwargs = {"entry": at(candles, 10, 0.5)} if which == "entry" else {"exit_": at(candles, 20, -0.5)}
+    with pytest.raises(pine.PineError, match="open"):
+        pine.convert_trades([fake(candles, 10, 20, **kwargs)], [], candles)
+    with pytest.raises(pine.PineError, match="open"):
+        pine.convert_trades([], [held(candles, 10, price=at(candles, 10, 0.5))], candles)
 
 
 def test_a_trade_that_cannot_be_priced_is_refused():
+    candles = snapshot_candles(50)
     for bad in (float("nan"), 0.0, -1.0):
         with pytest.raises(pine.PineError, match="price"):
-            pine.convert_trades([fake(5, 8, entry=bad)], [], snapshot_candles(50))
+            pine.convert_trades([fake(candles, 5, 8, entry=bad)], [], candles)
 
 
 # ─── candles in, timestamps ───────────────────────────────────────────────────
@@ -242,3 +291,93 @@ def test_declared_inputs_follow_an_edit_of_the_script(scripts):
     assert pine.declared_inputs("ema_cross")["fast"]["default"] == 9
     (scripts / "ema_cross.py").write_text((scripts / "ema_cross.py").read_text().replace("input.int(9,", "input.int(7,"))
     assert pine.declared_inputs("ema_cross")["fast"]["default"] == 7
+
+
+# ─── review findings (real PyneCore) ──────────────────────────────────────────
+
+def test_calc_bars_count_cannot_shift_the_dates(scripts):
+    # PyneCore's bar_index restarts at the first calculated bar; a script asking for 200 bars used to land 100 bars early.
+    body = (EXAMPLE.read_text().split('"""', 2)[2]).replace('@script.strategy("EMA cross", overlay=True)',
+                                                           '@script.strategy("EMA cross", overlay=True, calc_bars_count=200)')
+    write(scripts, "limited", body)
+    candles = snapshot_candles(300)
+    assert pine.run_script("limited", candles) == pine.run_script("ema_cross", candles)
+
+
+def test_a_stop_a_limit_and_an_immediate_close_are_refused_not_scored(scripts):
+    base = '''from pynecore.lib import bar_index, close, script, strategy
+
+
+@script.strategy("t", overlay=True)
+def main():
+    if bar_index == 5:
+        strategy.entry("long", strategy.long, qty=1%s)
+    if bar_index == 12:
+        strategy.%s
+'''
+    write(scripts, "stoploss", base % ("", 'exit("x", "long", stop=close * 0.5, limit=close * 1.0001)'))
+    write(scripts, "limitbuy", base % (", limit=close * 0.9", 'close("long")'))
+    write(scripts, "immediate", base % ("", 'close("long", immediately=True)'))
+    candles = snapshot_candles(100)
+    for name in ("limitbuy", "immediate"):
+        with pytest.raises(pine.PineError, match="open"):
+            pine.run_script(name, candles)
+    with pytest.raises(pine.PineError, match="open"):
+        pine.run_script("stoploss", candles)
+
+
+def test_an_indicator_is_a_pine_error_not_an_attribute_error(scripts):
+    write(scripts, "ind", "from pynecore.lib import close, plot, script\n\n\n@script.indicator(\"i\")\ndef main():\n    plot(close)\n")
+    with pytest.raises(pine.PineError, match="indicator"):
+        pine.run_script("ind", snapshot_candles(50))
+
+
+def test_a_script_that_exits_the_interpreter_is_a_pine_error(scripts):
+    write(scripts, "quitter", '''import sys
+from pynecore.lib import bar_index, script, strategy
+
+
+@script.strategy("q")
+def main():
+    if bar_index == 3:
+        sys.exit(0)
+''')
+    with pytest.raises(pine.PineError, match="quitter"):
+        pine.run_script("quitter", snapshot_candles(50))
+
+
+def test_a_sibling_toml_is_part_of_the_scripts_hash(scripts):
+    first = pine.script_sha256("ema_cross")
+    (scripts / "ema_cross.toml").write_text("[script]\ncalc_bars_count = 100\n")
+    second = pine.script_sha256("ema_cross")
+    (scripts / "ema_cross.toml").write_text("[script]\ncalc_bars_count = 50\n")
+    assert len({first, second, pine.script_sha256("ema_cross")}) == 3
+
+
+def test_the_engine_version_is_reported():
+    pytest.importorskip("pynecore")
+    assert pine.engine_version() == "6.10.9"
+
+
+def test_warmup_is_the_largest_whole_number_input():
+    assert pine.warmup_bars({"fast": 9, "slow": 200, "band": 1.5}) == 200
+    assert pine.warmup_bars({"band": 1.5}) == 0
+    assert pine.warmup_bars({"flag": True, "n": 7}) == 7                     # a bool is not a length
+
+
+def test_declared_inputs_of_two_scripts_can_be_asked_for_from_many_threads(scripts):
+    import threading
+    write(scripts, "other", EXAMPLE.read_text().split('"""', 2)[2].replace("input.int(9,", "input.int(5,"))
+    errors = []
+
+    def ask(name):
+        try:
+            for _ in range(15):
+                pine.declared_inputs(name)
+                (scripts / f"{name}.py").touch()                     # a new mtime invalidates the cache entry each time
+        except Exception as exc:                                    # pragma: no cover (only on failure)
+            errors.append(exc)
+    threads = [threading.Thread(target=ask, args=(n,)) for n in ("ema_cross", "other", "ema_cross", "other")]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    assert errors == []

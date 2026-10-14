@@ -49,6 +49,9 @@ def honest_run(name, candles, params=None):
     for i in range(15, n, 20):
         if i + hold + 1 <= n - 1:                    # the exit fill bar must exist
             out.append(trade(candles, i, i + hold))
+        elif i + 1 <= n - 1:                         # filled, not yet closed: held to the last bar
+            out.append({**trade(candles, i, n - 2), "exit_idx": n - 1, "exit_date": candles[-1]["date"],
+                        "exit_price": candles[-1]["close"], "forced_exit": True})
     return out
 
 
@@ -58,6 +61,29 @@ def leaky_run(name, candles, params=None):
     for i in range(0, n - 10, 10):
         if i + 8 < n and candles[i + 8]["close"] > candles[i]["close"]:
             out.append(trade(candles, i, i + 3))
+    return out
+
+
+def entry_leaky_run(name, candles, params=None):
+    """Decides to buy at bar i using the close of bar i+8, then holds 10 bars: the peek is inside the holding window."""
+    out, n = [], len(candles)
+    for i in range(0, n - 12, 12):
+        if i + 8 < n and candles[i + 8]["close"] > candles[i]["close"]:
+            if i + 11 <= n - 1:
+                out.append(trade(candles, i, i + 10))
+            else:
+                out.append({**trade(candles, i, n - 2), "exit_idx": n - 1, "forced_exit": True,
+                            "exit_date": candles[-1]["date"], "exit_price": candles[-1]["close"]})
+    return out
+
+
+def tail_leaky_run(name, candles, params=None):
+    """Honest except the last trades, which also need a bar after their exit fill."""
+    out = []
+    for t in honest_run(name, candles, params):
+        if not t.get("forced_exit") and t["entry_idx"] >= 560 and t["exit_idx"] + 3 >= len(candles) - 1:
+            continue                                  # in a prefix cut at the exit this trade is missing
+        out.append(t)
     return out
 
 
@@ -145,16 +171,20 @@ def test_without_the_extra_the_answer_is_the_documented_envelope(monkeypatch):
 
 
 def test_the_missing_extra_is_reported_before_any_data_is_fetched(monkeypatch):
+    fetched = []
     monkeypatch.setattr(pine, "available", lambda: (False, "no"))
-    monkeypatch.setattr(bt, "_load_candles", lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not fetch")))
-    assert "error" in run()
+    monkeypatch.setattr(bt, "_load_candles", lambda *a, **k: fetched.append(1) or ([], {}))
+    assert run() == pine.dependency_missing()
+    assert fetched == []                                   # the service turns exceptions into errors, so count calls instead
 
 
 @pytest.mark.parametrize("name", ["pine:../x", "pine:", "pine:a/b", "pine:" + "a" * 65])
 def test_bad_script_names_are_refused_without_touching_data(monkeypatch, name):
+    fetched = []
     monkeypatch.setattr(pine, "available", lambda: (True, ""))
-    monkeypatch.setattr(bt, "_load_candles", lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not fetch")))
+    monkeypatch.setattr(bt, "_load_candles", lambda *a, **k: fetched.append(1) or ([], {}))
     assert "name" in run(name)["error"].lower()
+    assert fetched == []
 
 
 def test_an_unknown_script_names_the_ones_that_exist(fake):
@@ -211,6 +241,22 @@ def test_the_lookahead_gate_checks_the_trades_it_names_and_says_how_many(fake):
     gate = next(x for x in run()["gates"] if x["gate"] == "lookahead")
     assert gate["status"] == "PASS" and 0 < gate["numbers"]["trades_checked"] <= g.LOOKAHEAD_SAMPLES
     assert gate["numbers"]["violations"] == 0
+
+
+def test_a_peek_inside_the_holding_window_fails_the_lookahead_gate(fake):
+    fake["run"] = entry_leaky_run
+    gate = next(x for x in run()["gates"] if x["gate"] == "lookahead")
+    assert gate["status"] == "FAIL" and gate["numbers"]["violations"] > 0
+
+
+def test_the_last_trades_of_the_run_are_sampled_too(fake):
+    fake["run"] = tail_leaky_run
+    candles = wavy()
+    # the leak only touches trades that end near the end of the series; an evenly spread sample must reach them
+    closed = [t for t in honest_run("x", candles) if not t.get("forced_exit")]
+    assert len(closed) > g.LOOKAHEAD_SAMPLES
+    picked = g._lookahead_sample(closed)
+    assert closed[0] in picked and closed[-1] in picked and len(picked) == g.LOOKAHEAD_SAMPLES
 
 
 def test_a_leak_that_starts_late_in_the_run_is_still_caught(fake):
@@ -312,3 +358,35 @@ def test_the_pyne_ema_cross_makes_the_same_trades_as_the_built_in_one(real):
         return (t["entry_date"], t["exit_date"], round(t["entry_price"], 4), round(t["exit_price"], 4),
                 t["entry_idx"], t["exit_idx"], bool(t.get("forced_exit")))
     assert [key(t) for t in pyne] == [key(t) for t in builtin]
+
+
+# ─── review findings ──────────────────────────────────────────────────────────
+
+def test_the_fingerprint_follows_the_script_files_toml_and_the_engine_version(fake, folder, monkeypatch):
+    first = run()["fingerprint"]
+    (folder / "x.toml").write_text("[script]\ncalc_bars_count = 100\n")
+    with_toml = run()["fingerprint"]
+    assert with_toml != first
+    monkeypatch.setattr(pine, "engine_version", lambda: "9.9.9")
+    assert run()["fingerprint"] != with_toml
+
+
+def test_an_old_report_stops_verifying_when_the_toml_or_the_engine_changes(fake, folder, monkeypatch):
+    report = run()
+    assert g.verify_report(report["fingerprint"])["matches_current_code"] is True
+    monkeypatch.setattr(pine, "engine_version", lambda: "9.9.9")
+    assert g.verify_report(report["fingerprint"])["matches_current_code"] is False
+
+
+def test_warmup_counts_a_scripts_largest_whole_number_input(fake):
+    resolved = {"fast": 9, "slow": 200, "band": 1.5}
+    assert bt.strategy_warmup_bars("pine:x", resolved) == 200
+    assert g._warmup_bars("pine:x", resolved) >= 200
+    assert bt.strategy_warmup_bars("rsi", {"period": 14}) == bt._STRATEGY_WARMUP_BARS["rsi"]
+
+
+def test_walk_forward_does_not_score_folds_too_short_for_the_scripts_slowest_input(fake, monkeypatch):
+    monkeypatch.setattr(pine, "declared_inputs", lambda name: {"length": {"type": "int", "default": 150, "min": 2, "max": 500}})
+    fake["run"] = lambda name, candles, params=None: []
+    result = bt._walk_forward_on_candles(wavy(900), "pine:x", fill="next_open", params=None)
+    assert result.get("scored_folds", 0) == 0                     # all three test slices (90 bars) are shorter than 150
