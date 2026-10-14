@@ -760,6 +760,39 @@ crypto = [
 ]
 
 [[package]]
+name = "pynesys-pynecore"
+version = "6.10.9"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/cc/77/4419b1e197f241b41ad1dea047819eb8184025b3776b24b2ec1b98efdcb1/pynesys_pynecore-6.10.9.tar.gz", hash = "sha256:af7c4fed15e0ac1fd4c1539fd5e93277b165bfd2ef9cb5737779f7950c13f553", size = 2150176, upload-time = "2026-10-09T21:07:46.809Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/6f/46/d4c4ae177d4e4af8864506dac33d40cf509ebe6ac79ee998e77c0f49182d/pynesys_pynecore-6.10.9-cp311-cp311-macosx_10_9_x86_64.whl", hash = "sha256:6815ba8a004221700e2e928272a56c65c554039153bc3039a329d52c429418f0", size = 2085114, upload-time = "2026-10-09T21:06:47.922Z" },
+    { url = "https://files.pythonhosted.org/packages/29/fc/cae20cf1a32e6bd5f9745cc0405113c6582b9a77f2ba96f23f64fd2c2775/pynesys_pynecore-6.10.9-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:cb99a5fe01ab4a966d8eb481c9e8ef5f9c6f61e3a8310a630314bf1f7d4c38af", size = 2075557, upload-time = "2026-10-09T21:06:50.254Z" },
+    { url = "https://files.pythonhosted.org/packages/cc/3e/0a03078366671ca88da09b66bfffddb55c85199c518efa12427455a05ad2/pynesys_pynecore-6.10.9-cp311-cp311-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:095508c6ff52c71a5c7eb24b60a04e74a0cee08ce1e0b9e0a0310f2d8b0ddd0b", size = 2697244, upload-time = "2026-10-09T21:06:52.048Z" },
+    { url = "https://files.pythonhosted.org/packages/82/bf/ef6a45f73b33035c467a7b3ef7a5d28e4824be6b1a2029f025a35b7e22a3/pynesys_pynecore-6.10.9-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:fd4c9dd393850c769666a2aa1b9673f2731649c38c01b6e99cdd64aedddedc07", size = 2702180, upload-time = "2026-10-09T21:06:54.069Z" },
+    { url = "https://files.pythonhosted.org/packages/9c/d5/2541295ab786d6f0779b8de47e3fa133a86375fb4222e06b924ce506eaa1/pynesys_pynecore-6.10.9-cp311-cp311-musllinux_1_2_aarch64.whl", hash = "sha256:449574e39dc1c7889eebb4534730d51ad82da46af00bb924461edff639935170", size = 2686180, upload-time = "2026-10-09T21:06:55.763Z" },
+    { url = "https://files.pythonhosted.org/packages/2c/12/402521463c3b57ed3c806c2bf3a5901b3db0bdfa620154adf308e470a43b/pynesys_pynecore-6.10.9-cp311-cp311-musllinux_1_2_x86_64.whl", hash = "sha256:ab1a4b3106132322b18af3f268d97c24fe0465e8b0d7ddb645f9311df42b7fe8", size = 2699732, upload-time = "2026-10-09T21:06:57.604Z" },
+    { url = "https://files.pythonhosted.org/packages/0f/42/8755b1c2d7408d1fcffb8f2235cca0cdb99bb3e9912cc20c3b8d1e49e733/pynesys_pynecore-6.10.9-cp311-cp311-win_amd64.whl", hash = "sha256:c8870c0f415619117078f24843f7d7ff6c0ec45513c306466f8ff7e3a2f127dc", size = 2074439, upload-time = "2026-10-09T21:06:59.45Z" },
+    { url = "https://files.pythonhosted.org/packages/cf/a4/7f228253c41be39a80c6829b4fbd9ea34ff8ec1d3561a21ad9798c0ff1b3/pynesys_pynecore-6.10.9-cp311-cp311-win_arm64.whl", hash = "sha256:d29cc00e3c3301c783df43378dd97534354b52c0e53b439533266773a1efa01e", size = 2063745, upload-time = "2026-10-09T21:07:00.994Z" },
+    { url = "https://files.pythonhosted.org/packages/96/03/20580ff85d79d535bb04238074ad6c11a16fd5641eab5d8885a4e37512ef/pynesys_pynecore-6.10.9-cp312-cp312-macosx_10_13_x86_64.whl", hash = "sha256:812a58e4ece5c3a8ba8fbb72d577e5ea0733b3bf589505cb9d16980c36d7f01c", size = 2077409, upload-time = "2026-10-09T21:07:02.658Z" },
+    { url = "https://files.pythonhosted.org/packages/11/e8/a56f7b2254381f5465639acc373ad2c25d5d7642e619e78805efcc807e46/pynesys_pynecore-6.10.9-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:a4b2e14f685feab061a1b0557f09dee6dac07a19de28ce7cfd722a01f36dafcc", size = 2074186, upload-time = "2026-10-09T21:07:04.198Z" },
+    { url = "https://files.pythonhosted.org/packages/17/31/0a4f3f6dfec9c8ad25587928640fffd3ad651104f6a945fea12b3b124423/pynesys_pynecore-6.10.9-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:2136d9bd08b7df8a26cc9d0c8e6eee801de8828b4737274626b12c2dafd753f8", size = 2738326, upload-time = "2026-10-09T21:07:05.826Z" },
+    { url = "https://files.pythonhosted.org/packages/14/fb/e4da07ad8e40f1d9f0db727c9b80f925787f64f8af4b2f2aa383b0b271e3/pynesys_pynecore-6.10.9-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:7e99addaaea5da31134637e482a62a55651d780f044346234d394e93521b2e21", size = 2749158, upload-time = "2026-10-09T21:07:07.817Z" },
+    { url = "https://files.pythonhosted.org/packages/aa/51/70074f902784d34dbb95efe5d4f306bfb31d4a62ba92b622620d91551dc1/pynesys_pynecore-6.10.9-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:a3c3aa9cefd05add283eee9f8b4388c9bcbb8fb7fb5515e9a03f1966fc676d91", size = 2724909, upload-time = "2026-10-09T21:07:09.771Z" },
+    { url = "https://files.pythonhosted.org/packages/e5/7c/96475d5165e94d0ea0eda6548a98cdeabd71ad18eb086f74305c7d54a640/pynesys_pynecore-6.10.9-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:ee77ef6d3c771bd233be1c0efd2f6abcac40e7c7f4982a14b2f5c70dc4dea556", size = 2743607, upload-time = "2026-10-09T21:07:11.676Z" },
+    { url = "https://files.pythonhosted.org/packages/2c/80/61fc77c7a11922580f2824cf08dd24aeca0d44fcf9561d37b0f23be74cae/pynesys_pynecore-6.10.9-cp312-cp312-win_amd64.whl", hash = "sha256:1947a5bf95f8335a21414d7f2955089af7fcdaa3e7051eeeca96c45f435ec31d", size = 2068911, upload-time = "2026-10-09T21:07:13.253Z" },
+    { url = "https://files.pythonhosted.org/packages/54/42/13b94ef9f70f9f91300a35320e0d7237747d3362ba6a4c771ed09a984f34/pynesys_pynecore-6.10.9-cp312-cp312-win_arm64.whl", hash = "sha256:9c07acae224b1e1652c471c7137f04b346fa4c0e772cdf663ac49e8592b5fd9b", size = 2060757, upload-time = "2026-10-09T21:07:14.826Z" },
+    { url = "https://files.pythonhosted.org/packages/e8/b5/e9e4cf0aecbd5e74f0d7be795696a9c93ab8918dc3a62324da4155e1745f/pynesys_pynecore-6.10.9-cp313-cp313-macosx_10_13_x86_64.whl", hash = "sha256:88203f07bf9214b743c7d6c3511f71315812729d267b2b92d05a4709ff9911df", size = 2075344, upload-time = "2026-10-09T21:07:16.594Z" },
+    { url = "https://files.pythonhosted.org/packages/a0/ad/a718f27b624971a907b706dd48d39d76632100beee92b22acfd48cd5f2c6/pynesys_pynecore-6.10.9-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:26b3bf4d238b47bf0fb4208cd64dc76b59cb2437b02055e583992b7f02ec3bf2", size = 2071751, upload-time = "2026-10-09T21:07:18.5Z" },
+    { url = "https://files.pythonhosted.org/packages/8e/d9/d407f2efb10278225bd81262202e9814160d891019d429536e36abd1919d/pynesys_pynecore-6.10.9-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:51f9c37f0fb63c2c891d1958f283c3ed5021a5a92d6f917bfb845c303819f5e8", size = 2697143, upload-time = "2026-10-09T21:07:20.298Z" },
+    { url = "https://files.pythonhosted.org/packages/58/6f/e113893c779347b796bfaebd2e5fa0dd3384c28afec38228576dff6b8339/pynesys_pynecore-6.10.9-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:ec23cc23f09fdfc1ca8098d29b50a8528acfb3a1aea6a0ceb7e0408c99c8f57f", size = 2713842, upload-time = "2026-10-09T21:07:22.438Z" },
+    { url = "https://files.pythonhosted.org/packages/cd/20/aefabebbd17e52b53efaaf2f16682387ea53a69dcc41cd90ea8c54db48b5/pynesys_pynecore-6.10.9-cp313-cp313-musllinux_1_2_aarch64.whl", hash = "sha256:ae59104afb13105e245af1dab6d4ef618fe812d110222b936668ecb181e0f36f", size = 2682663, upload-time = "2026-10-09T21:07:23.946Z" },
+    { url = "https://files.pythonhosted.org/packages/33/83/aea22332249567dab307aeb33187c1e16160fb9cf9b5039ed2cd5abf82ca/pynesys_pynecore-6.10.9-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:5cd2ac804c7572e7d8d69cafc57b96723de9ff1a6eac406090814071ac70c25a", size = 2706349, upload-time = "2026-10-09T21:07:25.987Z" },
+    { url = "https://files.pythonhosted.org/packages/e7/19/a5599d56110f75dd05661c6d22ff568eb60d92dc389e51c6ec00f918132c/pynesys_pynecore-6.10.9-cp313-cp313-win_amd64.whl", hash = "sha256:2d1b863d44e94670f23a7ff6e27a39ca771e689799d860ab92b1b62529a4bb27", size = 2066535, upload-time = "2026-10-09T21:07:27.864Z" },
+    { url = "https://files.pythonhosted.org/packages/02/bc/35220739c75bad82bf6b22baf8f51f2a64dfd4aaa4474f8c904c7219e757/pynesys_pynecore-6.10.9-cp313-cp313-win_arm64.whl", hash = "sha256:0d2808e0163e89802705f58020c1945509923c69e616b5f596274688480f8478", size = 2059042, upload-time = "2026-10-09T21:07:29.44Z" },
+    { url = "https://files.pythonhosted.org/packages/57/06/f98ebfc66d90926981a0decd590dfc8e7d70f34c64c5c8fa3adeb6d694b9/pynesys_pynecore-6.10.9-py3-none-any.whl", hash = "sha256:46f2027de44d53ea047a43a128b8057d24107bc693ecdf6232c07ad84369d83b", size = 1943405, upload-time = "2026-10-09T21:07:45.205Z" },
+]
+
+[[package]]
 name = "pytest"
 version = "9.0.3"
 source = { registry = "https://pypi.org/simple" }
@@ -1105,6 +1138,11 @@ dependencies = [
     { name = "tradingview-ta" },
 ]
 
+[package.optional-dependencies]
+pine = [
+    { name = "pynesys-pynecore", marker = "python_full_version >= '3.11'" },
+]
+
 [package.dev-dependencies]
 dev = [
     { name = "pytest" },
@@ -1117,10 +1155,12 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.27" },
     { name = "mcp", extras = ["cli"], specifier = ">=1.14.0,<2" },
     { name = "pandas", specifier = ">=2" },
+    { name = "pynesys-pynecore", marker = "python_full_version >= '3.11' and extra == 'pine'", specifier = "==6.10.9" },
     { name = "requests", specifier = ">=2.32" },
     { name = "tradingview-screener", specifier = "==3.0.0" },
     { name = "tradingview-ta", specifier = ">=3.3.0" },
 ]
+provides-extras = ["pine"]
 
 [package.metadata.requires-dev]
 dev = [

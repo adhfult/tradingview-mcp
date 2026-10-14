@@ -46,6 +46,12 @@ dependencies = [
   "tradingview-ta>=3.3.0",
 ]
 
+[project.optional-dependencies]
+# Pyne strategies in the gauntlet (strategy="pine:<name>"). Apache-2.0, no dependencies of its own.
+# Needs Python 3.11; the marker keeps a 3.10 install working without it. Pinned exactly because
+# the trade and input interfaces it exposes are not a stable public API.
+pine = ["pynesys-pynecore==6.10.9; python_version >= '3.11'"]
+
 [project.scripts]
 # Entry point now points to packaged module
 tradingview-mcp = "tradingview_mcp.server:main"
