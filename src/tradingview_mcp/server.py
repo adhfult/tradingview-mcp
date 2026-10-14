@@ -26,6 +26,8 @@ import pandas  # noqa: F401
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
+from tradingview_mcp.core.prompts import register_analysis_prompts
+
 # ── Service imports ────────────────────────────────────────────────────────────
 from tradingview_mcp.core.services.coinlist import load_symbols
 from tradingview_mcp.core.services.screener_service import (
@@ -994,6 +996,8 @@ def gauntlet_stats() -> dict:
 
 
 # ── Prompts ─────────────────────────────────────────────────────────────────────
+
+register_analysis_prompts(mcp)
 
 @mcp.prompt()
 def strategy_builder(market: str = "crypto", timeframe: str = "1d") -> str:
