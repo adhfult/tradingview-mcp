@@ -58,6 +58,57 @@ test('first poll seeds; new ticker seeds independently while existing ticker ale
   assert.equal(b.submissions.length, 2);
 });
 
+test('R1 digest preserves underscores in validated symbols', async (t) => {
+  const b = await build(t, { symbols: ['NSE:M_M'] });
+  b.set([item('seed', 'NSE:M_M')]); await b.poller.runOnce();
+  b.set([item('new', 'NSE:M_M', undefined, { title: '[New] _headline_' })]);
+  await b.poller.runOnce();
+  assert.equal(b.submissions.length, 1);
+  assert.equal(b.submissions[0].message.lines[0], 'NSE:M_M · New headline');
+});
+
+for (const source of ['tradingview', 'sec']) {
+  test(`R2 ${source} future-only first page leaves a new symbol unseeded until its valid backlog`, async (t) => {
+    let future = true;
+    const b = await build(t, { news: { sources: { tradingview: source === 'tradingview', sec: source === 'sec' },
+      sec_forms: ['8-K'] }, responder: (url) => {
+      if (url.includes('company_tickers')) return jsonResponse(200, map);
+      const at = future ? Date.UTC(2100, 0, 1) : NOW - 60_000;
+      return source === 'tradingview' ? jsonResponse(200, { items: [item(future ? 'future' : 'backlog', undefined, at)] })
+        : new Response(feed(filing(future ? 'future' : 'backlog', { updated: new Date(at).toISOString() })));
+    } });
+    await b.poller.runOnce();
+    const first = structuredClone(b.store.state.news);
+    future = false; await b.poller.runOnce();
+    assert.equal(b.submissions.length, 0, `${source}: first valid backlog must seed silently`);
+    assert.deepEqual(first.seeded, {}, `${source}: future-only page must not seed`);
+    assert.deepEqual(first.runs, {}, `${source}: future-only page must not advance runs`);
+    assert.equal(Object.keys(b.store.state.news.seeded).length, 1);
+    assert.equal(Object.keys(b.store.state.news.runs).length, 1);
+  });
+}
+
+test('R2 a future-only symbol does not block another symbol from seeding and alerting', async (t) => {
+  const b = await build(t, { symbols: ['NASDAQ:AAPL', 'NASDAQ:MSFT'] });
+  const future = item('future', 'NASDAQ:MSFT', Date.UTC(2100, 0, 1));
+  b.set([item('seed'), future]); await b.poller.runOnce();
+  b.set([item('new'), item('backlog', 'NASDAQ:MSFT')]); await b.poller.runOnce();
+  assert.equal(b.submissions.length, 1);
+  assert.match(b.submissions[0].message.lines.join('\n'), /Headline new/);
+  assert.doesNotMatch(b.submissions[0].message.lines.join('\n'), /Headline backlog/);
+});
+
+test('R5 stopping during the first SEC form skips remaining forms without failure warnings', async (t) => {
+  const b = await build(t, { news: { sources: { tradingview: false, sec: true } }, responder: (url) => {
+    if (url.includes('company_tickers')) return jsonResponse(200, map);
+    b.poller.stop();
+    return new Response(feed(filing('stopping')));
+  } });
+  await b.poller.runOnce();
+  assert.equal(b.calls.filter(({ url }) => url.includes('browse-edgar')).length, 1);
+  assert.ok(!b.logs.some((line) => line.includes('request or response failed')), b.logs.join('\n'));
+});
+
 test('dedupe persists across restarts for 72h rather than the alerts 24h', async (t) => {
   const b = await build(t, { news: { max_age_minutes: 6000 } });
   await b.poller.runOnce(); b.set([item('new')]); await b.poller.runOnce();
@@ -311,6 +362,20 @@ test('M3 1000 stories for 50 tickers never re-alert after bounded dedupe evictio
   assert.equal(b.submissions.length, 1, 'stories published after the floor remain eligible');
 });
 
+test('R3 M3 unseen publication at the eviction floor is suppressed; 1 ms after alerts', async (t) => {
+  const b = await build(t, { persist: false });
+  await b.poller.runOnce();
+  for (let i = 0; i < 20_001; i++) b.store.state.news.seen[`boundary-${i}`] = NOW;
+  prune(b.store.state, NOW);
+  b.clock.advance(1);
+  b.set([item('at-floor', undefined, NOW), item('after-floor', undefined, NOW + 1)]);
+  await b.poller.runOnce();
+  assert.equal(b.submissions.length, 1);
+  assert.deepEqual(b.submissions[0].message.lines, [
+    'NASDAQ:AAPL · Headline after-floor', 'https://www.tradingview.com/news/after-floor/',
+  ]);
+});
+
 test('news config defaults off, validates bounds and switches, warns about bare symbols', () => {
   assert.equal(parseConfig(raw).config.news.enabled, false);
   for (const news of [{ every_minutes: 9 }, { remember_hours: 0 }, { max_age_minutes: -1 }, { max_items_per_digest: 0 },
@@ -433,11 +498,17 @@ test('M1 watcher waits for news before closing its queue, with a bounded wait', 
   for (const releaseBeforeDeadline of [true, false]) {
     const b = await build(t, { persist: false });
     const { config, errors } = parseConfig({ ...raw, state_dir: b.dir, news: { enabled: true, sources: { sec: false } },
-      dashboard: { enabled: false }, local_api: { enabled: false }, health: { daily_heartbeat: null } });
+      dashboard: { enabled: false }, local_api: { enabled: false }, health: { daily_heartbeat: null }, alerts: { quiet_hours: null } });
     assert.deepEqual(errors, []);
-    const watcher = createWatcher({ config, env: {}, dryRun: true, clock: b.clock, lib: createFakeLib() });
+    const output = [], logs = [];
+    const watcher = createWatcher({ config, env: {}, dryRun: true, clock: b.clock, lib: createFakeLib(),
+      write: (s) => output.push(s), logWrite: (s) => logs.push(s) });
     let release, closed = false;
-    watcher.news.runOnce = () => new Promise((r) => { release = r; });
+    const digest = { level: 'info', title: 'Committed news digest', lines: ['Committed headline'], timestamp: new Date(NOW).toISOString() };
+    watcher.news.runOnce = () => new Promise((r) => { release = r; }).then(() => {
+      watcher.alerts.submit({ kind: 'news', message: digest, summary: 'Committed headline' });
+      return true;
+    });
     const close = watcher.queue.close;
     watcher.queue.close = () => { closed = true; close(); };
     await watcher.start(); await watcher.tick();
@@ -450,7 +521,17 @@ test('M1 watcher waits for news before closing its queue, with a bounded wait', 
       await stopping;
       release(true);
     }
+    await settle();
     assert.equal(closed, true);
+    assert.equal(watcher.state.state.alerts.filter((entry) => entry.kind === 'news').length, 1,
+      'even a fake that ignores abort must finish submitting its committed digest');
+    if (releaseBeforeDeadline) {
+      assert.match(output.join('\n'), /Committed news digest/);
+      assert.doesNotMatch(logs.join('\n'), /alert dropped: the watcher is shutting down/);
+    } else {
+      assert.doesNotMatch(output.join('\n'), /Committed news digest/);
+      assert.match(logs.join('\n'), /alert dropped: the watcher is shutting down/);
+    }
   }
 });
 
@@ -512,11 +593,13 @@ test('S1 SEC accepts an amended 8-K from the recorded fixture but rejects other 
     news: { sources: { sec: true, tradingview: false }, sec_forms: ['8-K'] }, responder: (url) =>
       url.includes('company_tickers') ? jsonResponse(200, { 0: { cik_str: 1835856, ticker: 'FIXTURE' } })
         : new Response(feed(round ? amendment + filing('wrong-form', { cik: '0001835856', title: '10-K - WRONG' })
+          + filing('wrong-suffix', { cik: '0001835856', title: '8-KX - x' })
+          + filing('wrong-amendment-suffix', { cik: '0001835856', title: '8-K/AX - x' })
           : filing('seed', { cik: '0001835856' }))) });
   await b.poller.runOnce(); round++; await b.poller.runOnce();
   assert.equal(b.submissions.length, 1);
   assert.match(b.submissions[0].message.lines.join('\n'), /8-K\/A - Better Home/);
-  assert.doesNotMatch(b.submissions[0].message.lines.join('\n'), /WRONG/);
+  assert.doesNotMatch(b.submissions[0].message.lines.join('\n'), /WRONG|8-KX|8-K\/AX/);
 });
 
 test('S3 failed requests log only safe error name and code for both sources', async (t) => {

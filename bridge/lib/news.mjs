@@ -252,6 +252,10 @@ export function createNews({ news, symbols, store, clock, alerts, logger, fetch 
       // SEC forms are independent windows: a first 8-K page must not seed the 10-Q page.
       const seedSource = source === 'sec' ? key : source;
       const seeded = new Set(selected.filter((s) => own(state.seeded, `${seedSource}|${s}`) !== undefined));
+      const futureOnly = new Set(all.filter((e) => e.publishedAt > now).flatMap((e) => e.symbols));
+      for (const entry of all) {
+        if (entry.publishedAt <= now) for (const symbol of entry.symbols) futureOnly.delete(symbol);
+      }
       for (const entry of all) {
         if (entry.publishedAt > now) continue;
         if (entry.publishedAt <= (state.evictedBefore ?? 0)) continue;
@@ -280,8 +284,14 @@ export function createNews({ news, symbols, store, clock, alerts, logger, fetch 
           if (own(state.titles, k.title) === undefined || now - state.titles[k.title] > 6 * HOUR) state.titles[k.title] = now;
         }
       }
-      for (const s of selected) state.seeded[`${seedSource}|${s}`] = now;
-      for (const k of runKeys) state.runs[k] = now;
+      // Future-only symbols have not supplied a valid initial backlog yet.
+      for (const s of selected) {
+        if (futureOnly.has(s)) continue;
+        state.seeded[`${seedSource}|${s}`] = now;
+        if (source === 'tradingview') state.runs[`tradingview|${s}`] = now;
+      }
+      // SEC uses one shared run marker per form; retry it if any symbol was deferred.
+      if (source === 'sec' && !futureOnly.size) state.runs[key] = now;
       prune(store.state, now);
       store.touch();
     } catch (err) { failed(source, err); }
@@ -326,6 +336,7 @@ export function createNews({ news, symbols, store, clock, alerts, logger, fetch 
               }
               const mapped = [...byCik.values()].flat();
               if (mapped.length) for (const form of news.sec_forms) {
+                if (stopped) break;
                 await window('sec', `sec|${form}`, mapped, async (follow) => {
                   const u = new URL(`https://${SEC_HOST}/cgi-bin/browse-edgar`);
                   u.search = new URLSearchParams({ action: 'getcurrent', type: form, count: '100', start: follow ? '100' : '0', output: 'atom' });
@@ -342,7 +353,7 @@ export function createNews({ news, symbols, store, clock, alerts, logger, fetch 
             catch { logger.warn('news: record could not be saved'); }
           }
           const lines = fresh.slice(0, news.max_items_per_digest).flatMap((e) => [
-            `${e.symbols.map(digestText).join(', ')} · ${digestText(e.title)}${e.itemNumbers?.length ? ` · Items ${e.itemNumbers.join(', ')}` : ''}`, e.url,
+            `${e.symbols.join(', ')} · ${digestText(e.title)}${e.itemNumbers?.length ? ` · Items ${e.itemNumbers.join(', ')}` : ''}`, e.url,
           ]);
           if (fresh.length > news.max_items_per_digest) lines.unshift(`+${fresh.length - news.max_items_per_digest} more`);
           alerts.submit({ kind: 'news',

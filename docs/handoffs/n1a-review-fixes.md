@@ -30,7 +30,9 @@ Each behavior defect received a failing test before its implementation change. E
 
 - No clock-skew allowance: check after fetch, then defer genuinely future stories until a later poll. This avoids remembering a story before it can alert.
 - Eviction uses a permanent global publication floor based on evicted observation timestamps. Observation is at least publication because future entries never get keys. This keeps memory bounded and prevents re-alerting retained feed items. It conservatively suppresses previously unseen stories published at/before the floor, including another ticker/source; normal TTL expiry does not raise the floor. Old state files default to floor zero.
+- The floor is an observation time, so after an eviction burst a story published just before it but indexed late is dropped; organically, reaching the seen-key cap needs more than 10,000 story × symbol pairs within `remember_hours`.
 - Reuse the existing injected-clock queue-drain helper for the 5-second news wait. A fetch that ignores abort can outlast this bound; committed records still append and the closed queue uses its existing log-and-drop behavior.
+- A real fetch honours the abort signal; only a fake that ignores it can outlive the 5-second drain.
 - Strip markdown controls rather than escaping them, for consistent display across both transports. Keep source titles unchanged in the append-only data record.
 - Failed-request labels accept only 1–64 ASCII identifier characters, since arbitrary error-name/code strings can themselves contain URLs or contact text.
 - Bash harnesses run inside `node:test` so the requested bare test suite discovers them, without installing a shell-test framework or executing the real Pi setup.
@@ -193,3 +195,78 @@ Every mutant's test command was `node --test --test-isolation=none --test-name-p
 Rerun bare `timeout 250 node --test` outside this restricted sandbox before accepting a whole-suite green result. The worker does not claim zero failures for the full suite. Real SEC share-class map format and Pi hardware behavior were not measured or fetched. No commit, push, service installation, real credential access, deployment, notifier change, dependency installation, global configuration change, or other-agent call occurred.
 
 Changed news polling and digest safety, bounded shutdown, persisted eviction state, Pi setup permission checks, and 26 additional regression/guard tests; added this report.
+
+## Second small fix round (R1–R5)
+
+Applied the second supplied briefing to `421747e`, without commits or other agents.
+
+| Item | Change and decision | Evidence |
+| --- | --- | --- |
+| R1 | Preserve validated symbols verbatim; apply `digestText` to feed titles only. | `NSE:M_M · New headline` initially rendered as `NSE:MM · New headline`; regression now passes while title markdown is still stripped. |
+| R2 | Track symbols with future entries but no nonfuture entries in the complete window; defer their seed/run updates. Other symbols progress normally. SEC shares a run marker per form, so leave that marker unchanged if any symbol is deferred. | TradingView and SEC year-2100 first pages initially alerted their next valid backlog (`1 !== 0`); both now seed silently with no first-page seed/run markers. A mixed-symbol test initially leaked the deferred symbol's backlog and now only alerts the established symbol. |
+| R3 | Extend S1 with `8-KX - x` and `8-K/AX - x`; exercise pruning and unseen publications at the floor and 1 ms after; make the M1 wait stub submit through real alerts/queue. | Four isolated mutations all fail by assertion; restored code passes. The M1 test checks delivery before the deadline and recorded submission plus the closed-queue drop log after the deadline. |
+| R4 | Restore `run: sudo chown $ME:$ME $ENVFILE && chmod 600 $ENVFILE` on refusal; print an `ok` line after successful mode repair. | All four refusal-message tests and the successful-repair notice test failed before the change; all five pass, preserving refusal-before-prompt/write assertions. |
+| R5 | Break at the top of each SEC form iteration when stopped. | Stopping in the first form initially logged two `request or response failed` warnings; regression now observes one form fetch and no such warnings. |
+
+The eviction-floor implementation and 5-second drain implementation are unchanged. The two limitation sentences above were added as requested. No network, real credentials, Pi setup execution, dependency installation, global configuration change, other agents, commit, or push. The full suite was not rerun because the briefing delegates its sandbox-incompatible listener tests to Claude.
+
+Commands and actual results (from `bridge/` except where stated):
+
+```text
+node --test --test-isolation=none --test-name-pattern='R1 |R2 |R5 |M4 ' test/watcher/news.test.mjs test/watcher/pi-setup.test.mjs
+Before fixes (initial R2 test): tests 8, pass 0, fail 8; exit 1.
+After fixes (R2 split by source, plus mixed-symbol test): tests 10, pass 10, fail 0; exit 0.
+
+node --test --test-isolation=none --test-name-pattern='R2 ' test/watcher/news.test.mjs
+Before fixes: tests 3, pass 0, fail 3; exit 1.
+
+node --test --test-isolation=none --test-name-pattern='R3 M3 |M1 watcher|S1 ' test/watcher/news.test.mjs
+tests 3, pass 3, fail 0; exit 0.
+
+node --test --test-isolation=none test/watcher/news.test.mjs test/watcher/atom.test.mjs test/watcher/state.test.mjs test/watcher/config.test.mjs test/watcher/pi-setup.test.mjs
+ℹ tests 154
+ℹ suites 0
+ℹ pass 154
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+exit 0
+
+Root: node bridge/watcher.mjs --config bridge/watcher.config.example.json --check-config
+OK
+warning: no notification channel is configured; alerts are only logged
+warning: WATCHER_LOCAL_TOKEN is not set; the local API stays disabled
+exit 0
+
+Root: bash -n scripts/pi-setup.sh
+exit 0, no output
+Root: git diff --check
+exit 0, no output
+```
+
+Mutation commands and evidence:
+
+```text
+Root: mktemp -d /tmp/n1a-round2.XXXXXX
+/tmp/n1a-round2.rRA23u
+Root: python3 /tmp/n1a-round2.rRA23u/run.py
+baseline: tests 3, pass 3, fail 0; exit 0
+S1-accept-8-KX: tests 1, pass 0, fail 1; exit 1 (digest contains 8-KX)
+S1-accept-8-K-AX: tests 1, pass 0, fail 1; exit 1 (digest contains 8-K/AX)
+M3-floor-minus-1: tests 1, pass 0, fail 1; exit 1 (digest contains at-floor)
+M1-drop-digest-after-timeout: tests 1, pass 0, fail 1; exit 1 (recorded news submissions 0 !== 1)
+restored: tests 3, pass 3, fail 0; exit 0
+MUTANTS 4 KILLED 4 SURVIVED 0
+exit 0
+```
+
+Only code, test helpers and fixtures were copied; dependencies were symlinked. Each mutation was applied individually, run with a 30-second subprocess timeout, and restored. No `rm -rf`. Runner and full assertion logs remain under `/tmp/n1a-round2.rRA23u/`.
+
+Exact commands inside the scratch `bridge/`:
+
+```bash
+node --test --test-isolation=none --test-name-pattern='S1 ' test/watcher/news.test.mjs
+node --test --test-isolation=none --test-name-pattern='R3 M3 ' test/watcher/news.test.mjs
+node --test --test-isolation=none --test-name-pattern='M1 watcher' test/watcher/news.test.mjs
+```

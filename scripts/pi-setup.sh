@@ -50,10 +50,12 @@ require_private_file() {
   local mode
   mode="$(stat -c %a "$ENVFILE")"
   if [ "$mode" != 600 ]; then
+    local previous_mode="$mode"
     chmod 600 "$ENVFILE" 2>/dev/null || true
     mode="$(stat -c %a "$ENVFILE")"
+    [ "$mode" != 600 ] || ok "repaired settings file mode $previous_mode to 600"
   fi
-  [ "$mode" = 600 ] || { fail "mode is $mode; private mode 600 required; nothing saved"; exit 1; }
+  [ "$mode" = 600 ] || { fail "mode is $mode; private mode 600 required; nothing saved; run: sudo chown $ME:$ME $ENVFILE && chmod 600 $ENVFILE"; exit 1; }
 }
 
 # set_var NAME VALUE: set NAME= in the secrets file in place (the file is ours, mode 600, so no sudo and no temp copy).

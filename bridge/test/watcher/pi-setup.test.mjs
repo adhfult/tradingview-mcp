@@ -20,7 +20,7 @@ async function harness(t, option, refuseChmod) {
   const original = '# synthetic settings\n';
   await writeFile(file, original); await chmod(file, 0o644); await writeFile(events, '');
   const script = join(dir, 'harness.sh');
-  await writeFile(script, `set -u\nFAILS=0 WARNS=0\nDISCORD=0 TELEGRAM=0 SEC_CONTACT=0\n${option}=1\n${helpers}
+  await writeFile(script, `set -u\nME=fixture\nFAILS=0 WARNS=0\nDISCORD=0 TELEGRAM=0 SEC_CONTACT=0\n${option}=1\n${helpers}
     ${refuseChmod ? 'chmod() { echo chmod-attempt >> "$EVENTS"; return 1; }' : ''}
     sudo() { echo unsafe-write >> "$EVENTS"; return 1; }
     ask_hidden() {
@@ -46,6 +46,7 @@ for (const option of ['SETUP', 'SEC_CONTACT', 'TELEGRAM', 'DISCORD']) {
     assert.notEqual(h.result.status, 0, 'setup must fail closed');
     assert.doesNotMatch(h.events, /prompt/);
     assert.equal(h.events.trim(), 'chmod-attempt', 'exactly one repair attempt');
+    assert.ok(h.result.stdout.includes(`run: sudo chown fixture:fixture ${h.file} && chmod 600 ${h.file}`), h.result.stdout);
   });
 }
 
@@ -53,6 +54,7 @@ test('M4 Pi setup repairs mode 644 to 600 before prompting and writing', async (
   const h = await harness(t, 'SEC_CONTACT', false);
   assert.equal(h.result.status, 0);
   assert.equal((await stat(h.file)).mode & 0o777, 0o600);
+  assert.match(h.result.stdout, /(?:ok|WARN).*repaired.*644.*600/);
   assert.match(h.events, /prompt/);
   assert.match(await readFile(h.file, 'utf8'), /^WATCHER_SEC_CONTACT=/m);
 });
