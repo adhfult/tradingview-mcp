@@ -30,7 +30,7 @@ export function emptyState() {
     dailyCounts: {}, // rule id -> { date: local YYYY-MM-DD, count } for max_per_day
     seen: {}, // dedupe key -> first accepted (ms)
     trending: {}, // "market|kind" -> { SYMBOL: last seen in the top list (ms) }
-    news: { seen: {}, titles: {}, seeded: {}, runs: {}, rememberMs: 72 * HOUR_MS },
+    news: { seen: {}, titles: {}, seeded: {}, runs: {}, rememberMs: 72 * HOUR_MS, evictedBefore: 0 },
     alerts: [], // most recent accepted alerts, for the dashboard and heartbeat
     digest: { held: [], overflow: [] }, // summaries waiting for quiet hours to end or a free slot
     sends: [], // send times (ms) inside the rolling hour
@@ -65,6 +65,9 @@ function normalize(raw) {
     if (Number.isFinite(raw.news.rememberMs) && raw.news.rememberMs > 0 && raw.news.rememberMs <= 168 * HOUR_MS) {
       out.news.rememberMs = raw.news.rememberMs;
     }
+    if (Number.isFinite(raw.news.evictedBefore) && raw.news.evictedBefore >= 0 && raw.news.evictedBefore <= 8.64e15) {
+      out.news.evictedBefore = raw.news.evictedBefore;
+    }
   }
   if (Array.isArray(raw.alerts)) out.alerts = raw.alerts;
   if (isObject(raw.digest)) {
@@ -90,7 +93,15 @@ export function prune(state, nowMs) {
         if (!Number.isFinite(at) || nowMs - at > ttl) delete entries[key];
       }
       const keys = Object.keys(entries).sort((a, b) => entries[a] - entries[b]);
-      for (const key of keys.slice(0, Math.max(0, keys.length - limit))) delete entries[key];
+      for (const key of keys.slice(0, Math.max(0, keys.length - limit))) {
+        // Keys carry observation times, which are at least their publication times.
+        // A permanent floor makes capacity eviction conservative instead of re-alerting.
+        // TTL expiry alone does not advance it; normal remember_hours semantics still apply.
+        if (bucket === 'seen' || bucket === 'titles') {
+          state.news.evictedBefore = Math.max(state.news.evictedBefore ?? 0, entries[key]);
+        }
+        delete entries[key];
+      }
     }
   }
   for (const [key, at] of Object.entries(state.seen)) {

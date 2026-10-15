@@ -11,6 +11,16 @@ const EXAMPLE = join(here, '..', '..', 'watcher.config.example.json');
 const HOME = '/home/tester';
 const NOTES_OFF = { enabled: false, dir: null, vault: null, vault_folder: null };
 
+test('S2 bare symbol warnings apply only when news is enabled', () => {
+  for (const news of [undefined, { enabled: false }, { enabled: true }]) {
+    const result = parseConfig({ watchlist: [{ symbol: 'AAPL', timeframes: ['60'] }],
+      news: news && { ...news, tickers_extra: ['MSFT'] } });
+    assert.deepEqual(result.errors, []);
+    const warnings = result.warnings.filter((s) => s.startsWith('news:'));
+    assert.equal(warnings.length, news?.enabled ? 2 : 0);
+  }
+});
+
 function base(overrides = {}) {
   return {
     timezone: 'UTC',

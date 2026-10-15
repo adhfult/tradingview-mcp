@@ -20,6 +20,7 @@ const SEC_HOST = 'www.sec.gov';
 const hash = (text) => createHash('sha256').update(text).digest('hex');
 const clean = (value, length = 500) => typeof value === 'string'
   ? value.replace(/[\u0000-\u001f\u007f-\u009f]/gu, '').trim().slice(0, length) : '';
+const digestText = (value) => value.replace(/[\[\]()*_`<>]/gu, '');
 const own = (object, key) => Object.hasOwn(object, key) ? object[key] : undefined;
 const qualified = (symbol) => typeof symbol === 'string' && /^[A-Z0-9_]+:[A-Z0-9_.!-]+$/u.test(symbol);
 
@@ -36,6 +37,7 @@ function secureUrl(value, host) {
 function storyUrl(path) {
   // A path only: never follow the upstream external `link`, query tokens, or dot segments.
   if (typeof path !== 'string' || !path.startsWith('/news/') || /[?#\\]/u.test(path)
+    || /%(?:2e|2f|5c)/iu.test(path)
     || /(?:^|\/)(?:\.|%2e){1,2}(?:\/|$)/iu.test(path)) return null;
   return secureUrl(`https://www.tradingview.com${path}`, 'www.tradingview.com')?.href ?? null;
 }
@@ -99,7 +101,12 @@ export function createNews({ news, symbols, store, clock, alerts, logger, fetch 
   const controller = new AbortController();
   const logSkip = (source, count = 1) => logger.warn(`news ${source}: skipped ${count} invalid entry(s)`);
   // Upstream errors can contain a token-bearing URL or even the SEC contact. Never echo them.
-  const failed = (source) => logger.warn(`news ${source}: request or response failed, skipped`);
+  const errorLabel = (value) => typeof value === 'string' && /^[A-Za-z][A-Za-z0-9_]{0,63}$/u.test(value) ? value : null;
+  const failed = (source, err) => {
+    const name = errorLabel(err?.name) ?? 'Error';
+    const code = errorLabel(err?.code);
+    logger.warn(`news ${source}: request or response failed (${name}${code ? ` ${code}` : ''}), skipped`);
+  };
 
   async function request(url, source, budget) {
     const host = source === 'sec' ? SEC_HOST : TV_HOST;
@@ -153,13 +160,14 @@ export function createNews({ news, symbols, store, clock, alerts, logger, fetch 
     if (persist && stateDir) {
       try {
         const saved = JSON.parse(await readBounded(join(stateDir, 'news-sec-companies.json'), MAX_RESPONSE_BYTES));
-        if (Number.isFinite(saved.at) && saved.at <= now && now - saved.at < 24 * HOUR && validMap(saved.data)) {
-          mapCache = saved; return saved.data;
+        const data = validMap(saved.data);
+        if (Number.isFinite(saved.at) && saved.at <= now && now - saved.at < 24 * HOUR && data) {
+          mapCache = { at: saved.at, data }; return data;
         }
       } catch { /* Missing, expired or invalid cache: fetch a bounded replacement. */ }
     }
-    const raw = JSON.parse(await request(`https://${SEC_HOST}/files/company_tickers.json`, 'sec', budget));
-    if (!validMap(raw)) throw new Error('invalid company map');
+    const raw = validMap(JSON.parse(await request(`https://${SEC_HOST}/files/company_tickers.json`, 'sec', budget)));
+    if (!raw) throw new Error('invalid company map');
     mapCache = { at: now, data: raw };
     if (persist && stateDir) {
       try {
@@ -171,9 +179,11 @@ export function createNews({ news, symbols, store, clock, alerts, logger, fetch 
   }
 
   function validMap(raw) {
-    return raw && typeof raw === 'object' && !Array.isArray(raw) && Object.keys(raw).length > 0
-      && Object.values(raw).every((row) => row && Number.isSafeInteger(row.cik_str) && row.cik_str > 0
-        && row.cik_str <= 9999999999 && typeof row.ticker === 'string' && /^[A-Z0-9.-]{1,30}$/u.test(row.ticker));
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+    const data = Object.fromEntries(Object.entries(raw).filter(([, row]) => row
+      && Number.isSafeInteger(row.cik_str) && row.cik_str > 0 && row.cik_str <= 9999999999
+      && typeof row.ticker === 'string' && /^[A-Z0-9.-]{1,30}$/u.test(row.ticker)));
+    return Object.keys(data).length ? data : null;
   }
 
   function tvPage(text, selected) {
@@ -197,6 +207,7 @@ export function createNews({ news, symbols, store, clock, alerts, logger, fetch 
   }
 
   function secPage(text, byCik, form) {
+    const formTitle = new RegExp(`^${form.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')}(?:/A)? - `, 'u');
     const parsed = parseFeed(text);
     if (parsed.skipped.length) logSkip('sec', parsed.skipped.length);
     const items = []; const times = [];
@@ -207,7 +218,7 @@ export function createNews({ news, symbols, store, clock, alerts, logger, fetch 
       times.push(publishedAt);
       const cik = /\((\d{10})\)\s*\(Filer\)/u.exec(row.title)?.[1];
       const related = byCik.get(cik);
-      if (!related || !row.title.startsWith(`${form} - `)) continue;
+      if (!related || !formTitle.test(row.title)) continue;
       const numbers = [...new Set([...row.summary.matchAll(/\bItem\s+(\d{1,2}\.\d{2})\b/giu)].map((m) => m[1]))].slice(0, 20);
       const title = clean(row.title);
       items.push({ source: 'sec', id: clean(row.id, 512), title, url: url.href, symbols: related,
@@ -233,12 +244,17 @@ export function createNews({ news, symbols, store, clock, alerts, logger, fetch 
         } else logger.warn(`news ${source}: gap, no follow-up cursor available`);
       }
       if (stopped) return;
+      // Fetching may span publication. Future entries are deferred (no skew allowance)
+      // without dedupe keys, so the next poll can accept them once the clock catches up.
+      now = clock.now();
       const state = store.state.news;
       state.rememberMs = news.remember_hours * HOUR;
       // SEC forms are independent windows: a first 8-K page must not seed the 10-Q page.
       const seedSource = source === 'sec' ? key : source;
       const seeded = new Set(selected.filter((s) => own(state.seeded, `${seedSource}|${s}`) !== undefined));
       for (const entry of all) {
+        if (entry.publishedAt > now) continue;
+        if (entry.publishedAt <= (state.evictedBefore ?? 0)) continue;
         const normalizedTitle = entry.title.replace(/<[^>]{0,500}>/gu, '').toLowerCase().replace(/\s+/gu, ' ').trim();
         const keys = entry.symbols.map((symbol) => ({
           symbol,
@@ -268,11 +284,11 @@ export function createNews({ news, symbols, store, clock, alerts, logger, fetch 
       for (const k of runKeys) state.runs[k] = now;
       prune(store.state, now);
       store.touch();
-    } catch { failed(source); }
+    } catch (err) { failed(source, err); }
   }
 
   return {
-    /** Abort pending HTTP work; it must not mutate state or submit alerts after shutdown. */
+    /** Abort uncommitted HTTP windows; committed stories still finish recording and submission. */
     stop() { stopped = true; controller.abort(); },
     async runOnce() {
       if (running || stopped) return false;
@@ -305,7 +321,7 @@ export function createNews({ news, symbols, store, clock, alerts, logger, fetch 
               const byTicker = new Map(Object.values(companies).map((r) => [r.ticker, String(r.cik_str).padStart(10, '0')]));
               const byCik = new Map();
               for (const s of selected) {
-                const cik = byTicker.get(s.split(':')[1]);
+                const cik = byTicker.get(s.split(':')[1].replaceAll('.', '-'));
                 if (cik) byCik.set(cik, [...(byCik.get(cik) ?? []), s]);
               }
               const mapped = [...byCik.values()].flat();
@@ -316,23 +332,22 @@ export function createNews({ news, symbols, store, clock, alerts, logger, fetch 
                   return secPage(await request(u, 'sec', budget), byCik, form);
                 }, now, fresh);
               }
-            } catch { failed('sec'); }
+            } catch (err) { failed('sec', err); }
           }
         }
-        if (fresh.length && !stopped) {
+        if (fresh.length) {
           fresh.sort((a, b) => b.publishedAt - a.publishedAt);
           if (persist && stateDir) {
             try { await appendNews({ dir: stateDir, items: fresh }); }
             catch { logger.warn('news: record could not be saved'); }
           }
-          if (stopped) return true;
           const lines = fresh.slice(0, news.max_items_per_digest).flatMap((e) => [
-            `${e.symbols.join(', ')} · ${e.title}${e.itemNumbers?.length ? ` · Items ${e.itemNumbers.join(', ')}` : ''}`, e.url,
+            `${e.symbols.map(digestText).join(', ')} · ${digestText(e.title)}${e.itemNumbers?.length ? ` · Items ${e.itemNumbers.join(', ')}` : ''}`, e.url,
           ]);
-          if (fresh.length > news.max_items_per_digest) lines.push(`+${fresh.length - news.max_items_per_digest} more`);
+          if (fresh.length > news.max_items_per_digest) lines.unshift(`+${fresh.length - news.max_items_per_digest} more`);
           alerts.submit({ kind: 'news',
             message: { level: 'info', title: `${fresh.length} new news item(s)`, lines, timestamp: new Date(now).toISOString() },
-            summary: `${fresh.length} news item(s): ${fresh.slice(0, 3).map((e) => e.title).join('; ')}`,
+            summary: `${fresh.length} news item(s): ${fresh.slice(0, 3).map((e) => digestText(e.title)).join('; ')}`,
             dedupeKey: `news|${hash(fresh.map((e) => `${e.source}|${e.id}`).sort().join(','))}|${now}` });
         }
         return true;

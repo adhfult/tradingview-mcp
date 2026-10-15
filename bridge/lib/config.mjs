@@ -411,7 +411,7 @@ function parseNews(input, errors, warnings, watchlist) {
       return !symbol.includes(':') || /^[A-Z0-9_]+:[A-Z0-9_.!-]+$/u.test(symbol) ? symbol : null;
     } catch { return null; }
   });
-  for (const symbol of [...watchlist.map((w) => w.symbol), ...tickers]) {
+  for (const symbol of n.enabled === true ? [...watchlist.map((w) => w.symbol), ...tickers] : []) {
     if (!symbol.includes(':')) warnings.push(`news: ${symbol} needs an EXCHANGE:SYMBOL prefix; bare symbols are skipped`);
   }
   const keyword = (value) => typeof value === 'string' && value.trim() && value.length <= 100

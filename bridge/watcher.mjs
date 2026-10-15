@@ -424,6 +424,9 @@ export function createWatcher({
       news.stop();
       if (ticker !== null) clock.clearInterval(ticker);
       ticker = null;
+      // Aborting HTTP does not undo committed news windows. Let their record/digest finish
+      // before flushing state or closing the queue, bounded like the queue drain below.
+      if (newsInFlight) await drain({ idle: () => newsInFlight }, clock, QUEUE_DRAIN_MS);
       await streams.stop();
       // Save first: what was evaluated must survive even if delivery below takes a while.
       await store.flush().catch((err) => logger.warn(`state write failed: ${err?.code ?? 'error'}`));

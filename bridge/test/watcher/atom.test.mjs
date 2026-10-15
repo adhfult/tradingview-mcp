@@ -167,3 +167,18 @@ test('rejects unknown entities and invalid numeric character references', () => 
   assert.throws(() => parseFeed(atomFeed(atomEntry({ title: '&#0;' }))), /character reference/i);
   assert.throws(() => parseFeed(atomFeed(`<title>&custom;</title>${atomEntry()}`)), /entity/i);
 });
+
+test('S9 RSS requires a channel but accepts an empty channel', () => {
+  assert.throws(() => parseFeed('<rss/>'), /missing its channel/i);
+  assert.deepEqual(parseFeed('<rss><channel/></rss>'), { entries: [], skipped: [] });
+});
+
+test('S11 duplicate XML attributes are rejected rather than overwriting a safe link', () => {
+  const entry = atomEntry().replace('href="https://example.com/story"',
+    'href="https://example.com/story" href="https://evil.test/spoof"');
+  assert.throws(() => parseFeed(atomFeed(entry)), /duplicate XML attribute/i);
+});
+
+test('S11 double hyphen inside XML comments is rejected', () => {
+  assert.throws(() => parseFeed(atomFeed(`<!-- first -- second -->${atomEntry()}`)), /malformed XML comment/i);
+});

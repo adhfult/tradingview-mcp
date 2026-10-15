@@ -9,6 +9,7 @@ import { parseConfig } from '../../lib/config.mjs';
 import { createAlerts } from '../../lib/alerts.mjs';
 import { createWatcher, runCheckConfig } from '../../watcher.mjs';
 import { createFakeClock, createFakeFetch, createFakeLib, jsonResponse, settle } from './support.mjs';
+import { discordPayload, telegramPayload } from '../../lib/notifiers.mjs';
 
 const NOW = Date.UTC(2026, 9, 14, 22);
 const raw = { watchlist: [{ symbol: 'NASDAQ:AAPL', timeframes: ['60'] }], rules: [] };
@@ -74,13 +75,39 @@ test('dedupe persists across restarts for 72h rather than the alerts 24h', async
   await other.close();
 });
 
-test('age floor drops stale and future news but accepts the exact floor', async (t) => {
+test('M2 age floor defers future news without remembering it and accepts the exact floor', async (t) => {
   const b = await build(t); await b.poller.runOnce();
   b.set([item('stale', 'NASDAQ:AAPL', NOW - 120 * 60_000 - 1), item('floor', 'NASDAQ:AAPL', NOW - 120 * 60_000), item('future', 'NASDAQ:AAPL', NOW + 1)]);
   await b.poller.runOnce();
   assert.equal(b.submissions.length, 1);
   const text = b.submissions[0].message.lines.join('\n');
   assert.match(text, /Headline floor/); assert.doesNotMatch(text, /Headline stale|Headline future/);
+  b.clock.advance(1);
+  await b.poller.runOnce();
+  assert.equal(b.submissions.length, 2, 'deferred future story alerts when the clock catches up');
+  assert.match(b.submissions[1].message.lines.join('\n'), /Headline future/);
+});
+
+test('M2 age check reads the clock after the fetch rather than at run start', async (t) => {
+  let round = 0;
+  const b = await build(t, { responder: () => {
+    if (!round) return jsonResponse(200, { items: [item('seed')] });
+    b.clock.advance(1000);
+    return jsonResponse(200, { items: [item('during-fetch', undefined, NOW + 500)] });
+  } });
+  await b.poller.runOnce(); round++;
+  await b.poller.runOnce();
+  assert.equal(b.submissions.length, 1);
+  assert.match(b.submissions[0].message.lines.join('\n'), /Headline during-fetch/);
+});
+
+test('M2 future entries change neither seen keys nor title keys', async (t) => {
+  const b = await build(t); await b.poller.runOnce();
+  const { seen, titles } = structuredClone(b.store.state.news);
+  b.set([item('ahead', undefined, NOW + 60_000)]);
+  await b.poller.runOnce();
+  assert.deepEqual(b.store.state.news.seen, seen);
+  assert.deepEqual(b.store.state.news.titles, titles);
 });
 
 test('one digest caps displayed items, puts links on separate lines and records every new item', async (t) => {
@@ -100,7 +127,7 @@ test('keyword filters are case-insensitive, exclude wins, control chars stripped
     item('bad', undefined, undefined, { title: 'EARNings RUMOR' }), item('other')]);
   await b.poller.runOnce();
   const text = b.submissions[0].message.lines.join('\n');
-  assert.match(text, /EARNings @everyone <b>result<\/b>/); assert.doesNotMatch(text, /\u0001|RUMOR|Headline other/);
+  assert.match(text, /EARNings @everyone bresult\/b/); assert.doesNotMatch(text, /\u0001|RUMOR|Headline other/);
   assert.ok(text.length < 1000);
 });
 
@@ -210,7 +237,7 @@ test('missing SEC contact disables only SEC and never sends an anonymous SEC req
 });
 
 test('response bytes, timeout and redirect restrictions bound untrusted requests', async (t) => {
-  for (const responder of [() => new Response('x'.repeat(2 * 1024 * 1024 + 1)),
+  for (const responder of [() => new Response(JSON.stringify({ items: [item('oversized')], padding: 'x'.repeat(2 * 1024 * 1024) })),
     () => new Response(null, { status: 302, headers: { location: 'https://evil.test/?token=secret' } }),
     () => new Response(null, { status: 302, headers: { location: 'http://news-mediator.tradingview.com/x' } }),
     () => new Promise(() => {})]) {
@@ -260,6 +287,30 @@ test('news pruning drops expired seen keys, bounds history, and preserves seeded
   assert.ok(Object.keys(s.news.runs).length <= 2000);
 });
 
+test('M3 1000 stories for 50 tickers never re-alert after bounded dedupe eviction or restart', async (t) => {
+  const symbols = Array.from({ length: 50 }, (_, i) => `NYSE:T${i}`);
+  const b = await build(t, { symbols });
+  b.set(Array.from({ length: 1000 }, (_, i) => item(`bulk-${i}`, symbols[0], NOW - 60_000,
+    { relatedSymbols: symbols.map((symbol) => ({ symbol })) })));
+  await b.poller.runOnce();
+  assert.equal(b.submissions.length, 0);
+  assert.ok(Object.keys(b.store.state.news.seen).length <= 20_000);
+  assert.ok(Object.keys(b.store.state.news.titles).length <= 20_000);
+  await b.poller.runOnce();
+  assert.equal(b.submissions.length, 0, 'retained feed items stay suppressed after eviction');
+  await b.store.flush();
+  const reloaded = createStateStore({ dir: b.dir, clock: b.clock });
+  t.after(() => reloaded.close()); await reloaded.load();
+  const poller = createNews({ news: defaults, symbols, store: reloaded, clock: b.clock,
+    alerts: { submit: (entry) => b.submissions.push(entry) }, logger: { info() {}, warn() {} },
+    fetch: async () => jsonResponse(200, { items: [item('old-unseen', symbols[0], NOW - 1)] }), persist: false });
+  await poller.runOnce();
+  assert.equal(b.submissions.length, 0, 'eviction floor survives restart');
+  b.clock.advance(1); b.set([item('after-floor', symbols[0], NOW + 1)]);
+  await b.poller.runOnce();
+  assert.equal(b.submissions.length, 1, 'stories published after the floor remain eligible');
+});
+
 test('news config defaults off, validates bounds and switches, warns about bare symbols', () => {
   assert.equal(parseConfig(raw).config.news.enabled, false);
   for (const news of [{ every_minutes: 9 }, { remember_hours: 0 }, { max_age_minutes: -1 }, { max_items_per_digest: 0 },
@@ -267,7 +318,7 @@ test('news config defaults off, validates bounds and switches, warns about bare 
     { tickers_extra: [':AAPL'] }, { tickers_extra: ['NASDAQ:'] }, { sec_forms: ['S-1'] }, { include_keywords: [1] }, { typo: true }]) {
     assert.ok(parseConfig({ ...raw, news }).errors.length > 0, JSON.stringify(news));
   }
-  const result = parseConfig({ ...raw, news: { tickers_extra: ['msft', 'nasdaq:msft'] } });
+  const result = parseConfig({ ...raw, news: { enabled: true, tickers_extra: ['msft', 'nasdaq:msft'] } });
   assert.deepEqual(result.errors, []); assert.ok(result.warnings.some((s) => /prefix|EXCHANGE/.test(s)));
   assert.deepEqual(result.config.news.tickers_extra, ['MSFT', 'NASDAQ:MSFT']);
 });
@@ -356,6 +407,53 @@ test('news stops during a fetch without state changes or late alerts', async (t)
   assert.deepEqual(b.store.state, before); assert.equal(b.submissions.length, 0);
 });
 
+test('M1 stop during chunk 2 still records and submits committed chunk 1 stories', async (t) => {
+  const symbols = Array.from({ length: 51 }, (_, i) => `NYSE:T${i}`);
+  let round = 0, release, entered;
+  const chunk2 = new Promise((r) => { entered = r; });
+  const b = await build(t, { symbols, responder: (url) => {
+    const selected = new URL(url).searchParams.getAll('filter')[1].slice(7).split(',');
+    if (round && selected[0] === 'NYSE:T50') {
+      entered(); return new Promise((r) => { release = r; });
+    }
+    return jsonResponse(200, { items: [item(round ? 'committed' : 'seed', selected[0])] });
+  } });
+  await b.poller.runOnce(); round++;
+  const run = b.poller.runOnce(); await chunk2;
+  b.poller.stop(); release(jsonResponse(200, { items: [item('uncommitted', 'NYSE:T50')] }));
+  await run;
+  assert.equal(b.submissions.length, 1);
+  assert.match(b.submissions[0].message.lines.join('\n'), /Headline committed/);
+  assert.doesNotMatch(b.submissions[0].message.lines.join('\n'), /Headline uncommitted/);
+  const rows = (await readFile(join(b.dir, 'news.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse);
+  assert.deepEqual(rows.map((row) => row.id), ['committed']);
+});
+
+test('M1 watcher waits for news before closing its queue, with a bounded wait', async (t) => {
+  for (const releaseBeforeDeadline of [true, false]) {
+    const b = await build(t, { persist: false });
+    const { config, errors } = parseConfig({ ...raw, state_dir: b.dir, news: { enabled: true, sources: { sec: false } },
+      dashboard: { enabled: false }, local_api: { enabled: false }, health: { daily_heartbeat: null } });
+    assert.deepEqual(errors, []);
+    const watcher = createWatcher({ config, env: {}, dryRun: true, clock: b.clock, lib: createFakeLib() });
+    let release, closed = false;
+    watcher.news.runOnce = () => new Promise((r) => { release = r; });
+    const close = watcher.queue.close;
+    watcher.queue.close = () => { closed = true; close(); };
+    await watcher.start(); await watcher.tick();
+    const stopping = watcher.stop(); await settle();
+    try {
+      assert.equal(closed, false, 'queue stays open for the in-flight news digest');
+    } finally {
+      if (releaseBeforeDeadline) release(true);
+      else b.clock.advance(5000);
+      await stopping;
+      release(true);
+    }
+    assert.equal(closed, true);
+  }
+});
+
 test('same title and ticker within six hours dedupe across source IDs and URLs', async (t) => {
   const b = await build(t); await b.poller.runOnce();
   b.set([item('one', undefined, undefined, { title: 'Business Update' })]); await b.poller.runOnce();
@@ -402,4 +500,148 @@ test('a new ticker in an earlier chunk cannot swallow a shared story for an esta
   assert.equal(b.submissions.length, 1);
   assert.match(b.submissions[0].message.lines.join('\n'), /NASDAQ:AAPL/);
   assert.doesNotMatch(b.submissions[0].message.lines.join('\n'), /NASDAQ:MSFT/);
+});
+
+test('S1 SEC accepts an amended 8-K from the recorded fixture but rejects other forms', async (t) => {
+  const xml = await readFile(new URL('./fixtures/sec-getcurrent-8k-page1.atom', import.meta.url), 'utf8');
+  const amendment = [...xml.matchAll(/<entry>[\s\S]*?<\/entry>/gu)].map((m) => m[0])
+    .find((row) => row.includes('8-K/A - Better Home'));
+  assert.ok(amendment, 'fixture contains the reviewed amended filing');
+  let round = 0;
+  const b = await build(t, { symbols: ['NASDAQ:FIXTURE'],
+    news: { sources: { sec: true, tradingview: false }, sec_forms: ['8-K'] }, responder: (url) =>
+      url.includes('company_tickers') ? jsonResponse(200, { 0: { cik_str: 1835856, ticker: 'FIXTURE' } })
+        : new Response(feed(round ? amendment + filing('wrong-form', { cik: '0001835856', title: '10-K - WRONG' })
+          : filing('seed', { cik: '0001835856' }))) });
+  await b.poller.runOnce(); round++; await b.poller.runOnce();
+  assert.equal(b.submissions.length, 1);
+  assert.match(b.submissions[0].message.lines.join('\n'), /8-K\/A - Better Home/);
+  assert.doesNotMatch(b.submissions[0].message.lines.join('\n'), /WRONG/);
+});
+
+test('S3 failed requests log only safe error name and code for both sources', async (t) => {
+  for (const source of ['tradingview', 'sec']) {
+    for (const hostileClass of [false, true]) {
+      const err = Object.assign(new TypeError('https://evil.test/?contact=fixture@example.invalid'),
+        hostileClass ? { name: 'https://evil.test/', code: 'fixture@example.invalid' } : { code: 'ECONNRESET' });
+      const b = await build(t, { news: { sources: { sec: source === 'sec', tradingview: source === 'tradingview' } },
+        responder: () => { throw err; } });
+      await b.poller.runOnce();
+      const log = b.logs.join('\n');
+      assert.match(log, hostileClass ? /Error/ : /TypeError.*ECONNRESET/);
+      assert.doesNotMatch(log, /https:|evil|contact|fixture@example/);
+    }
+  }
+});
+
+test('S4 TradingView rejects a valid JSON page of 1001 items without changing state', async (t) => {
+  const b = await build(t); await b.poller.runOnce();
+  b.set(Array.from({ length: 1001 }, (_, i) => item(`over-${i}`)));
+  const before = structuredClone(b.store.state.news);
+  await b.poller.runOnce();
+  assert.deepEqual(b.store.state.news, before);
+  assert.equal(b.submissions.length, 0);
+  assert.ok(b.logs.some((s) => /response failed/.test(s)));
+});
+
+test('S5 SEC lookup maps TradingView dotted class shares to hyphenated tickers', async (t) => {
+  let round = 0;
+  const b = await build(t, { symbols: ['NYSE:BRK.B'],
+    news: { sources: { sec: true, tradingview: false }, sec_forms: ['8-K'] }, responder: (url) =>
+      url.includes('company_tickers') ? jsonResponse(200, { 0: { cik_str: 1067983, ticker: 'BRK-B' } })
+        : new Response(feed(filing(String(round), { cik: '0001067983' }))) });
+  await b.poller.runOnce(); round++; await b.poller.runOnce();
+  assert.equal(b.submissions.length, 1);
+  assert.match(b.submissions[0].message.lines.join('\n'), /NYSE:BRK\.B/);
+});
+
+test('S6 SEC company maps discard invalid rows and retain valid rows in fresh and cached maps', async (t) => {
+  let round = 0;
+  const bad = { cik_str: 1, ticker: 'not a ticker' };
+  const b = await build(t, { news: { sources: { sec: true, tradingview: false }, sec_forms: ['8-K'] }, responder: (url) =>
+    url.includes('company_tickers') ? jsonResponse(200, { ...map, bad }) : new Response(feed(filing(String(round)))) });
+  await b.poller.runOnce(); round++; await b.poller.runOnce();
+  assert.equal(b.submissions.length, 1, 'one invalid row cannot disable valid companies');
+  const cachePath = join(b.dir, 'news-sec-companies.json');
+  const saved = JSON.parse(await readFile(cachePath, 'utf8'));
+  assert.equal(saved.data.bad, undefined);
+  await writeFile(cachePath, JSON.stringify({ at: NOW, data: { ...map, bad } }));
+  let mapFetches = 0;
+  const cached = createNews({ news: { ...defaults, sources: { sec: true, tradingview: false }, sec_forms: ['8-K'] },
+    symbols: ['NASDAQ:AAPL'], store: b.store, clock: b.clock, stateDir: b.dir, secContact: 'fixture@example.invalid',
+    alerts: { submit: (x) => b.submissions.push(x) }, logger: { info() {}, warn() {} }, sleep: async () => {},
+    fetch: async (url) => {
+      if (url.includes('company_tickers')) { mapFetches++; return jsonResponse(200, {}); }
+      return new Response(feed(filing('cached')));
+    } });
+  await cached.runOnce();
+  assert.equal(mapFetches, 0, 'valid cached companies survive a bad row without refetching');
+  assert.equal(b.submissions.length, 2);
+});
+
+test('S6 SEC rejects a company map with no valid rows', async (t) => {
+  const b = await build(t, { news: { sources: { sec: true, tradingview: false } },
+    responder: () => jsonResponse(200, { bad: { cik_str: -1, ticker: 'AAPL' } }) });
+  const before = structuredClone(b.store.state.news);
+  await b.poller.runOnce();
+  assert.deepEqual(b.store.state.news, before);
+  assert.equal(b.calls.length, 1);
+});
+
+test('S7 overflow count survives real Discord and Telegram truncation', async (t) => {
+  const b = await build(t); await b.poller.runOnce();
+  b.set(Array.from({ length: 11 }, (_, i) => item(`long-${i}`, undefined, undefined,
+    { title: `${i} ${'x'.repeat(498)}` })));
+  await b.poller.runOnce();
+  const message = b.submissions[0].message;
+  assert.match(discordPayload(message).embeds[0].description, /\+1 more/);
+  assert.match(telegramPayload(message, 'fixture').text, /\+1 more/);
+});
+
+test('S8 feed markdown controls are neutralized in digest lines and held summaries', async (t) => {
+  const b = await build(t); await b.poller.runOnce();
+  b.set([item('spoof', undefined, undefined, { title: '[x](http://evil) *_fake_* `code` <b>bold</b>' })]);
+  await b.poller.runOnce();
+  const submission = b.submissions[0];
+  assert.doesNotMatch(submission.message.lines[0], /[\[\]()*_`<>]/);
+  assert.equal(submission.summary, '1 news item(s): xhttp://evil fake code bbold/b');
+  assert.equal(submission.message.lines[1], 'https://www.tradingview.com/news/spoof/');
+});
+
+test('S9 streaming cap rejects syntactically valid oversized JSON', async (t) => {
+  let large = false;
+  const b = await build(t, { responder: () => new Response(JSON.stringify({ items: [item(large ? 'new' : 'seed')],
+    padding: large ? 'x'.repeat(2 * 1024 * 1024) : '' })) });
+  await b.poller.runOnce(); large = true;
+  const before = structuredClone(b.store.state.news);
+  await b.poller.runOnce();
+  assert.deepEqual(b.store.state.news, before);
+  assert.equal(b.submissions.length, 0);
+});
+
+test('S10 TradingView rejects encoded path traversal and separators', async (t) => {
+  const b = await build(t); await b.poller.runOnce();
+  b.set(['/news/%2e%2e%2fx', '/news/%2E%2E/x', '/news/x%2Fy', '/news/x%5cy', '/news/a%2eb', '/news/../../x']
+    .map((storyPath, i) => item(`encoded-${i}`, undefined, undefined, { storyPath })));
+  await b.poller.runOnce();
+  assert.equal(b.submissions.length, 0);
+  assert.ok(b.logs.some((s) => /invalid entry/.test(s)));
+});
+
+test('S11 bare symbols are excluded from requests and seeding, including extras', async (t) => {
+  const b = await build(t, { symbols: ['NASDAQ:AAPL', 'MSFT'], news: { tickers_extra: ['GOOG', 'NYSE:JPM'] } });
+  await b.poller.runOnce();
+  assert.equal(new URL(b.calls[0].url).searchParams.getAll('filter')[1], 'symbol:NASDAQ:AAPL,NYSE:JPM');
+  assert.deepEqual(Object.keys(b.store.state.news.seeded).sort(), ['tradingview|NASDAQ:AAPL', 'tradingview|NYSE:JPM']);
+});
+
+test('S11 SEC rejects query and fragment links even on the allowed host', async (t) => {
+  let round = 0;
+  const b = await build(t, { news: { sources: { sec: true, tradingview: false }, sec_forms: ['8-K'] }, responder: (url) =>
+    url.includes('company_tickers') ? jsonResponse(200, map) : new Response(feed(round ?
+      filing('query', { link: 'https://www.sec.gov/Archives/query?token=fixture' })
+        + filing('hash', { link: 'https://www.sec.gov/Archives/hash#spoof' }) : filing('seed'))) });
+  await b.poller.runOnce(); round++; await b.poller.runOnce();
+  assert.equal(b.submissions.length, 0);
+  assert.ok(b.logs.some((s) => /invalid entry/.test(s)));
 });
