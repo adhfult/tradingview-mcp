@@ -386,6 +386,56 @@ function parseTrending(input, errors) {
   };
 }
 
+function parseNews(input, errors, warnings, watchlist) {
+  const path = 'news';
+  const defaults = { enabled: false, every_minutes: 30, remember_hours: 72, max_age_minutes: 120,
+    max_items_per_digest: 10, sources: { tradingview: true, sec: true }, tickers_extra: [],
+    include_keywords: [], exclude_keywords: [], sec_forms: ['8-K', '10-Q', '10-K'] };
+  const n = input.news === undefined ? {} : input.news;
+  if (!isPlainObject(n)) { errors.push('news: must be an object'); return defaults; }
+  checkKeys(n, Object.keys(defaults), path, errors);
+  const list = (key, max, validate) => {
+    if (n[key] === undefined) return [...defaults[key]];
+    if (!Array.isArray(n[key]) || n[key].length > max) {
+      errors.push(`${path}.${key}: must be a list of at most ${max} entries`); return [];
+    }
+    return [...new Set(n[key].flatMap((value, i) => {
+      const normalized = validate(value);
+      if (normalized === null) { errors.push(`${path}.${key}[${i}]: invalid value`); return []; }
+      return [normalized];
+    }))];
+  };
+  const tickers = list('tickers_extra', 200, (value) => {
+    try {
+      const symbol = v.symbol(value, 'symbol');
+      return !symbol.includes(':') || /^[A-Z0-9_]+:[A-Z0-9_.!-]+$/u.test(symbol) ? symbol : null;
+    } catch { return null; }
+  });
+  for (const symbol of n.enabled === true ? [...watchlist.map((w) => w.symbol), ...tickers] : []) {
+    if (!symbol.includes(':')) warnings.push(`news: ${symbol} needs an EXCHANGE:SYMBOL prefix; bare symbols are skipped`);
+  }
+  const keyword = (value) => typeof value === 'string' && value.trim() && value.length <= 100
+    && !/[\u0000-\u001f\u007f-\u009f]/u.test(value) ? value.trim().toLowerCase() : null;
+  const sources = { ...defaults.sources };
+  if (n.sources !== undefined) {
+    if (!isPlainObject(n.sources)) errors.push('news.sources: must be an object');
+    else {
+      checkKeys(n.sources, Object.keys(sources), 'news.sources', errors);
+      for (const source of Object.keys(sources)) sources[source] = readBoolean(n.sources, source, 'news.sources', errors, true);
+    }
+  }
+  return {
+    enabled: readBoolean(n, 'enabled', path, errors, false),
+    every_minutes: readNumber(n, 'every_minutes', path, errors, { min: 10, max: 1440, fallback: 30 }),
+    remember_hours: readNumber(n, 'remember_hours', path, errors, { min: 0, exclusiveMin: true, max: 168, fallback: 72 }),
+    max_age_minutes: readNumber(n, 'max_age_minutes', path, errors, { min: 0, exclusiveMin: true, max: 10080, fallback: 120 }),
+    max_items_per_digest: readNumber(n, 'max_items_per_digest', path, errors, { min: 1, max: 50, integer: true, fallback: 10 }),
+    sources, tickers_extra: tickers,
+    include_keywords: list('include_keywords', 100, keyword), exclude_keywords: list('exclude_keywords', 100, keyword),
+    sec_forms: list('sec_forms', 3, (value) => ['8-K', '10-Q', '10-K'].includes(value) ? value : null),
+  };
+}
+
 function parseAlerts(input, errors) {
   const path = 'alerts';
   const defaults = {
@@ -600,7 +650,7 @@ export function parseConfig(input, { home = homedir(), now = Date.now() } = {}) 
     return { config: null, errors: ['$: the config must be a JSON object'], warnings };
   }
   checkKeys(input, [
-    'timezone', 'watchlist', 'rules', 'trending', 'alerts', 'health', 'state_dir', 'local_api', 'dashboard', 'images', 'limits',
+    'timezone', 'watchlist', 'rules', 'trending', 'news', 'alerts', 'health', 'state_dir', 'local_api', 'dashboard', 'images', 'limits',
   ], '$', errors);
 
   const timezone = input.timezone ?? 'UTC';
@@ -618,6 +668,7 @@ export function parseConfig(input, { home = homedir(), now = Date.now() } = {}) 
 
   const rules = parseRules(input, watchlist, errors, warnings, { timezone: isValidTimezone(timezone) ? timezone : null, now });
   const trending = parseTrending(input, errors);
+  const news = parseNews(input, errors, warnings, watchlist);
   const alerts = parseAlerts(input, errors);
   const health = parseHealth(input, errors);
   // Past the last listed date the scanner treats holidays as trading days, so warn well before that.
@@ -664,6 +715,7 @@ export function parseConfig(input, { home = homedir(), now = Date.now() } = {}) 
     streams,
     rules,
     trending,
+    news,
     alerts,
     health,
     state_dir: expandHome(stateDir, home),

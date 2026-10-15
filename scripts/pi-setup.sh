@@ -4,6 +4,7 @@
 #   bash scripts/pi-setup.sh              checks + install + config (does NOT start the service)
 #   bash scripts/pi-setup.sh --telegram   ask for your Telegram bot token (hidden), find your chat id, save both
 #   bash scripts/pi-setup.sh --discord    ask for your Discord webhook URL (hidden) and save it
+#   bash scripts/pi-setup.sh --sec-contact  ask for the SEC contact email (hidden) and save it
 #   bash scripts/pi-setup.sh --test       send one test message to every configured channel
 #   bash scripts/pi-setup.sh --enable     install and start the systemd service (only after a passing --test)
 #   bash scripts/pi-setup.sh --node       install Node 22 system-wide (the service needs /usr/bin/node, not nvm's)
@@ -19,11 +20,12 @@ set -u
 # The service runs /usr/bin/node, so check and use that one, not an nvm node that happens to be first in this shell.
 PATH=/usr/bin:$PATH
 
-PINE=0 IMAGES=0 ENABLE=0 DISCORD=0 TELEGRAM=0 TEST=0 NODE=0 CGROUP=0
+PINE=0 IMAGES=0 ENABLE=0 DISCORD=0 TELEGRAM=0 TEST=0 NODE=0 CGROUP=0 SEC_CONTACT=0
 for a in "$@"; do
   case "$a" in
     --pine) PINE=1 ;; --images) IMAGES=1 ;; --enable) ENABLE=1 ;;
     --node) NODE=1 ;; --cgroup) CGROUP=1 ;; --discord) DISCORD=1 ;; --telegram) TELEGRAM=1 ;; --test) TEST=1 ;;
+    --sec-contact) SEC_CONTACT=1 ;;
     *) echo "unknown option: $a"; exit 2 ;;
   esac
 done
@@ -42,9 +44,24 @@ warn() { echo "  WARN  $*"; WARNS=$((WARNS+1)); }
 fail() { echo "  FAIL  $*"; FAILS=$((FAILS+1)); }
 step() { echo; echo "== $*"; }
 
+# Refuse all prompts and writes unless one chmod attempt establishes private mode.
+require_private_file() {
+  [ -f "$ENVFILE" ] || { fail "settings file is missing; nothing saved"; exit 1; }
+  local mode
+  mode="$(stat -c %a "$ENVFILE")"
+  if [ "$mode" != 600 ]; then
+    local previous_mode="$mode"
+    chmod 600 "$ENVFILE" 2>/dev/null || true
+    mode="$(stat -c %a "$ENVFILE")"
+    [ "$mode" != 600 ] || ok "repaired settings file mode $previous_mode to 600"
+  fi
+  [ "$mode" = 600 ] || { fail "mode is $mode; private mode 600 required; nothing saved; run: sudo chown $ME:$ME $ENVFILE && chmod 600 $ENVFILE"; exit 1; }
+}
+
 # set_var NAME VALUE: set NAME= in the secrets file in place (the file is ours, mode 600, so no sudo and no temp copy).
 # The value travels in the environment of one node process, never on a command line.
 set_var() {
+  require_private_file
   N="$1" V="$2" node -e '
     const fs = require("fs"), f = process.argv[1], n = process.env.N, v = process.env.V;
     let lines = fs.readFileSync(f, "utf8").split("\n"), hit = false;
@@ -129,21 +146,21 @@ if [ ! -f "$ENVFILE" ]; then
   sudo cp "$REPO/bridge/watcher.env.example" "$ENVFILE" && sudo chown "$ME:$ME" "$ENVFILE" && sudo chmod 600 "$ENVFILE" \
     && ok "created $ENVFILE (mode 600)" || fail "could not create $ENVFILE"
 fi
+require_private_file
 if [ -f "$ENVFILE" ] && ! grep -q '^WATCHER_LOCAL_TOKEN=.\+' "$ENVFILE"; then
   # guards POST /notify and is what switches on the local API, which also serves /health; never printed
   command -v openssl >/dev/null && sudo sed -i "s|^WATCHER_LOCAL_TOKEN=.*|WATCHER_LOCAL_TOKEN=$(openssl rand -hex 24)|" "$ENVFILE"
   grep -q '^WATCHER_LOCAL_TOKEN=.\+' "$ENVFILE" && ok "generated WATCHER_LOCAL_TOKEN (turns on /health at 127.0.0.1:8787)" \
     || warn "could not set WATCHER_LOCAL_TOKEN: /health on 8787 stays off (set it by hand or use the dashboard Health panel)"
 fi
-if [ -f "$ENVFILE" ]; then
-  mode="$(stat -c %a "$ENVFILE")"; [ "$mode" = 600 ] && ok "mode 600" || fail "mode is $mode, run: chmod 600 $ENVFILE"
-fi
+ok "mode 600"
 
-if [ "$DISCORD" = 1 ] || [ "$TELEGRAM" = 1 ]; then
-  [ -t 0 ] || { fail "--discord/--telegram ask you questions: run this in an interactive terminal (ssh -t ...)"; exit 1; }
+if [ "$DISCORD" = 1 ] || [ "$TELEGRAM" = 1 ] || [ "$SEC_CONTACT" = 1 ]; then
+  [ -t 0 ] || { fail "channel/contact options ask you questions: run this in an interactive terminal (ssh -t ...)"; exit 1; }
   [ -w "$ENVFILE" ] || { fail "cannot write $ENVFILE"; exit 1; }
 fi
 if [ "$TELEGRAM" = 1 ]; then
+  require_private_file
   step "5b. Telegram"
   echo "  1) In Telegram open @BotFather, send /newbot, pick a name; it replies with a token like 123456:ABC..."
   ask_hidden "Paste the bot token (typing is hidden)" TOK
@@ -168,6 +185,7 @@ if [ "$TELEGRAM" = 1 ]; then
   TOK=""
 fi
 if [ "$DISCORD" = 1 ]; then
+  require_private_file
   step "5c. Discord"
   echo "  In Discord: Server Settings > Integrations > Webhooks > New Webhook > Copy Webhook URL"
   ask_hidden "Paste the webhook URL (typing is hidden)" URL
@@ -176,6 +194,15 @@ if [ "$DISCORD" = 1 ]; then
     *) fail "that is not a Discord webhook URL (it starts with https://discord.com/api/webhooks/); nothing saved" ;;
   esac
   URL=""
+fi
+if [ "$SEC_CONTACT" = 1 ]; then
+  require_private_file
+  step "5d. SEC EDGAR contact"
+  ask_hidden "Contact email for SEC's required User-Agent (typing is hidden)" CONTACT
+  if [[ ${#CONTACT} -le 254 && "$CONTACT" =~ ^[[:alnum:]._%+-]+@[[:alnum:].-]+\.[[:alpha:]]{2,}$ ]]; then
+    set_var WATCHER_SEC_CONTACT "$CONTACT" && ok "saved WATCHER_SEC_CONTACT" || fail "could not save SEC contact"
+  else fail "enter a contact email address; nothing saved"; fi
+  CONTACT=""
 fi
 if [ -f "$ENVFILE" ]; then
   echo "  variables with a value (names only):"; awk -F= '!/^#/ && NF>1 && $2!="" {print "    " $1}' "$ENVFILE"
