@@ -1,0 +1,5 @@
+[
+  {"category": "company news", "datetime": 1792536000, "headline": "Apple supplier lifts foldable iPhone output forecast", "id": 25286, "image": "https://example.invalid/a.jpg", "related": "AAPL", "source": "Reuters", "summary": "Documented-schema sample text.", "url": "https://www.example.com/apple-foldable-output"},
+  {"category": "company news", "datetime": 1792532400, "headline": "Apple expands services bundle", "id": 25285, "image": "", "related": "AAPL", "source": "", "summary": "", "url": "https://www.example.com/apple-services-bundle"},
+  {"category": "company news", "datetime": 1792528800, "headline": "Analyst raises Apple price target", "id": 25284, "image": "", "related": "AAPL", "source": "Bloomberg", "summary": "Another documented-schema sample.", "url": "https://www.example.com/apple-target"}
+]

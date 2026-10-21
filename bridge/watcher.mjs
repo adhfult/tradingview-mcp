@@ -234,6 +234,7 @@ export function createWatcher({
     symbols: config.watchlist.map((entry) => entry.symbol),
     store, clock, alerts, logger, fetch,
     secContact: env.WATCHER_SEC_CONTACT,
+    finnhubKey: env.FINNHUB_API_KEY,
     stateDir: config.state_dir,
     persist: !dryRun,
   });

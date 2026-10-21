@@ -7,6 +7,7 @@ export const SECRET_ENV_VARS = Object.freeze([
   'TELEGRAM_CHAT_ID',
   'WATCHER_DASHBOARD_TOKEN',
   'WATCHER_LOCAL_TOKEN',
+  'FINNHUB_API_KEY',
 ]);
 
 const MIN_SECRET_LENGTH = 4;

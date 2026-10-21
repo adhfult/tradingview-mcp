@@ -1,0 +1,205 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:content="http://purl.org/rss/1.0/modules/content/"
+  xmlns:foaf="http://xmlns.com/foaf/0.1/" xmlns:og="http://ogp.me/ns#"
+  xmlns:rdfs="http://www.w3.org/2000/01/rdf-schema#" xmlns:schema="http://schema.org/"
+  xmlns:sioc="http://rdfs.org/sioc/ns#" xmlns:sioct="http://rdfs.org/sioc/types#"
+  xmlns:skos="http://www.w3.org/2004/02/skos/core#" xmlns:xsd="http://www.w3.org/2001/XMLSchema#"
+  xmlns:nasdaq="http://nasdaq.com/reference/feeds/1.0" version="2.0" xml:base="https://www.nasdaq.com/feed/rssoutbound">
+ <channel>
+  <title>AAPL Feed</title>
+  <link>https://www.nasdaq.com/feed/rssoutbound</link>
+  <description>This feed is responsible for generating the rss feed related to the topic AAPL</description>
+  <language>en</language>
+  <item>
+   <title>2 Stocks to Buy From the 5 That Make Up Roughly 61.5% of Berkshire Hathaway's Portfolio</title>
+   <link>https://www.nasdaq.com/articles/2-stocks-buy-5-make-roughly-615-berkshire-hathaways-portfolio</link>
+   <description>
+        Key PointsBerkshire has never hesitated to take an outsize position in a stock it has high conviction in.
+    </description>
+   <pubDate>Tue, 20 Oct 2026 23:25:00 +0000</pubDate>
+   <guid isPermaLink="true">https://www.nasdaq.com/articles/2-stocks-buy-5-make-roughly-615-berkshire-hathaways-portfolio?time=1792538700</guid>
+   <dc:creator>The Motley Fool</dc:creator>
+   <category>Markets</category>
+   <nasdaq:tickers>AAPL,AAPL,BAC,GOOGL,KO,AXP,GOOG</nasdaq:tickers>
+  </item>
+  <item>
+   <title>Apple (AAPL) Stock Sinks As Market Gains: What You Should Know</title>
+   <link>https://www.nasdaq.com/articles/apple-aapl-stock-sinks-market-gains-what-you-should-know</link>
+   <description>
+        The latest trading day saw Apple (AAPL) settling at $339.5, representing a -1% change from its previous close.
+    </description>
+   <pubDate>Tue, 20 Oct 2026 20:45:02 +0000</pubDate>
+   <guid isPermaLink="true">https://www.nasdaq.com/articles/apple-aapl-stock-sinks-market-gains-what-you-should-know?time=1792529102</guid>
+   <dc:creator>Zacks</dc:creator>
+   <category>Technology</category>
+   <nasdaq:tickers>AAPL</nasdaq:tickers>
+  </item>
+  <item>
+   <title>Prediction: Apple’s Stock Is Due for a Reality Check on Nov. 2</title>
+   <link>https://www.nasdaq.com/articles/prediction-apples-stock-due-reality-check-nov-2</link>
+   <description>
+        Key PointsApple's stock is nearing its highest valuation in the past decade.
+    </description>
+   <pubDate>Tue, 20 Oct 2026 20:03:00 +0000</pubDate>
+   <guid isPermaLink="true">https://www.nasdaq.com/articles/prediction-apples-stock-due-reality-check-nov-2?time=1792526580</guid>
+   <dc:creator>The Motley Fool</dc:creator>
+   <category>Markets</category>
+   <nasdaq:tickers>AAPL,AAPL,GOOGL,NVDA,MU,GOOG</nasdaq:tickers>
+  </item>
+  <item>
+   <title>AGI Is Almost Ready. Is Your Portfolio?</title>
+   <link>https://www.nasdaq.com/articles/agi-almost-ready-your-portfolio</link>
+   <description>
+        Robots are smarter than us now, says the man selling robots. Almost as if he has a stake in the matter...The man in question is Nvidia (NASDAQ: NVDA) CEO Jensen Huang, who, to be fair, sells chips to every major artificial intelligence (AI) lab and, therefore, sees demand before
+    </description>
+   <pubDate>Tue, 20 Oct 2026 16:16:00 +0000</pubDate>
+   <guid isPermaLink="true">https://www.nasdaq.com/articles/agi-almost-ready-your-portfolio?time=1792512960</guid>
+   <dc:creator>The Motley Fool</dc:creator>
+   <category>Markets</category>
+   <nasdaq:tickers>MSFT,MSFT,NVDA,META,GOOGL,AAPL,TSLA,AMZN,JPM,AVGO,GOOG,ARM</nasdaq:tickers>
+  </item>
+  <item>
+   <title>History Says Micron Stock Gains 28% During the Fourth Quarter. Here's Why I Think Shares Will Surge Even More Before 2026 Is Over.</title>
+   <link>https://www.nasdaq.com/articles/history-says-micron-stock-gains-28-during-fourth-quarter-heres-why-i-think-shares-will</link>
+   <description>
+        Key PointsBetween 2020 and 2025, Micron stock has averaged a 28% gain during the fourth quarter.
+    </description>
+   <pubDate>Tue, 20 Oct 2026 15:20:00 +0000</pubDate>
+   <guid isPermaLink="true">https://www.nasdaq.com/articles/history-says-micron-stock-gains-28-during-fourth-quarter-heres-why-i-think-shares-will?time=1792509600</guid>
+   <dc:creator>The Motley Fool</dc:creator>
+   <category>Markets</category>
+   <nasdaq:tickers>MU,MU,META,MSFT,GOOGL,AAPL,TSLA,AMZN,NVDA,GOOG</nasdaq:tickers>
+  </item>
+  <item>
+   <title>Should You Buy Apple Stock Now or Wait for a Dip?</title>
+   <link>https://www.nasdaq.com/articles/should-you-buy-apple-stock-now-or-wait-dip</link>
+   <description>
+        Key PointsApple's stock recently hit new highs and is trading at around 40 times its trailing earnings.
+    </description>
+   <pubDate>Tue, 20 Oct 2026 15:19:01 +0000</pubDate>
+   <guid isPermaLink="true">https://www.nasdaq.com/articles/should-you-buy-apple-stock-now-or-wait-dip?time=1792509541</guid>
+   <dc:creator>The Motley Fool</dc:creator>
+   <category>Markets</category>
+   <nasdaq:tickers>AAPL,AAPL</nasdaq:tickers>
+  </item>
+  <item>
+   <title>PYLD, EEE: Big ETF Inflows  </title>
+   <link>https://www.nasdaq.com/articles/pyld-eee-big-etf-inflows</link>
+   <description>
+        Comparing units outstanding versus one week ago at the coverage universe of ETFs at ETF Channel, the biggest inflow was seen in the PIMCO Multisector Bond Active ETF, which added 14,560,000 units, or a 2.3% increase week over week.  
+
+And on a percentage change basis, the ETF wi
+    </description>
+   <pubDate>Tue, 20 Oct 2026 15:17:06 +0000</pubDate>
+   <guid isPermaLink="true">https://www.nasdaq.com/articles/pyld-eee-big-etf-inflows?time=1792509426</guid>
+   <dc:creator>BNK Invest</dc:creator>
+   <category>Markets,Stocks,ETFs</category>
+   <nasdaq:tickers>PYLD,PYLD,EEE,NVDA,AAPL</nasdaq:tickers>
+   <nasdaq:partnerlink url="http://www.marketnewsvideo.com/slideshows/cheaper-stocks-than-insiders/">10 Bargains You Can Buy Cheaper Than Insiders Did</nasdaq:partnerlink>
+   <nasdaq:partnerlink url="http://www.marketnewsvideo.com/slideshows/ten-stocks-below-book/">10 Stocks Crossing Below Book Value</nasdaq:partnerlink>
+   <nasdaq:partnerlink url="http://www.marketnewsvideo.com/slideshows/ten-oversold-stocks/">10 Oversold Stocks You Need To Know About</nasdaq:partnerlink>
+  </item>
+  <item>
+   <title>T. Rowe Price Capital Appreciation Equity ETF Experiences Big Outflow</title>
+   <link>https://www.nasdaq.com/articles/t-rowe-price-capital-appreciation-equity-etf-experiences-big-outflow</link>
+   <description>
+        Looking today at week-over-week shares outstanding changes among the universe of ETFs covered at ETF Channel, one standout is the T. Rowe Price Capital Appreciation Equity ETF (Symbol: TCAF) where we have detected an approximate $231.2 million dollar outflow -- that's a 2.6% de
+    </description>
+   <pubDate>Tue, 20 Oct 2026 15:14:09 +0000</pubDate>
+   <guid isPermaLink="true">https://www.nasdaq.com/articles/t-rowe-price-capital-appreciation-equity-etf-experiences-big-outflow?time=1792509249</guid>
+   <dc:creator>BNK Invest</dc:creator>
+   <category>Markets,Stocks,ETFs</category>
+   <nasdaq:tickers>TCAF,TCAF,MSFT,NVDA,AAPL</nasdaq:tickers>
+   <nasdaq:partnerlink url="https://www.holdingschannel.com/funds/holding-tcaf/">Funds Holding TCAF</nasdaq:partnerlink>
+   <nasdaq:partnerlink url="https://www.holdingschannel.com/institutional/holders-of-tcaf/">Institutional Holders of TCAF</nasdaq:partnerlink>
+   <nasdaq:partnerlink url="https://www.nextearningsdate.com/">Next Earnings Date</nasdaq:partnerlink>
+  </item>
+  <item>
+   <title>November 4th Options Now Available For Apple (AAPL)</title>
+   <link>https://www.nasdaq.com/articles/november-4th-options-now-available-apple-aapl</link>
+   <description>
+        Investors in Apple Inc (Symbol: AAPL) saw new options begin trading today, for the November 4th expiration.   At Stock Options Channel, our YieldBoost formula has looked up and down the AAPL options chain for the new November 4th contracts and identified one put and one call con
+    </description>
+   <pubDate>Tue, 20 Oct 2026 14:38:02 +0000</pubDate>
+   <guid isPermaLink="true">https://www.nasdaq.com/articles/november-4th-options-now-available-apple-aapl?time=1792507082</guid>
+   <dc:creator>BNK Invest</dc:creator>
+   <category>Markets,Stocks,Options</category>
+   <nasdaq:tickers>AAPL</nasdaq:tickers>
+   <nasdaq:partnerlink url="https://www.marketnewsvideo.com/symbol/aapl/">AAPL Videos</nasdaq:partnerlink>
+   <nasdaq:partnerlink url="https://www.dividendchannel.com/symbol/aapl/">AAPL Dividend History</nasdaq:partnerlink>
+   <nasdaq:partnerlink url="https://www.dividendchannel.com/stock-screener/">Dividend Stock Screener</nasdaq:partnerlink>
+  </item>
+  <item>
+   <title>Apple Expands U.S. Supplier Partnerships For IPhone Duo, IPhone 18 Pro </title>
+   <link>https://www.nasdaq.com/articles/apple-expands-us-supplier-partnerships-iphone-duo-iphone-18-pro</link>
+   <description>
+        (RTTNews) - Apple Inc. (AAPL) on Tuesday announced new and expanded partnerships with U.S. companies to supply key materials and components for iPhone Duo and iPhone 18 Pro.
+    </description>
+   <pubDate>Tue, 20 Oct 2026 12:24:32 +0000</pubDate>
+   <guid isPermaLink="true">https://www.nasdaq.com/articles/apple-expands-us-supplier-partnerships-iphone-duo-iphone-18-pro?time=1792499072</guid>
+   <dc:creator>RTTNews</dc:creator>
+   <category>Markets</category>
+   <nasdaq:tickers>AAPL</nasdaq:tickers>
+  </item>
+  <item>
+   <title>Apple vs. ASML: Which Tech Stock Is a Better Buy in 2026?</title>
+   <link>https://www.nasdaq.com/articles/apple-vs-asml-which-tech-stock-better-buy-2026</link>
+   <description>
+        Key PointsApple maintains a massive global ecosystem and a robust services segment that provides significant recurring revenue.
+    </description>
+   <pubDate>Tue, 20 Oct 2026 12:00:01 +0000</pubDate>
+   <guid isPermaLink="true">https://www.nasdaq.com/articles/apple-vs-asml-which-tech-stock-better-buy-2026?time=1792497601</guid>
+   <dc:creator>The Motley Fool</dc:creator>
+   <category>Markets</category>
+   <nasdaq:tickers>AAPL,AAPL,ASML</nasdaq:tickers>
+  </item>
+  <item>
+   <title>Greg Abel's Berkshire Hathaway Owns These 5 Stocks. Here's What $1,000 in Each Could Be Worth by 2030.</title>
+   <link>https://www.nasdaq.com/articles/greg-abels-berkshire-hathaway-owns-these-5-stocks-heres-what-1000-each-could-be-worth-2030</link>
+   <description>
+        Key PointsCurrent CEO Greg Abel clearly has his own vision for the direction Berkshire Hathaway needs to take.
+    </description>
+   <pubDate>Tue, 20 Oct 2026 10:35:00 +0000</pubDate>
+   <guid isPermaLink="true">https://www.nasdaq.com/articles/greg-abels-berkshire-hathaway-owns-these-5-stocks-heres-what-1000-each-could-be-worth-2030?time=1792492500</guid>
+   <dc:creator>The Motley Fool</dc:creator>
+   <category>Markets</category>
+   <nasdaq:tickers>AAPL,AAPL,GOOGL,LEN,DAL,OXY,GOOG</nasdaq:tickers>
+  </item>
+  <item>
+   <title>Meet the Dividend King Stock That Yields More Than Quintuple the Nasdaq-100. Here's Why It's a Buy in October.</title>
+   <link>https://www.nasdaq.com/articles/meet-dividend-king-stock-yields-more-quintuple-nasdaq-100-heres-why-its-buy-october</link>
+   <description>
+        Key PointsProcter &amp;amp; Gamble has paid dividends for the last 136 years.
+    </description>
+   <pubDate>Mon, 19 Oct 2026 23:50:00 +0000</pubDate>
+   <guid isPermaLink="true">https://www.nasdaq.com/articles/meet-dividend-king-stock-yields-more-quintuple-nasdaq-100-heres-why-its-buy-october?time=1792453800</guid>
+   <dc:creator>The Motley Fool</dc:creator>
+   <category>Markets</category>
+   <nasdaq:tickers>PG,PG,AAPL,NVDA</nasdaq:tickers>
+  </item>
+  <item>
+   <title>Strength in Chipmakers and AI-Infrastructure Stocks Lead the Broader Market Higher</title>
+   <link>https://www.nasdaq.com/articles/strength-chipmakers-and-ai-infrastructure-stocks-lead-broader-market-higher</link>
+   <description>
+        The S&amp;P 500 Index ($SPX ) (SPY ) is up by +0.57% today, the Dow Jones Industrial Average ($DOWI ) (DIA ) is down by -0.11%, and the Nasdaq 100 Index ($IUXX ) (QQQ ) is up +1.52%.  December E-mini S&amp;P futures (ESZ26 ) are up +0.58%, and December E-mini...
+    </description>
+   <pubDate>Mon, 19 Oct 2026 23:35:36 +0000</pubDate>
+   <guid isPermaLink="true">https://www.nasdaq.com/articles/strength-chipmakers-and-ai-infrastructure-stocks-lead-broader-market-higher?time=1792452936</guid>
+   <dc:creator>Barchart</dc:creator>
+   <category>Stocks</category>
+   <nasdaq:tickers>AMAT,GOOGL,AAPL,ANET,NRG,AVGO,SNDK,DHI,ADI,BLDR,DDOG,LITE,MSFT,KBH,CRWV,TSLA,PHM,QCOM,STX,LRCX,AMD,SPY,DIA,KLAC,NVDA,META,AMP,MU,ORCL,IRON,QQQ,TOL,LEN,INTC,APLD,SOXX,NBIS,CLF,AMZN,MRVL</nasdaq:tickers>
+  </item>
+  <item>
+   <title>Stocks Supported by a Rebound in Chipmakers and AI-Infrastructure Companies</title>
+   <link>https://www.nasdaq.com/articles/stocks-supported-rebound-chipmakers-and-ai-infrastructure-companies</link>
+   <description>
+        The S&amp;P 500 Index ($SPX ) (SPY ) is up by +0.51% today, the Dow Jones Industrial Average ($DOWI ) (DIA ) is down by -0.17%, and the Nasdaq 100 Index ($IUXX ) (QQQ ) is up +1.20%.  December E-mini S&amp;P futures (ESZ26 ) are up +0.48%, and December E-mini...
+    </description>
+   <pubDate>Mon, 19 Oct 2026 23:13:56 +0000</pubDate>
+   <guid isPermaLink="true">https://www.nasdaq.com/articles/stocks-supported-rebound-chipmakers-and-ai-infrastructure-companies?time=1792451636</guid>
+   <dc:creator>Barchart</dc:creator>
+   <category>Stocks</category>
+   <nasdaq:tickers>AMAT,GOOGL,AAPL,ANET,AVGO,SNDK,ADI,DDOG,TXN,LITE,MSFT,CRWV,TSLA,STX,LRCX,AMD,SPY,DIA,KLAC,NVDA,META,AMP,NXPI,MU,ORCL,IRON,QQQ,INTC,APLD,SOXX,MCHP,NBIS,ARM,CLF,AMZN,MRVL</nasdaq:tickers>
+  </item>
+ </channel>
+</rss>
