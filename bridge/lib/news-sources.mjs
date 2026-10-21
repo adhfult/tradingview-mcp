@@ -144,7 +144,7 @@ export function calendarPage(text, { date, tickers, now } = {}) {
     for (const symbol of row.symbols) if (!symbols.includes(symbol)) symbols.push(symbol);
   }
   const items = matched.length ? [{ source: 'nasdaq_calendar', id: `earnings|${date}`,
-    title: clean(`Earnings today: ${titles.join(', ')}`), url: 'https://www.nasdaq.com/market-activity/earnings',
+    title: clean(`Earnings today: ${titles.join(', ')}`), url: `https://www.nasdaq.com/market-activity/earnings?date=${date}`,
     symbols, publishedAt: now, via: 'Nasdaq' }] : [];
   return { items, count, oldest: null, cursor: null, skipped };
 }

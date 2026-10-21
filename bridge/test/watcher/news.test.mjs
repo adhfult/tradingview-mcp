@@ -412,7 +412,7 @@ test('news digest uses the real alerts pipeline hourly cap and quiet hours', asy
 
 test('watcher starts news independently of an unresolved trending scan and reschedules it', async (t) => {
   const b = await build(t, { persist: false });
-  const { config } = parseConfig({ ...raw, state_dir: b.dir, news: { enabled: true, sources: { sec: false } },
+  const { config } = parseConfig({ ...raw, state_dir: b.dir, news: { enabled: true, sources: { sec: false, tickertick: false } },
     trending: { enabled: true, markets: ['crypto'], kinds: ['gainers'] }, dashboard: { enabled: false }, local_api: { enabled: false }, health: { daily_heartbeat: null } });
   let release; let fetches = 0;
   const watcher = createWatcher({ config, env: {}, dryRun: true, clock: b.clock, fetch: async () => {

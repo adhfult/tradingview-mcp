@@ -170,7 +170,7 @@ test('calendar: real response gives one item for the watched reporters', async (
   assert.equal(item.id, 'earnings|2026-10-21');
   assert.equal(item.title, 'Earnings today: TSLA (after close), PM (before open)');
   assert.deepEqual(item.symbols, ['NASDAQ:TSLA', 'NYSE:PM']);
-  assert.equal(item.url, 'https://www.nasdaq.com/market-activity/earnings');
+  assert.equal(item.url, 'https://www.nasdaq.com/market-activity/earnings?date=2026-10-21'); // a fixed link would be deduped on day two
   assert.equal(item.publishedAt, NOW);
   assert.equal(item.via, 'Nasdaq');
 });

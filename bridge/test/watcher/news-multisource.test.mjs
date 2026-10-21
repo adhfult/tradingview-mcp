@@ -32,7 +32,7 @@ const SOURCES = {
   yahoo: { via: 'Yahoo Finance', body: (ids) => rssBody(...ids.map((id) => rssItem(id))) },
   nasdaq: { via: 'Nasdaq', body: (ids) => rssBody(...ids.map((id) => rssItem(id))) },
   google: { via: 'Google News', body: (ids) => rssBody(...ids.map((id) => rssItem(id))) },
-  finnhub: { via: 'Finnhub Wire', body: (ids) => finnBody(ids.map((id) => ({ id: Number(id.replace(/\D/gu, '') || 1), title: `Headline ${id}`, url: `https://news.example/${id}` }))) },
+  finnhub: { via: 'Finnhub Wire', body: (ids) => finnBody(ids.map((id) => ({ id: [...id].reduce((a, c) => a * 31 + c.charCodeAt(0), 7), title: `Headline ${id}`, url: `https://news.example/${id}` }))) },
 };
 
 async function build(t, { sources, symbols = ['NASDAQ:AAPL'], routes = {}, news = {}, finnhubKey = 'fixture-key' } = {}) {
@@ -302,7 +302,7 @@ test('earnings calendar: one daily item for watched reporters, one request per r
   assert.equal(b.submissions.length, 1);
   assert.equal(new URL(b.to('nasdaq_calendar').at(-1).url).searchParams.get('date'), '2026-10-21');
   assert.equal(b.submissions[0].message.lines[0], 'NASDAQ:TSLA, NYSE:PM · Earnings today: TSLA after close, PM before open · via Nasdaq');
-  assert.equal(b.submissions[0].message.lines[1], 'https://www.nasdaq.com/market-activity/earnings');
+  assert.equal(b.submissions[0].message.lines[1], 'https://www.nasdaq.com/market-activity/earnings?date=2026-10-21');
 });
 
 test('sources that are not switched on make no request at all', async (t) => {
