@@ -49,6 +49,7 @@ test('tickertick: hostile or invalid rows are skipped and counted, never thrown'
     { ...good, id: '2', url: 'javascript:alert(1)' },
     { ...good, id: '3', url: 'http://a.example/x' },
     { ...good, id: '4', url: 'https://user:pw@a.example/x' },
+    { ...good, id: '4b', url: 'https://@a.example/x' },
     { ...good, id: '5', title: '' },
     { ...good, id: '6', time: -1 },
     { ...good, id: '7', time: 'soon' },
@@ -114,11 +115,12 @@ test('rss: bad entries are skipped and counted, valid ones kept', () => {
     rssItem('creds', 'https://u:p@a.example/x'),
     rssItem('date', 'https://a.example/d', 'not a date'),
     rssItem('empty', 'https://a.example/e', 'Tue, 20 Oct 2026 21:05:36 +0000', ''),
+    rssItem('epoch', 'https://a.example/z', 'Thu, 01 Jan 1970 00:00:00 +0000'),
   ].join(''));
   const page = rssPage(text, { source: 'yahoo', via: 'Yahoo Finance', symbol: 'NYSE:JPM' });
   assert.deepEqual(page.items.map((i) => i.id), ['ok']);
   assert.equal(page.count, 1);
-  assert.equal(page.skipped, 5);
+  assert.equal(page.skipped, 6);
 });
 
 test('rss: hostile documents throw (DOCTYPE, entities, not XML)', () => {
@@ -193,4 +195,9 @@ test('calendar: unknown time label is left out, symbol text is sanitized, errors
   assert.throws(() => calendarPage('{"data":null,"status":{"rCode":400}}', { date: '2026-10-21', tickers: CAL, now: NOW }));
   assert.throws(() => calendarPage('<html>Access denied</html>', { date: '2026-10-21', tickers: CAL, now: NOW }));
   assert.throws(() => calendarPage('{"data":{"rows":[]}}', { date: 'tomorrow', tickers: CAL, now: NOW }));
+});
+
+test('calendar: more than a thousand rows is refused', () => {
+  const rows = Array.from({ length: 1001 }, () => ({ symbol: 'TSLA', time: 'x' }));
+  assert.throws(() => calendarPage(JSON.stringify({ data: { rows } }), { date: '2026-10-21', tickers: CAL, now: NOW }));
 });

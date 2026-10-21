@@ -198,12 +198,16 @@ test('spacing: TickerTick requests are at least 7 s apart, RSS requests at least
 });
 
 test('only US-listed symbols are queried on the US news sources', async (t) => {
-  const b = await build(t, { sources: { yahoo: true, tickertick: true }, symbols: ['NSE:M_M', 'NASDAQ:AAPL', 'NYSE:BRK.B'], routes: {
-    yahoo: () => rssBody(rssItem('seed')), tickertick: () => ttBody([ttStory('seed')]) } });
+  const b = await build(t, { sources: { yahoo: true, tickertick: true, nasdaq_calendar: true },
+    symbols: ['NSE:M_M', 'NSE:TCS', 'LSE:VOD', 'NASDAQ:AAPL', 'NYSE:BRK.B'], routes: {
+      yahoo: () => rssBody(rssItem('seed')), tickertick: () => ttBody([ttStory('seed')]),
+      nasdaq_calendar: () => new Response(JSON.stringify({ data: { rows: [{ symbol: 'TCS', time: 'time-pre-market' }] } })) } });
   await b.poller.runOnce();
   const yahooSymbols = b.to('yahoo').map((c) => new URL(c.url).searchParams.get('s'));
   assert.deepEqual(yahooSymbols.sort(), ['AAPL', 'BRK-B']);
-  assert.doesNotMatch(new URL(b.to('tickertick')[0].url).searchParams.get('q'), /m_m/iu);
+  assert.doesNotMatch(new URL(b.to('tickertick')[0].url).searchParams.get('q'), /m_m|tcs|vod/iu);
+  b.clock.advance(24 * 3600_000); await b.poller.runOnce();
+  assert.equal(b.submissions.length, 0, 'a calendar row for a non-US ticker never matches');
 });
 
 test('request shape: pinned hosts, bare Mozilla user agent, no key in any URL', async (t) => {
@@ -323,4 +327,39 @@ test('config: TickerTick is on by default, the other new sources are off, unknow
   assert.equal(custom.config.news.sources.sec, true, 'an omitted source keeps its own default');
   assert.ok(parseConfig({ ...raw, news: { sources: { bloomberg: true } } }).errors.some((e) => /bloomberg/u.test(e)));
   assert.ok(parseConfig({ ...raw, news: { sources: { yahoo: 'yes' } } }).errors.some((e) => /yahoo/u.test(e)));
+});
+
+test('the earnings calendar pauses on a 429 like every other source', async (t) => {
+  const b = await build(t, { sources: { nasdaq_calendar: true }, routes: { nasdaq_calendar: () => new Response('', { status: 429 }) } });
+  await b.poller.runOnce();
+  b.clock.advance(10 * MIN); await b.poller.runOnce();
+  assert.equal(b.to('nasdaq_calendar').length, 1);
+  assert.match(b.logs.join('\n'), /news nasdaq_calendar: rate limited/u);
+});
+
+test('TickerTick last-run markers follow the symbol, so a changed watchlist still triggers the gap follow-up', async (t) => {
+  const symbols = ['NASDAQ:AAPL'];
+  let second = false;
+  const b = await build(t, { sources: { tickertick: true }, symbols, routes: { tickertick: (url) => {
+    if (new URL(url).searchParams.get('last') === '777') return ttBody([ttStory('older', { at: NOW - 40 * MIN })]);
+    return second ? ttBody([ttStory('newest', { at: NOW + 29 * MIN })]) : ttBody([ttStory('seed', { at: NOW - 5 * MIN })]);
+  } } });
+  await b.poller.runOnce();
+  symbols.push('NASDAQ:MSFT'); second = true; b.clock.advance(30 * MIN);
+  await b.poller.runOnce();
+  assert.equal(b.to('tickertick').filter((c) => new URL(c.url).searchParams.get('last') === '777').length, 1);
+});
+
+test('a story two sources report for two different symbols is one line naming both symbols', async (t) => {
+  let fresh = false;
+  const b = await build(t, { sources: { tickertick: true, yahoo: true }, symbols: ['NASDAQ:AAPL', 'NASDAQ:MSFT'], routes: {
+    tickertick: () => ttBody([ttStory('seed', { tickers: ['aapl', 'msft'] }), ...(fresh ? [ttStory('t1', { title: 'Apple and Microsoft sign deal', url: 'https://news.example/deal', tickers: ['aapl'] })] : [])]),
+    yahoo: (url) => rssBody(rssItem('seed'), ...(fresh && new URL(url).searchParams.get('s') === 'MSFT'
+      ? [rssItem('y1', { title: 'Unrelated wording here', link: 'https://news.example/deal?.tsrc=rss' })] : [])),
+  } });
+  await b.poller.runOnce();
+  fresh = true; b.clock.advance(30 * MIN);
+  await b.poller.runOnce();
+  assert.equal(b.submissions.length, 1);
+  assert.deepEqual(b.submissions[0].message.lines, ['NASDAQ:AAPL, NASDAQ:MSFT · Apple and Microsoft sign deal · via TickerTick news.example', 'https://news.example/deal']);
 });
