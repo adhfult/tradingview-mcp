@@ -389,7 +389,10 @@ function parseTrending(input, errors) {
 function parseNews(input, errors, warnings, watchlist) {
   const path = 'news';
   const defaults = { enabled: false, every_minutes: 30, remember_hours: 72, max_age_minutes: 120,
-    max_items_per_digest: 10, sources: { tradingview: true, sec: true }, tickers_extra: [],
+    max_items_per_digest: 10, tickers_extra: [],
+    // Only the keyless, high-volume feeds start on; the rest need a key, a terms check or are RSS scrapers.
+    sources: { tradingview: true, sec: true, tickertick: true, yahoo: false, nasdaq: false, google: false,
+      finnhub: false, nasdaq_calendar: false },
     include_keywords: [], exclude_keywords: [], sec_forms: ['8-K', '10-Q', '10-K'] };
   const n = input.news === undefined ? {} : input.news;
   if (!isPlainObject(n)) { errors.push('news: must be an object'); return defaults; }
@@ -421,7 +424,7 @@ function parseNews(input, errors, warnings, watchlist) {
     if (!isPlainObject(n.sources)) errors.push('news.sources: must be an object');
     else {
       checkKeys(n.sources, Object.keys(sources), 'news.sources', errors);
-      for (const source of Object.keys(sources)) sources[source] = readBoolean(n.sources, source, 'news.sources', errors, true);
+      for (const source of Object.keys(sources)) sources[source] = readBoolean(n.sources, source, 'news.sources', errors, defaults.sources[source]);
     }
   }
   return {
