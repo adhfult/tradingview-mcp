@@ -201,3 +201,14 @@ test('calendar: more than a thousand rows is refused', () => {
   const rows = Array.from({ length: 1001 }, () => ({ symbol: 'TSLA', time: 'x' }));
   assert.throws(() => calendarPage(JSON.stringify({ data: { rows } }), { date: '2026-10-21', tickers: CAL, now: NOW }));
 });
+
+test('links: brackets, parentheses and angle brackets are percent-encoded so a feed URL cannot form a Markdown link', () => {
+  const hostile = 'https://news.example/[www.sec.gov](https://attacker.example/phish)<x>`y`';
+  const encoded = 'https://news.example/%5Bwww.sec.gov%5D%28https://attacker.example/phish%29%3Cx%3E%60y%60';
+  const story = { id: '1', title: 'T', url: hostile, site: 's', time: 5000, tickers: ['aapl'] };
+  assert.equal(tickertickPage(JSON.stringify({ stories: [story], last_id: '1' }), AAPL).items[0].url, encoded);
+  const row = { id: 1, headline: 'T', url: hostile, datetime: 5, source: 'S' };
+  assert.equal(finnhubPage(JSON.stringify([row]), 'NASDAQ:AAPL').items[0].url, encoded);
+  const feed = rss(rssItem('1', hostile.replace('<x>', '&lt;x&gt;'))); // XML-escaped, as a feed would send it
+  assert.equal(rssPage(feed, { source: 'yahoo', via: 'Yahoo Finance', symbol: 'NYSE:JPM' }).items[0].url, encoded);
+});

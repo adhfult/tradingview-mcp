@@ -24,9 +24,9 @@ const EXTRA = {
   tickertick: { host: 'api.tickertick.com', budget: 6, spacing: 7000 },
   yahoo: { host: 'feeds.finance.yahoo.com', budget: 25, spacing: 1000, via: 'Yahoo Finance',
     url: (t) => ['https://feeds.finance.yahoo.com/rss/2.0/headline', { s: t, region: 'US', lang: 'en-US' }] },
-  nasdaq: { host: 'www.nasdaq.com', budget: 25, spacing: 1000, via: 'Nasdaq',
+  nasdaq: { host: 'www.nasdaq.com', budget: 10, spacing: 1000, via: 'Nasdaq',
     url: (t) => ['https://www.nasdaq.com/feed/rssoutbound', { symbol: t }] },
-  google: { host: 'news.google.com', budget: 25, spacing: 1000, via: 'Google News',
+  google: { host: 'news.google.com', budget: 10, spacing: 1000, via: 'Google News',
     url: (t) => ['https://news.google.com/rss/search', { q: `${t} stock when:1d`, hl: 'en-US', gl: 'US', ceid: 'US:en' }] },
   finnhub: { host: 'finnhub.io', budget: 25, spacing: 1100 }, // free plan: 60 calls a minute
   nasdaq_calendar: { host: 'api.nasdaq.com', budget: 1, spacing: 0 },
@@ -134,6 +134,8 @@ export function createNews({ news, symbols, store, clock, alerts, logger, fetch 
   // ponytail: pauses and spacing live in memory, so a restart forgets them; persist if restarts get frequent.
   const lastRequest = {};
   const pausedUntil = {};
+  const rotation = {}; // where the next run starts in a capped symbol list, so every symbol gets its turn
+  let calendarDate = null;
   const controller = new AbortController();
   const logSkip = (source, count = 1) => logger.warn(`news ${source}: skipped ${count} invalid entry(s)`);
   // Upstream errors can contain a token-bearing URL or even the SEC contact. Never echo them.
@@ -182,9 +184,10 @@ export function createNews({ news, symbols, store, clock, alerts, logger, fetch 
         const response = await fetch(current.href, { redirect: 'manual', signal, headers: headersFor(source) });
         if (response.status === 429 && EXTRA[source]) {
           await response.body?.cancel();
-          const seconds = Number(response.headers.get('retry-after'));
+          const header = response.headers.get('retry-after') ?? '';
+          const waitMs = /^\d{1,9}$/u.test(header.trim()) ? Number(header) * 1000 : Date.parse(header) - clock.now();
           throw Object.assign(new Error('rate limited'), { code: 'RATE_LIMITED',
-            retryAfterMs: Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : 0 });
+            retryAfterMs: Number.isFinite(waitMs) && waitMs > 0 ? waitMs : 0 });
         }
         if (response.status >= 300 && response.status < 400) {
           await response.body?.cancel();
@@ -373,31 +376,45 @@ export function createNews({ news, symbols, store, clock, alerts, logger, fetch 
     // These feeds cover US listings only; an NSE or LSE symbol would get unrelated results.
     const us = selected.filter((s) => US_EXCHANGES.has(s.split(':')[0]) && /^[A-Z0-9.-]{1,10}$/u.test(s.split(':')[1]));
     const ticker = (s) => s.split(':')[1].replaceAll('.', '-');
+    // A capped source starts each run where the last one stopped, so no symbol is starved.
+    const rotated = (name, list) => {
+      const start = (rotation[name] ?? 0) % Math.max(1, list.length);
+      return [...list.slice(start), ...list.slice(0, start)];
+    };
+    const advance = (name, list, done) => { rotation[name] = ((rotation[name] ?? 0) + done) % Math.max(1, list.length); };
     const eachSymbol = async (name, fetchFor) => {
-      for (const symbol of us) {
+      let done = 0;
+      for (const symbol of rotated(name, us)) {
         if (stopped || isPaused(name)) break;
-        if (budget[name] < 1) { logger.warn(`news ${name}: request budget reached; remaining symbols skipped`); break; }
+        if (budget[name] < 1) { logger.warn(`news ${name}: request budget reached; remaining symbols resume next run`); break; }
         await window(name, `${name}|${symbol}`, [symbol], () => fetchFor(symbol), now, fresh);
+        done++;
       }
+      advance(name, us, done);
     };
 
     if (on('tickertick') && us.length) {
       const byTicker = new Map();
       for (const s of us) byTicker.set(ticker(s).toLowerCase(), [...(byTicker.get(ticker(s).toLowerCase()) ?? []), s]);
-      const names = [...byTicker.keys()];
+      const names = rotated('tickertick', [...byTicker.keys()]);
+      let done = 0;
       for (let i = 0; i < names.length && !stopped && !isPaused('tickertick'); i += TICKERTICK_CHUNK) {
-        if (budget.tickertick < 2) { logger.warn('news tickertick: request budget reached; remaining symbols skipped'); break; }
+        if (budget.tickertick < 2) { logger.warn('news tickertick: request budget reached; remaining symbols resume next run'); break; }
         const chunk = names.slice(i, i + TICKERTICK_CHUNK);
-        const terms = chunk.map((name) => `tt:${name}`);
+        const terms = chunk.map((name) => `z:${name}`);
+        // Only this chunk's tickers map to symbols: another chunk's symbols must not be marked seen by this window.
+        const chunkMap = new Map(chunk.map((name) => [name, byTicker.get(name)]));
         await window('tickertick', `tickertick|${hash(chunk.slice().sort().join(','))}`, chunk.flatMap((name) => byTicker.get(name)),
           async (follow, cursor) => {
             const u = new URL(`https://${EXTRA.tickertick.host}/feed`);
             u.searchParams.set('q', terms.length === 1 ? terms[0] : `(or ${terms.join(' ')})`);
             u.searchParams.set('n', '30');
             if (follow) u.searchParams.set('last', cursor);
-            return tickertickPage(await request(u, 'tickertick', budget), byTicker);
+            return tickertickPage(await request(u, 'tickertick', budget), chunkMap);
           }, now, fresh);
+        done += chunk.length;
       }
+      advance('tickertick', [...byTicker.keys()], done);
     }
 
     for (const name of RSS_SOURCES) {
@@ -421,14 +438,16 @@ export function createNews({ news, symbols, store, clock, alerts, logger, fetch 
       });
     }
 
-    if (on('nasdaq_calendar') && us.length) {
+    if (on('nasdaq_calendar') && us.length && calendarDate !== newYorkDate(now)) {
       const date = newYorkDate(now);
       const byTicker = new Map();
       for (const s of us) byTicker.set(s.split(':')[1], [...(byTicker.get(s.split(':')[1]) ?? []), s]);
       await window('nasdaq_calendar', 'nasdaq_calendar', us, async () => {
         const u = new URL(`https://${EXTRA.nasdaq_calendar.host}/api/calendar/earnings`);
         u.searchParams.set('date', date);
-        return calendarPage(await request(u, 'nasdaq_calendar', budget), { date, tickers: byTicker, now });
+        const page = calendarPage(await request(u, 'nasdaq_calendar', budget), { date, tickers: byTicker, now });
+        calendarDate = date; // one successful look per New York day; a failure above retries next run
+        return page;
       }, now, fresh);
     }
   }

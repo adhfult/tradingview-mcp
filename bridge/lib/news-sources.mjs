@@ -16,7 +16,8 @@ function safeLink(value) {
     const url = new URL(value);
     const authority = value.slice(value.indexOf('://') + 3).split(/[/?#]/u, 1)[0];
     if (url.protocol !== 'https:' || !url.hostname || url.username || url.password || authority.includes('@')) return null;
-    return value;
+    // Brackets and parentheses are percent-encoded so a feed URL cannot form a Markdown link in a digest.
+    return value.replace(/[\[\]()<>`]/gu, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
   } catch { return null; }
 }
 
