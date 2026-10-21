@@ -2,9 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { makeRedactor, SECRET_ENV_VARS } from '../lib/redact.mjs';
 
-test('SECRET_ENV_VARS lists the seven secret variable names', () => {
+test('SECRET_ENV_VARS lists the eight secret variable names', () => {
   assert.deepEqual([...SECRET_ENV_VARS].sort(), [
     'DISCORD_WEBHOOK_URL',
+    'FINNHUB_API_KEY',
     'TELEGRAM_BOT_TOKEN',
     'TELEGRAM_CHAT_ID',
     'TRADINGVIEW_SESSION_ID',

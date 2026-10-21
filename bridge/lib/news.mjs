@@ -22,13 +22,13 @@ const SEC_HOST = 'www.sec.gov';
 // minimum gap between two requests. TickerTick allows 10 requests a minute per IP, hence 7 s.
 const EXTRA = {
   tickertick: { host: 'api.tickertick.com', budget: 6, spacing: 7000 },
-  yahoo: { host: 'feeds.finance.yahoo.com', budget: 25, spacing: 1000, via: 'Yahoo Finance',
+  yahoo: { host: 'feeds.finance.yahoo.com', budget: 25, spacing: 1000, perSymbol: true, via: 'Yahoo Finance',
     url: (t) => ['https://feeds.finance.yahoo.com/rss/2.0/headline', { s: t, region: 'US', lang: 'en-US' }] },
-  nasdaq: { host: 'www.nasdaq.com', budget: 10, spacing: 1000, via: 'Nasdaq',
+  nasdaq: { host: 'www.nasdaq.com', budget: 10, spacing: 1000, perSymbol: true, via: 'Nasdaq',
     url: (t) => ['https://www.nasdaq.com/feed/rssoutbound', { symbol: t }] },
-  google: { host: 'news.google.com', budget: 10, spacing: 1000, via: 'Google News',
+  google: { host: 'news.google.com', budget: 10, spacing: 1000, perSymbol: true, via: 'Google News',
     url: (t) => ['https://news.google.com/rss/search', { q: `${t} stock when:1d`, hl: 'en-US', gl: 'US', ceid: 'US:en' }] },
-  finnhub: { host: 'finnhub.io', budget: 25, spacing: 1100 }, // free plan: 60 calls a minute
+  finnhub: { host: 'finnhub.io', budget: 25, spacing: 1100, perSymbol: true }, // free plan: 60 calls a minute
   nasdaq_calendar: { host: 'api.nasdaq.com', budget: 1, spacing: 0 },
 };
 const RSS_SOURCES = ['yahoo', 'nasdaq', 'google'];
@@ -126,7 +126,7 @@ export async function appendNews({ dir, items, maxBytes = MAX_RECORD_BYTES }) {
 
 /** Dependency injection keeps fixtures, clocks and disk state usable without a network. */
 export function createNews({ news, symbols, store, clock, alerts, logger, fetch = globalThis.fetch,
-  secContact = '', finnhubKey = '', stateDir, persist = true, sleep = (ms) => delay(ms), timeoutMs = 15_000 }) {
+  secContact = '', finnhubKey = '', stateDir, persist = true, sleep = (ms, signal) => delay(ms, undefined, { signal }), timeoutMs = 15_000 }) {
   let running = false;
   let stopped = false;
   let mapCache = null;
@@ -155,7 +155,7 @@ export function createNews({ news, symbols, store, clock, alerts, logger, fetch 
   function headersFor(source) {
     if (source === 'sec') return { 'User-Agent': `TradingViewWatcher ${secContact}`, Accept: 'application/atom+xml,application/json' };
     if (source === 'tradingview') return { Accept: 'application/json' };
-    const headers = { 'User-Agent': BARE_AGENT, Accept: 'application/json, application/rss+xml, application/xml;q=0.9' };
+    const headers = { 'User-Agent': BARE_AGENT, Accept: RSS_SOURCES.includes(source) ? 'application/rss+xml, application/xml;q=0.9, */*;q=0.5' : 'application/json' };
     // The key travels in a header, never in a URL, so no log line or error can carry it.
     if (source === 'finnhub') headers['X-Finnhub-Token'] = finnhubKey;
     return headers;
@@ -171,12 +171,12 @@ export function createNews({ news, symbols, store, clock, alerts, logger, fetch 
         if (budget[source] <= 0) throw new Error('news request budget exhausted');
         budget[source]--;
         if (source === 'sec') {
-          if (secLastRequest !== null) await sleep(Math.max(250, 250 - (clock.now() - secLastRequest)));
+          if (secLastRequest !== null) await sleep(Math.max(250, 250 - (clock.now() - secLastRequest)), signal);
           secLastRequest = clock.now();
         } else if (EXTRA[source]?.spacing) {
           if (lastRequest[source] !== undefined) {
             const wait = EXTRA[source].spacing - (clock.now() - lastRequest[source]);
-            if (wait > 0) await sleep(wait);
+            if (wait > 0) await sleep(wait, signal); // abortable: stop() must not wait out a 7 s gap
           }
           lastRequest[source] = clock.now();
         }
@@ -301,7 +301,7 @@ export function createNews({ news, symbols, store, clock, alerts, logger, fetch 
       const lastRuns = runKeys.map((k) => own(store.state.news.runs, k)).filter(Number.isFinite);
       const previous = lastRuns.length ? Math.min(...lastRuns) : undefined;
       const page = await fetchPage(false);
-      if (!page.count) { logger.info(`news ${source}: empty result, skipped`); return; }
+      if (!page.count) { if (!EXTRA[source]?.perSymbol) logger.info(`news ${source}: empty result, skipped`); return; }
       let all = page.items;
       if (previous !== undefined && page.oldest > previous) {
         if (source === 'sec' || page.cursor) {
@@ -343,15 +343,22 @@ export function createNews({ news, symbols, store, clock, alerts, logger, fetch 
           && !news.exclude_keywords.some((word) => text.includes(word));
         if (eligible.length && included && now - entry.publishedAt >= 0
           && now - entry.publishedAt <= news.max_age_minutes * 60_000) {
-          const shared = fresh.find((e) => dedupeUrl(e.url) === linkKey || (e.source === entry.source && e.id === entry.id));
+          // A Map by link and by source id keeps this O(1); a feed may bring a thousand items per symbol.
+          const index = (fresh.index ??= new Map());
+          const shared = index.get(`url|${linkKey}`) ?? index.get(`id|${entry.source}|${entry.id}`);
           if (shared) shared.symbols = [...new Set([...shared.symbols, ...eligible])];
-          else fresh.push({ ...entry, symbols: eligible, observedAt: now });
+          else {
+            const item = { ...entry, symbols: eligible, observedAt: now };
+            fresh.push(item);
+            index.set(`url|${linkKey}`, item); index.set(`id|${entry.source}|${entry.id}`, item);
+          }
         }
         for (const k of keys) {
           for (const id of k.seen) {
             if (own(state.seen, id) === undefined || now - state.seen[id] > state.rememberMs) state.seen[id] = now;
           }
-          if (own(state.titles, k.title) === undefined || now - state.titles[k.title] > 6 * HOUR) state.titles[k.title] = now;
+          // A seed run delivers nothing, so it must not claim the headline: another source may still deliver it.
+          if (seeded.has(k.symbol) && (own(state.titles, k.title) === undefined || now - state.titles[k.title] > 6 * HOUR)) state.titles[k.title] = now;
         }
       }
       // Future-only symbols have not supplied a valid initial backlog yet.

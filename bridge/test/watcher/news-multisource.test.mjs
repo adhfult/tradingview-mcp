@@ -35,7 +35,7 @@ const SOURCES = {
   finnhub: { via: 'Finnhub Wire', body: (ids) => finnBody(ids.map((id) => ({ id: [...id].reduce((a, c) => a * 31 + c.charCodeAt(0), 7), title: `Headline ${id}`, url: `https://news.example/${id}` }))) },
 };
 
-async function build(t, { sources, symbols = ['NASDAQ:AAPL'], routes = {}, news = {}, finnhubKey = 'fixture-key' } = {}) {
+async function build(t, { sources, symbols = ['NASDAQ:AAPL'], routes = {}, news = {}, finnhubKey = 'fixture-key', sleep } = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'news-multi-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const clock = createFakeClock(NOW);
@@ -50,7 +50,7 @@ async function build(t, { sources, symbols = ['NASDAQ:AAPL'], routes = {}, news 
   const poller = createNews({ news: { ...base, sources: { ...OFF, ...sources }, ...news }, symbols, store, clock,
     alerts: { submit: (entry) => submissions.push(entry) }, logger: { info: (s) => logs.push(s), warn: (s) => logs.push(s) },
     fetch: fake.fetch, secContact: 'fixture@example.invalid', finnhubKey, stateDir: dir, persist: false,
-    sleep: async (ms) => waits.push(ms), timeoutMs: 1000 });
+    sleep: sleep ?? (async (ms) => waits.push(ms)), timeoutMs: 1000 });
   const to = (name) => fake.calls.filter((c) => HOSTS[new URL(c.url).hostname] === name);
   return { poller, clock, store, logs, submissions, waits, calls: fake.calls, to };
 }
@@ -429,4 +429,41 @@ test('Retry-After given as an HTTP date is honoured', async (t) => {
   assert.equal(b.to('yahoo').length, 1, 'two hours asked for, 61 minutes is still paused');
   b.clock.advance(61 * MIN); await b.poller.runOnce();
   assert.equal(b.to('yahoo').length, 2);
+});
+
+test('stop() ends a spacing wait at once instead of waiting out the gap', async (t) => {
+  const symbols = Array.from({ length: 25 }, (_, i) => `NASDAQ:S${i}`);
+  let waiting;
+  const sleeping = new Promise((resolve) => { waiting = resolve; });
+  const b = await build(t, { sources: { tickertick: true }, symbols, routes: { tickertick: () => ttBody([ttStory('seed', { tickers: ['s0'] })]) },
+    sleep: (ms, signal) => new Promise((_, reject) => {
+      waiting();
+      signal?.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })), { once: true });
+    }) });
+  const run = b.poller.runOnce();
+  await sleeping;
+  b.poller.stop();
+  const outcome = await Promise.race([run.then(() => 'done'), new Promise((resolve) => setTimeout(() => resolve('stuck'), 1000))]);
+  assert.equal(outcome, 'done');
+  assert.equal(b.to('tickertick').length, 1, 'no further request after stop');
+});
+
+test('a source switched on later seeds silently without claiming headlines another source has yet to deliver', async (t) => {
+  let phase = 1;
+  const story = 'Apple beats estimates';
+  const b = await build(t, { sources: { tickertick: true, yahoo: true }, routes: {
+    tickertick: () => ttBody([ttStory('seed'), ...(phase === 2 ? [ttStory('t1', { title: story, url: 'https://news.example/t1' })] : [])]),
+    yahoo: () => rssBody(rssItem('seed'), rssItem('y1', { title: story, link: 'https://news.example/y1' })),
+  } });
+  await b.poller.runOnce();
+  phase = 2; b.clock.advance(30 * MIN);
+  await b.poller.runOnce();
+  assert.equal(b.submissions.length, 1, 'TickerTick still delivers the story Yahoo only had in its seed backlog');
+  assert.match(b.submissions[0].message.lines[0], /via TickerTick/u);
+});
+
+test('a quiet per-symbol feed does not log an empty-result line for every symbol', async (t) => {
+  const b = await build(t, { sources: { yahoo: true }, symbols: ['NASDAQ:AAPL', 'NASDAQ:MSFT'], routes: { yahoo: () => rssBody() } });
+  await b.poller.runOnce();
+  assert.doesNotMatch(b.logs.join('\n'), /empty result/u);
 });
