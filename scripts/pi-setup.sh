@@ -5,6 +5,7 @@
 #   bash scripts/pi-setup.sh --telegram   ask for your Telegram bot token (hidden), find your chat id, save both
 #   bash scripts/pi-setup.sh --discord    ask for your Discord webhook URL (hidden) and save it
 #   bash scripts/pi-setup.sh --sec-contact  ask for the SEC contact email (hidden) and save it
+#   bash scripts/pi-setup.sh --finnhub    ask for the Finnhub API key (hidden) and save it (only for news.sources.finnhub)
 #   bash scripts/pi-setup.sh --test       send one test message to every configured channel
 #   bash scripts/pi-setup.sh --enable     install and start the systemd service (only after a passing --test)
 #   bash scripts/pi-setup.sh --node       install Node 22 system-wide (the service needs /usr/bin/node, not nvm's)
@@ -20,12 +21,13 @@ set -u
 # The service runs /usr/bin/node, so check and use that one, not an nvm node that happens to be first in this shell.
 PATH=/usr/bin:$PATH
 
-PINE=0 IMAGES=0 ENABLE=0 DISCORD=0 TELEGRAM=0 TEST=0 NODE=0 CGROUP=0 SEC_CONTACT=0
+PINE=0 IMAGES=0 ENABLE=0 DISCORD=0 TELEGRAM=0 TEST=0 NODE=0 CGROUP=0 SEC_CONTACT=0 FINNHUB=0
 for a in "$@"; do
   case "$a" in
     --pine) PINE=1 ;; --images) IMAGES=1 ;; --enable) ENABLE=1 ;;
     --node) NODE=1 ;; --cgroup) CGROUP=1 ;; --discord) DISCORD=1 ;; --telegram) TELEGRAM=1 ;; --test) TEST=1 ;;
     --sec-contact) SEC_CONTACT=1 ;;
+    --finnhub) FINNHUB=1 ;;
     *) echo "unknown option: $a"; exit 2 ;;
   esac
 done
@@ -155,7 +157,7 @@ if [ -f "$ENVFILE" ] && ! grep -q '^WATCHER_LOCAL_TOKEN=.\+' "$ENVFILE"; then
 fi
 ok "mode 600"
 
-if [ "$DISCORD" = 1 ] || [ "$TELEGRAM" = 1 ] || [ "$SEC_CONTACT" = 1 ]; then
+if [ "$DISCORD" = 1 ] || [ "$TELEGRAM" = 1 ] || [ "$SEC_CONTACT" = 1 ] || [ "$FINNHUB" = 1 ]; then
   [ -t 0 ] || { fail "channel/contact options ask you questions: run this in an interactive terminal (ssh -t ...)"; exit 1; }
   [ -w "$ENVFILE" ] || { fail "cannot write $ENVFILE"; exit 1; }
 fi
@@ -203,6 +205,18 @@ if [ "$SEC_CONTACT" = 1 ]; then
     set_var WATCHER_SEC_CONTACT "$CONTACT" && ok "saved WATCHER_SEC_CONTACT" || fail "could not save SEC contact"
   else fail "enter a contact email address; nothing saved"; fi
   CONTACT=""
+fi
+if [ "$FINNHUB" = 1 ]; then
+  require_private_file
+  step "5e. Finnhub API key"
+  echo "  Free key: finnhub.io/register (personal, non-professional use only; see bridge/README.md)"
+  ask_hidden "Paste the Finnhub API key (typing is hidden)" KEY
+  # Letters, digits, _ and - only (8 to 200). The file is sourced by bash (--test) and parsed by systemd, so a quote,
+  # $, ;, # or \ in the value would run or change; the watcher accepts more, but a real key never needs it. C locale so the ranges mean ASCII.
+  if (LC_ALL=C; [[ "$KEY" =~ ^[A-Za-z0-9_-]{8,200}$ ]]); then
+    set_var FINNHUB_API_KEY "$KEY" && ok "saved FINNHUB_API_KEY" || fail "could not save the Finnhub key"
+  else fail "that does not look like a Finnhub key (8 to 200 letters, digits, _ or -); nothing saved"; fi
+  KEY=""
 fi
 if [ -f "$ENVFILE" ]; then
   echo "  variables with a value (names only):"; awk -F= '!/^#/ && NF>1 && $2!="" {print "    " $1}' "$ENVFILE"

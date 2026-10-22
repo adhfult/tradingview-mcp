@@ -25,7 +25,7 @@ Common to all of them: US-listed symbols only; a hard budget per run in code (no
 4. **`z:` not `tt:`** in the TickerTick query, as the approved plan says. The fixture was recorded with `tt:aapl`; the response shape is the same, and a `z:aapl` probe also returned a few off-topic stories (use `exclude_keywords`).
 5. **Yahoo is per symbol, not the plan's multi-ticker `s=`**, because a multi-ticker response cannot say which ticker an item is about.
 6. **TickerTick is on by default** (the brief says so), which changed one existing test (`watcher starts news independently...` counts fetches) to switch it off. With `news.enabled` still false by default, nothing runs until you enable news.
-7. The Finnhub key is read from `FINNHUB_API_KEY`; `scripts/pi-setup.sh` has **no prompt for it yet** (out of scope: the brief did not list that file).
+7. The Finnhub key is read from `FINNHUB_API_KEY`; `scripts/pi-setup.sh --finnhub` now prompts for it (added 2026-10-22; it was out of scope for N1b).
 
 ## Checks run (by me, in the worktree)
 - `cd bridge && timeout 250 node --test`: 894 tests, 892 pass, 0 fail, 2 skipped (baseline 837 + 57 new). `node watcher.mjs --config watcher.config.example.json --check-config`: OK.
