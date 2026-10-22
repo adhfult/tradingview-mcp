@@ -8,6 +8,7 @@ export const SECRET_ENV_VARS = Object.freeze([
   'WATCHER_DASHBOARD_TOKEN',
   'WATCHER_LOCAL_TOKEN',
   'FINNHUB_API_KEY',
+  'WATCHER_SEC_CONTACT',
 ]);
 
 const MIN_SECRET_LENGTH = 4;
