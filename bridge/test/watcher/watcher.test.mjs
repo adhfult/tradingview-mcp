@@ -28,7 +28,7 @@ const RAW_CONFIG = {
 
 async function build(t, { env = {}, fetch, dryRun = false, configOverrides = {}, stateDir, lib, extra = {} } = {}) {
   const dir = stateDir ?? await mkdtemp(join(tmpdir(), 'watcher-run-'));
-  if (!stateDir) t.after(() => rm(dir, { recursive: true, force: true }));
+  if (!stateDir) t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 }));
   const { config, errors } = parseConfig({ ...RAW_CONFIG, ...configOverrides, state_dir: dir }, { home: '/home/test' });
   assert.deepEqual(errors, []);
   // Ephemeral port for tests: the validated config keeps 8787, the real one.
@@ -418,7 +418,14 @@ test('shutdown saves state before it waits for undelivered alerts', async (t) =>
   await settle();
   const saved = await readStateSoon(dir);
   assert.ok(saved.streams['BINANCE:BTCUSDT|15'], 'state is on disk while the drain is still waiting');
-  clock.advance(5000);                                    // the drain gives up
+  // The drain gives up when the fake clock passes its limit. stop() registers that timer only after its state write
+  // finishes, which takes real time, so a single advance can come too early and leave stop() waiting for ever.
+  let stopped = false;
+  stopping.then(() => { stopped = true; });
+  for (let i = 0; i < 200 && !stopped; i += 1) {
+    clock.advance(5000);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
   await stopping;
 });
 

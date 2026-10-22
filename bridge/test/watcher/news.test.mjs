@@ -28,7 +28,8 @@ const map = { 0: { cik_str: 320193, ticker: 'AAPL', title: 'Apple' },
   1: { cik_str: 1652044, ticker: 'GOOG', title: 'Alphabet' }, 2: { cik_str: 1652044, ticker: 'GOOGL', title: 'Alphabet' } };
 async function build(t, { news = {}, symbols = ['NASDAQ:AAPL'], responder, persist = true, timeoutMs = 1000 } = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'news-test-'));
-  t.after(() => rm(dir, { recursive: true, force: true }));
+  // maxRetries: a write still finishing when the test ends would make the delete fail with ENOTEMPTY
+  t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 }));
   const clock = createFakeClock(NOW);
   const store = createStateStore({ dir, clock, persist });
   t.after(() => store.close());
